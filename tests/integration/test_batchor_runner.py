@@ -12,10 +12,12 @@ from batchor import (
     BatchItem,
     BatchJob,
     BatchRunner,
+    ItemStatus,
     MemoryStateStore,
     OpenAIProviderConfig,
     PromptParts,
     RetryPolicy,
+    RunLifecycleStatus,
     RunNotFinishedError,
     SQLiteStorage,
 )
@@ -148,6 +150,21 @@ class _FakeBatchProvider:
             error_content=error_content,
         )
 
+    def estimate_request_tokens(
+        self,
+        request_line: dict[str, object],
+        *,
+        chars_per_token: int,
+    ) -> int:
+        del chars_per_token
+        body = request_line["body"]
+        if not isinstance(body, dict):
+            raise TypeError("request body must be a dict")
+        prompt = body.get("input", "")
+        if not isinstance(prompt, str):
+            raise TypeError("request input must be a string")
+        return max(len(prompt), 1)
+
 
 def test_structured_run_handle_returns_model_instances(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
@@ -171,7 +188,7 @@ def test_structured_run_handle_returns_model_instances(tmp_path: Path) -> None:
             provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
         )
     )
-    assert run.status == "running"
+    assert run.status is RunLifecycleStatus.RUNNING
     with pytest.raises(RunNotFinishedError):
         run.results()
     run.wait()
@@ -198,8 +215,8 @@ def test_text_run_snapshot_exposes_partial_state(tmp_path: Path) -> None:
         )
     )
     snapshot = run.snapshot()
-    assert snapshot.status == "running"
-    assert snapshot.items[0].status == "submitted"
+    assert snapshot.status is RunLifecycleStatus.RUNNING
+    assert snapshot.items[0].status is ItemStatus.SUBMITTED
     run.refresh()
     assert run.results()[0].output_text == "text:row1:a1"
 
@@ -221,7 +238,7 @@ def test_invalid_json_retries_until_failed_permanent(tmp_path: Path) -> None:
         )
     )
     result = run.results()[0]
-    assert result.status == "failed_permanent"
+    assert result.status is ItemStatus.FAILED_PERMANENT
     assert result.attempt_count == 2
     assert result.error is not None
     assert result.error.error_class == "invalid_json"
@@ -252,7 +269,7 @@ def test_missing_output_record_retries_without_consuming_attempt(tmp_path: Path)
         )
     )
     result = run.results()[0]
-    assert result.status == "completed"
+    assert result.status is ItemStatus.COMPLETED
     assert result.attempt_count == 0
     assert seen_counts["row1:a1"] == 2
 
@@ -283,7 +300,7 @@ def test_enqueue_limit_create_failure_recovers_without_consuming_attempts(tmp_pa
         )
     )
     result = run.results()[0]
-    assert result.status == "completed"
+    assert result.status is ItemStatus.COMPLETED
     assert result.attempt_count == 0
     assert any(sleep >= 1.0 for sleep in clock.sleeps)
 
@@ -308,7 +325,7 @@ def test_sqlite_storage_supports_rehydrating_run_handle(tmp_path: Path) -> None:
             provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
         )
     )
-    assert started.status == "running"
+    assert started.status is RunLifecycleStatus.RUNNING
 
     runner_two = BatchRunner(
         storage=SQLiteStorage(path=storage.path),

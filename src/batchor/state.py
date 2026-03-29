@@ -1,26 +1,26 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Protocol, runtime_checkable
+from typing import Callable
 
+from batchor.enums import ItemStatus, RunLifecycleStatus
 from batchor.models import (
     ChunkPolicy,
     InflightPolicy,
     ItemFailure,
-    ItemStatus,
-    OpenAIProviderConfig,
     RetryPolicy,
-    RunLifecycleStatus,
     RunSummary,
 )
+from batchor.provider import ProviderConfig
 from batchor.retry import compute_backoff_delay
 from batchor.types import JSONObject, JSONValue
 
 
 @dataclass(frozen=True)
 class PersistedRunConfig:
-    provider_config: OpenAIProviderConfig
+    provider_config: ProviderConfig
     chunk_policy: ChunkPolicy
     retry_policy: RetryPolicy
     inflight_policy: InflightPolicy
@@ -108,8 +108,8 @@ class PersistedItemRecord:
     error: ItemFailure | None = None
 
 
-@runtime_checkable
-class StateStore(Protocol):
+class StateStore(ABC):
+    @abstractmethod
     def create_run(
         self,
         *,
@@ -118,8 +118,10 @@ class StateStore(Protocol):
         items: list[MaterializedItem],
     ) -> None: ...
 
+    @abstractmethod
     def get_run_config(self, *, run_id: str) -> PersistedRunConfig: ...
 
+    @abstractmethod
     def claim_items_for_submission(
         self,
         *,
@@ -128,8 +130,10 @@ class StateStore(Protocol):
         limit: int | None = None,
     ) -> list[ClaimedItem]: ...
 
+    @abstractmethod
     def release_items_to_pending(self, *, run_id: str, item_ids: list[str]) -> None: ...
 
+    @abstractmethod
     def register_batch(
         self,
         *,
@@ -140,6 +144,7 @@ class StateStore(Protocol):
         custom_ids: list[str],
     ) -> None: ...
 
+    @abstractmethod
     def mark_items_submitted(
         self,
         *,
@@ -148,6 +153,7 @@ class StateStore(Protocol):
         submissions: list[PreparedSubmission],
     ) -> None: ...
 
+    @abstractmethod
     def update_batch_status(
         self,
         *,
@@ -158,8 +164,10 @@ class StateStore(Protocol):
         error_file_id: str | None = None,
     ) -> None: ...
 
+    @abstractmethod
     def get_active_batches(self, *, run_id: str) -> list[ActiveBatchRecord]: ...
 
+    @abstractmethod
     def get_submitted_custom_ids_for_batch(
         self,
         *,
@@ -167,6 +175,7 @@ class StateStore(Protocol):
         provider_batch_id: str,
     ) -> list[str]: ...
 
+    @abstractmethod
     def mark_items_completed(
         self,
         *,
@@ -174,6 +183,7 @@ class StateStore(Protocol):
         completions: list[CompletedItemRecord],
     ) -> None: ...
 
+    @abstractmethod
     def mark_items_failed(
         self,
         *,
@@ -182,6 +192,7 @@ class StateStore(Protocol):
         max_attempts: int,
     ) -> None: ...
 
+    @abstractmethod
     def reset_batch_items_to_pending(
         self,
         *,
@@ -190,8 +201,10 @@ class StateStore(Protocol):
         error: ItemFailure,
     ) -> None: ...
 
+    @abstractmethod
     def get_active_submitted_token_estimate(self, *, run_id: str) -> int: ...
 
+    @abstractmethod
     def record_batch_retry_failure(
         self,
         *,
@@ -201,12 +214,16 @@ class StateStore(Protocol):
         max_delay_sec: float,
     ) -> RetryBackoffState: ...
 
+    @abstractmethod
     def clear_batch_retry_backoff(self, *, run_id: str) -> None: ...
 
+    @abstractmethod
     def get_batch_retry_backoff_remaining_sec(self, *, run_id: str) -> float: ...
 
+    @abstractmethod
     def get_run_summary(self, *, run_id: str) -> RunSummary: ...
 
+    @abstractmethod
     def get_item_records(self, *, run_id: str) -> list[PersistedItemRecord]: ...
 
 
@@ -218,7 +235,7 @@ class _StoredItem:
     metadata: JSONObject
     prompt: str
     system_prompt: str | None = None
-    status: ItemStatus = "pending"
+    status: ItemStatus = ItemStatus.PENDING
     attempt_count: int = 0
     active_batch_id: str | None = None
     active_custom_id: str | None = None
@@ -243,16 +260,16 @@ class _StoredBatch:
 class _StoredRun:
     run_id: str
     config: PersistedRunConfig
-    status: RunLifecycleStatus = "running"
+    status: RunLifecycleStatus = RunLifecycleStatus.RUNNING
     item_ids: list[str] = field(default_factory=list)
     items: dict[str, _StoredItem] = field(default_factory=dict)
     batches: dict[str, _StoredBatch] = field(default_factory=dict)
     backoff: RetryBackoffState = field(default_factory=RetryBackoffState)
 
 
-class MemoryStateStore:
+class MemoryStateStore(StateStore):
     TERMINAL_BATCH_STATUSES = {"completed", "failed", "cancelled", "expired"}
-    TERMINAL_ITEM_STATUSES = {"completed", "failed_permanent"}
+    TERMINAL_ITEM_STATUSES = {ItemStatus.COMPLETED, ItemStatus.FAILED_PERMANENT}
 
     def __init__(
         self,
@@ -303,11 +320,11 @@ class MemoryStateStore:
         claimed: list[ClaimedItem] = []
         for item_id in run.item_ids:
             item = run.items[item_id]
-            if item.status not in {"pending", "failed_retryable"}:
+            if item.status not in {ItemStatus.PENDING, ItemStatus.FAILED_RETRYABLE}:
                 continue
             if item.attempt_count >= max_attempts:
                 continue
-            item.status = "queued_local"
+            item.status = ItemStatus.QUEUED_LOCAL
             claimed.append(
                 ClaimedItem(
                     item_id=item.item_id,
@@ -326,8 +343,8 @@ class MemoryStateStore:
         run = self._get_run(run_id)
         for item_id in item_ids:
             item = run.items[item_id]
-            if item.status == "queued_local":
-                item.status = "pending"
+            if item.status == ItemStatus.QUEUED_LOCAL:
+                item.status = ItemStatus.PENDING
         self._refresh_run_status(run)
 
     def register_batch(
@@ -358,7 +375,7 @@ class MemoryStateStore:
         run = self._get_run(run_id)
         for submission in submissions:
             item = run.items[submission.item_id]
-            item.status = "submitted"
+            item.status = ItemStatus.SUBMITTED
             item.active_batch_id = provider_batch_id
             item.active_custom_id = submission.custom_id
             item.active_submission_tokens = submission.submission_tokens
@@ -405,7 +422,7 @@ class MemoryStateStore:
         submitted: list[str] = []
         for custom_id in batch.custom_ids:
             if any(
-                item.active_custom_id == custom_id and item.status == "submitted"
+                item.active_custom_id == custom_id and item.status == ItemStatus.SUBMITTED
                 for item in run.items.values()
             ):
                 submitted.append(custom_id)
@@ -420,7 +437,7 @@ class MemoryStateStore:
         run = self._get_run(run_id)
         for completion in completions:
             item = self._item_for_custom_id(run, completion.custom_id)
-            item.status = "completed"
+            item.status = ItemStatus.COMPLETED
             item.output_text = completion.output_text
             item.output_json = completion.output_json
             item.raw_response = completion.raw_response
@@ -465,9 +482,9 @@ class MemoryStateStore:
         batch = run.batches[provider_batch_id]
         for custom_id in batch.custom_ids:
             item = self._item_for_custom_id(run, custom_id)
-            if item.status != "submitted":
+            if item.status != ItemStatus.SUBMITTED:
                 continue
-            item.status = "pending"
+            item.status = ItemStatus.PENDING
             item.error = error
             item.active_batch_id = None
             item.active_custom_id = None
@@ -479,7 +496,7 @@ class MemoryStateStore:
         return sum(
             item.active_submission_tokens
             for item in run.items.values()
-            if item.status == "submitted"
+            if item.status == ItemStatus.SUBMITTED
         )
 
     def record_batch_retry_failure(
@@ -528,15 +545,15 @@ class MemoryStateStore:
     def get_run_summary(self, *, run_id: str) -> RunSummary:
         run = self._get_run(run_id)
         self._refresh_run_status(run)
-        status_counts: dict[str, int] = {}
+        status_counts: dict[ItemStatus, int] = {}
         for item in run.items.values():
             status_counts[item.status] = status_counts.get(item.status, 0) + 1
         return RunSummary(
             run_id=run_id,
             status=run.status,
             total_items=len(run.item_ids),
-            completed_items=status_counts.get("completed", 0),
-            failed_items=status_counts.get("failed_permanent", 0),
+            completed_items=status_counts.get(ItemStatus.COMPLETED, 0),
+            failed_items=status_counts.get(ItemStatus.FAILED_PERMANENT, 0),
             status_counts=status_counts,
             active_batches=len(self.get_active_batches(run_id=run_id)),
             backoff_remaining_sec=self.get_batch_retry_backoff_remaining_sec(run_id=run_id),
@@ -581,7 +598,11 @@ class MemoryStateStore:
             for batch in run.batches.values()
         )
         backoff_remaining = self.get_batch_retry_backoff_remaining_sec(run_id=run.run_id)
-        run.status = "completed" if all_terminal and not active_batches and backoff_remaining <= 0 else "running"
+        run.status = (
+            RunLifecycleStatus.COMPLETED
+            if all_terminal and not active_batches and backoff_remaining <= 0
+            else RunLifecycleStatus.RUNNING
+        )
 
     @staticmethod
     def _failed_status(
@@ -592,10 +613,10 @@ class MemoryStateStore:
         count_attempt: bool,
     ) -> ItemStatus:
         if not error.retryable:
-            return "failed_permanent"
+            return ItemStatus.FAILED_PERMANENT
         if count_attempt and attempt_count >= max_attempts:
-            return "failed_permanent"
-        return "failed_retryable"
+            return ItemStatus.FAILED_PERMANENT
+        return ItemStatus.FAILED_RETRYABLE
 
 
 def serialize_item_failure(error: ItemFailure) -> JSONObject:

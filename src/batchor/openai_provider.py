@@ -1,58 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
+from batchor.provider import BatchProvider, StructuredOutputSchema
+from batchor.tokens import estimate_request_tokens
 from batchor.types import BatchRemoteRecord, BatchRequestLine, JSONObject
 
 from batchor.models import OpenAIProviderConfig, PromptParts
 
 
-@dataclass(frozen=True)
-class StructuredOutputSchema:
-    name: str
-    schema: JSONObject
-
-
-class BatchProvider(Protocol):
-    def build_request_line(
-        self,
-        *,
-        custom_id: str,
-        prompt_parts: PromptParts,
-        structured_output: StructuredOutputSchema | None = None,
-    ) -> BatchRequestLine: ...
-
-    def write_requests_jsonl(
-        self,
-        request_lines: list[BatchRequestLine],
-        output_path: str | Path,
-    ) -> Path: ...
-
-    def upload_input_file(self, input_path: str | Path) -> str: ...
-
-    def create_batch(
-        self,
-        *,
-        input_file_id: str,
-        metadata: dict[str, str] | None = None,
-    ) -> BatchRemoteRecord: ...
-
-    def get_batch(self, batch_id: str) -> BatchRemoteRecord: ...
-
-    def download_file_content(self, file_id: str) -> str: ...
-
-    def parse_batch_output(
-        self,
-        *,
-        output_content: str | None,
-        error_content: str | None,
-    ) -> tuple[dict[str, JSONObject], dict[str, JSONObject], list[JSONObject]]: ...
-
-
-class OpenAIBatchProvider:
+class OpenAIBatchProvider(BatchProvider):
     def __init__(self, config: OpenAIProviderConfig, client: Any | None = None) -> None:
         self.config = config
         self.client = client if client is not None else self._build_default_client()
@@ -212,6 +171,18 @@ class OpenAIBatchProvider:
                 errors[custom_id] = record
 
         return success, errors, raw_records
+
+    def estimate_request_tokens(
+        self,
+        request_line: BatchRequestLine,
+        *,
+        chars_per_token: int,
+    ) -> int:
+        return estimate_request_tokens(
+            request_line,
+            chars_per_token=chars_per_token,
+            model=self.config.model,
+        )
 
     @staticmethod
     def _normalize(obj: Any) -> BatchRemoteRecord:

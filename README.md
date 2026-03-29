@@ -14,6 +14,24 @@ Structured-first OpenAI Batch runner with durable `Run` handles, Pydantic v2 val
 
 Structured-output rehydration requires a module-level Pydantic model class. If a stored structured model cannot be imported later, `batchor` raises a clear model-resolution error instead of silently returning raw dicts.
 
+## Architecture
+
+The runtime is now built on explicit extension seams instead of hardcoded OpenAI/SQLite branches:
+
+- `ProviderConfig` and `BatchProvider` are the provider-side base contracts
+- `ProviderRegistry` owns provider config persistence and provider construction
+- `StateStore` is an abstract durable state contract
+- `StorageRegistry` owns storage backend construction
+- `ItemStatus`, `RunLifecycleStatus`, `ProviderKind`, and `StorageKind` are exported enums
+
+Today the built-in implementations are:
+
+- `OpenAIProviderConfig` + `OpenAIBatchProvider`
+- `SQLiteStorage`
+- `MemoryStateStore`
+
+That keeps the current behavior stable while making future provider and database additions a focused implementation task rather than a runner rewrite.
+
 ## Project Layout
 
 ```text
@@ -105,3 +123,25 @@ if not run.is_finished:
 
 print(run.results())
 ```
+
+## Extension Hooks
+
+```python
+from batchor import (
+    BatchRunner,
+    ProviderRegistry,
+    StorageRegistry,
+    StorageKind,
+)
+
+
+provider_registry = ProviderRegistry()
+storage_registry = StorageRegistry()
+
+runner = BatchRunner(
+    provider_registry=provider_registry,
+    storage_registry=storage_registry,
+)
+```
+
+Most users should keep the defaults. The registries exist so new vendors and durable backends can plug in cleanly later.

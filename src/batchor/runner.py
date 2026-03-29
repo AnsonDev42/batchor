@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from batchor.enums import RunLifecycleStatus
 from batchor.exceptions import ModelResolutionError, RunNotFinishedError
 from batchor.models import (
     BatchItem,
@@ -23,15 +24,19 @@ from batchor.models import (
     StructuredItemResult,
     TextItemResult,
 )
-from batchor.openai_provider import BatchProvider, OpenAIBatchProvider, StructuredOutputSchema
+from batchor.provider import (
+    BatchProvider,
+    ProviderRegistry,
+    StructuredOutputSchema,
+    build_default_provider_registry,
+)
 from batchor.retry import classify_batch_error, is_enqueue_token_limit_error, is_retryable_batch_control_plane_error
-from batchor.sqlite_storage import SQLiteStorage
+from batchor.storage_registry import StorageRegistry, build_default_storage_registry
 from batchor.state import (
     ClaimedItem,
     CompletedItemRecord,
     ItemFailureRecord,
     MaterializedItem,
-    MemoryStateStore,
     PersistedRunConfig,
     PersistedItemRecord,
     PreparedSubmission,
@@ -40,7 +45,6 @@ from batchor.state import (
 from batchor.tokens import (
     chunk_request_rows,
     effective_inflight_token_budget,
-    estimate_request_tokens,
 )
 from batchor.types import BatchRemoteRecord, JSONObject, JSONValue
 from batchor.validation import model_output_schema, parse_structured_response, parse_text_response
@@ -83,12 +87,12 @@ class Run:
         self._summary = summary
 
     @property
-    def status(self) -> str:
+    def status(self) -> RunLifecycleStatus:
         return self._summary.status
 
     @property
     def is_finished(self) -> bool:
-        return self.status == "completed"
+        return self.status is RunLifecycleStatus.COMPLETED
 
     def refresh(self) -> RunSummary:
         self._summary = self._runner._refresh_run(self.run_id, self._context)
@@ -149,14 +153,18 @@ class BatchRunner:
         self,
         *,
         storage: str | StateStore | None = None,
+        provider_registry: ProviderRegistry | None = None,
+        storage_registry: StorageRegistry | None = None,
         provider_factory: Callable[[Any], BatchProvider] | None = None,
         sleep: Callable[[float], None] | None = None,
         temp_root: str | Path | None = None,
     ) -> None:
-        self.state = self._resolve_storage(storage)
-        self.provider_factory = provider_factory or (
-            lambda provider_config: OpenAIBatchProvider(provider_config)
+        self.provider_registry = provider_registry or build_default_provider_registry()
+        self.storage_registry = storage_registry or build_default_storage_registry(
+            provider_registry=self.provider_registry
         )
+        self.state = self._resolve_storage(storage)
+        self.provider_factory = provider_factory
         self.sleep = sleep or time.sleep
         self.temp_root = Path(temp_root) if temp_root is not None else Path(tempfile.gettempdir()) / "batchor"
         self._contexts: dict[str, _RunContext] = {}
@@ -199,13 +207,16 @@ class BatchRunner:
         return f"{item_id}:a{attempt}"
 
     def _resolve_storage(self, storage: str | StateStore | None) -> StateStore:
-        if storage is None or storage == "sqlite":
-            return SQLiteStorage(name="default")
-        if storage == "memory":
-            return MemoryStateStore()
+        if storage is None:
+            return self.storage_registry.create("sqlite")
         if isinstance(storage, str):
-            raise ValueError(f"unsupported storage backend: {storage}")
+            return self.storage_registry.create(storage)
         return storage
+
+    def _create_provider(self, provider_config: Any) -> BatchProvider:
+        if self.provider_factory is not None:
+            return self.provider_factory(provider_config)
+        return self.provider_registry.create(provider_config)
 
     def _persisted_config_for_job(self, job: BatchJob[Any, BaseModel]) -> PersistedRunConfig:
         structured_output_module = None
@@ -259,7 +270,7 @@ class BatchRunner:
             structured_output = StructuredOutputSchema(name=schema_name, schema=schema)
         return _RunContext(
             config=config,
-            provider=self.provider_factory(config.provider_config),
+            provider=self._create_provider(config.provider_config),
             output_model=output_model,
             structured_output=structured_output,
         )
@@ -606,10 +617,9 @@ class BatchRunner:
             structured_output=context.structured_output,
         )
         request_bytes = len((json.dumps(request_line, ensure_ascii=False) + "\n").encode("utf-8"))
-        submission_tokens = estimate_request_tokens(
+        submission_tokens = context.provider.estimate_request_tokens(
             request_line,
             chars_per_token=context.config.chunk_policy.chars_per_token,
-            model=context.config.provider_config.model,
         )
         return _PreparedItem(
             item_id=item.item_id,

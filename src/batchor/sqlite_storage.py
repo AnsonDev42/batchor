@@ -23,16 +23,15 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Connection, Engine, RowMapping
 
+from batchor.enums import ItemStatus, RunLifecycleStatus
 from batchor.models import (
     ChunkPolicy,
     InflightPolicy,
     ItemFailure,
-    ItemStatus,
-    OpenAIProviderConfig,
     RetryPolicy,
-    RunLifecycleStatus,
     RunSummary,
 )
+from batchor.provider import ProviderRegistry, build_default_provider_registry
 from batchor.retry import compute_backoff_delay
 from batchor.state import (
     ActiveBatchRecord,
@@ -115,7 +114,7 @@ RUN_RETRY_STATE_TABLE = Table(
 
 class SQLiteStorage(StateStore):
     TERMINAL_BATCH_STATUSES = {"completed", "failed", "cancelled", "expired"}
-    TERMINAL_ITEM_STATUSES = {"completed", "failed_permanent"}
+    TERMINAL_ITEM_STATUSES = {ItemStatus.COMPLETED, ItemStatus.FAILED_PERMANENT}
 
     def __init__(
         self,
@@ -124,10 +123,12 @@ class SQLiteStorage(StateStore):
         path: str | Path | None = None,
         now: Callable[[], datetime] | None = None,
         engine: Engine | None = None,
+        provider_registry: ProviderRegistry | None = None,
     ) -> None:
         self.path = Path(path) if path is not None else self.default_path(name)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._now = now or (lambda: datetime.now(timezone.utc))
+        self.provider_registry = provider_registry or build_default_provider_registry()
         self.engine = engine or create_engine(
             f"sqlite+pysqlite:///{self.path}",
             future=True,
@@ -170,7 +171,7 @@ class SQLiteStorage(StateStore):
                     "metadata_json": _encode_json(item.metadata),
                     "prompt": item.prompt,
                     "system_prompt": item.system_prompt,
-                    "status": "pending",
+                    "status": ItemStatus.PENDING,
                     "attempt_count": 0,
                     "active_batch_id": None,
                     "active_custom_id": None,
@@ -187,9 +188,11 @@ class SQLiteStorage(StateStore):
                 [
                     {
                         "run_id": run_id,
-                        "status": "running",
+                        "status": RunLifecycleStatus.RUNNING,
                         "created_at": _encode_datetime(self._now()),
-                        "provider_config_json": _encode_json(asdict(config.provider_config)),
+                        "provider_config_json": _encode_json(
+                            self.provider_registry.dump_config(config.provider_config)
+                        ),
                         "chunk_policy_json": _encode_json(asdict(config.chunk_policy)),
                         "retry_policy_json": _encode_json(asdict(config.retry_policy)),
                         "inflight_policy_json": _encode_json(asdict(config.inflight_policy)),
@@ -235,7 +238,9 @@ class SQLiteStorage(StateStore):
                 .where(
                     and_(
                         ITEMS_TABLE.c.run_id == run_id,
-                        ITEMS_TABLE.c.status.in_(("pending", "failed_retryable")),
+                        ITEMS_TABLE.c.status.in_(
+                            (ItemStatus.PENDING, ItemStatus.FAILED_RETRYABLE)
+                        ),
                         ITEMS_TABLE.c.attempt_count < max_attempts,
                     )
                 )
@@ -255,7 +260,7 @@ class SQLiteStorage(StateStore):
                         ITEMS_TABLE.c.item_id.in_(item_ids),
                     )
                 )
-                .values(status="queued_local")
+                .values(status=ItemStatus.QUEUED_LOCAL)
             )
             self._refresh_run_status(conn, run_id)
             return [
@@ -279,10 +284,10 @@ class SQLiteStorage(StateStore):
                     and_(
                         ITEMS_TABLE.c.run_id == run_id,
                         ITEMS_TABLE.c.item_id.in_(item_ids),
-                        ITEMS_TABLE.c.status == "queued_local",
+                        ITEMS_TABLE.c.status == ItemStatus.QUEUED_LOCAL,
                     )
                 )
-                .values(status="pending")
+                .values(status=ItemStatus.PENDING)
             )
             self._refresh_run_status(conn, run_id)
 
@@ -330,7 +335,7 @@ class SQLiteStorage(StateStore):
                 )
             )
             .values(
-                status="submitted",
+                status=ItemStatus.SUBMITTED,
                 active_batch_id=bindparam("b_provider_batch_id"),
                 active_custom_id=bindparam("b_custom_id"),
                 active_submission_tokens=bindparam("b_submission_tokens"),
@@ -431,7 +436,7 @@ class SQLiteStorage(StateStore):
                 )
             )
             .values(
-                status="completed",
+                status=ItemStatus.COMPLETED,
                 output_text=bindparam("b_output_text"),
                 output_json=bindparam("b_output_json"),
                 raw_response_json=bindparam("b_raw_response_json"),
@@ -552,11 +557,11 @@ class SQLiteStorage(StateStore):
                         ITEMS_TABLE.c.run_id == run_id,
                         ITEMS_TABLE.c.active_batch_id == provider_batch_id,
                         ITEMS_TABLE.c.active_custom_id.in_(custom_ids),
-                        ITEMS_TABLE.c.status == "submitted",
+                        ITEMS_TABLE.c.status == ItemStatus.SUBMITTED,
                     )
                 )
                 .values(
-                    status="pending",
+                    status=ItemStatus.PENDING,
                     error_json=_encode_json(serialize_item_failure(error)),
                     active_batch_id=None,
                     active_custom_id=None,
@@ -571,7 +576,7 @@ class SQLiteStorage(StateStore):
                 select(func.coalesce(func.sum(ITEMS_TABLE.c.active_submission_tokens), 0)).where(
                     and_(
                         ITEMS_TABLE.c.run_id == run_id,
-                        ITEMS_TABLE.c.status == "submitted",
+                        ITEMS_TABLE.c.status == ItemStatus.SUBMITTED,
                     )
                 )
             ).scalar_one()
@@ -655,7 +660,7 @@ class SQLiteStorage(StateStore):
                 PersistedItemRecord(
                     item_id=str(row["item_id"]),
                     item_index=int(row["item_index"]),
-                    status=cast(ItemStatus, str(row["status"])),
+                    status=ItemStatus(str(row["status"])),
                     attempt_count=int(row["attempt_count"]),
                     metadata=_decode_object(row["metadata_json"]),
                     output_text=_nullable_str(row["output_text"]),
@@ -672,7 +677,6 @@ class SQLiteStorage(StateStore):
         ).mappings().one()
 
     def _run_config_from_row(self, row: RowMapping) -> PersistedRunConfig:
-        provider_data = _decode_dict(row["provider_config_json"])
         chunk_data = _decode_dict(row["chunk_policy_json"])
         retry_data = _decode_dict(row["retry_policy_json"])
         inflight_data = _decode_dict(row["inflight_policy_json"])
@@ -681,13 +685,8 @@ class SQLiteStorage(StateStore):
             for key, value in _decode_dict(row["batch_metadata_json"]).items()
         }
         return PersistedRunConfig(
-            provider_config=OpenAIProviderConfig(
-                api_key=_require_str(provider_data, "api_key"),
-                model=_require_str(provider_data, "model"),
-                endpoint=_optional_str(provider_data, "endpoint") or "/v1/responses",
-                completion_window=_optional_str(provider_data, "completion_window") or "24h",
-                request_timeout_sec=_require_int(provider_data, "request_timeout_sec"),
-                poll_interval_sec=_require_float(provider_data, "poll_interval_sec"),
+            provider_config=self.provider_registry.load_config(
+                _decode_object(row["provider_config_json"])
             ),
             chunk_policy=ChunkPolicy(
                 max_requests=_require_int(chunk_data, "max_requests"),
@@ -742,7 +741,7 @@ class SQLiteStorage(StateStore):
             .where(ITEMS_TABLE.c.run_id == run_id)
             .group_by(ITEMS_TABLE.c.status)
         )
-        status_counts = {str(status): int(count) for status, count in counts_rows}
+        status_counts = {ItemStatus(str(status)): int(count) for status, count in counts_rows}
         total_items = sum(status_counts.values())
         terminal_items = sum(
             count
@@ -763,9 +762,9 @@ class SQLiteStorage(StateStore):
         )
         backoff_remaining_sec = self._backoff_remaining(conn, run_id)
         status: RunLifecycleStatus = (
-            "completed"
+            RunLifecycleStatus.COMPLETED
             if terminal_items == total_items and active_batches == 0 and backoff_remaining_sec <= 0
-            else "running"
+            else RunLifecycleStatus.RUNNING
         )
         if persist:
             conn.execute(
@@ -777,8 +776,8 @@ class SQLiteStorage(StateStore):
             run_id=run_id,
             status=status,
             total_items=total_items,
-            completed_items=status_counts.get("completed", 0),
-            failed_items=status_counts.get("failed_permanent", 0),
+            completed_items=status_counts.get(ItemStatus.COMPLETED, 0),
+            failed_items=status_counts.get(ItemStatus.FAILED_PERMANENT, 0),
             status_counts=status_counts,
             active_batches=active_batches,
             backoff_remaining_sec=backoff_remaining_sec,
@@ -807,7 +806,7 @@ class SQLiteStorage(StateStore):
             select(ITEMS_TABLE.c.active_custom_id).where(
                 and_(
                     ITEMS_TABLE.c.run_id == run_id,
-                    ITEMS_TABLE.c.status == "submitted",
+                    ITEMS_TABLE.c.status == ItemStatus.SUBMITTED,
                     ITEMS_TABLE.c.active_batch_id == provider_batch_id,
                 )
             )
@@ -923,7 +922,7 @@ def _failed_status(
     count_attempt: bool,
 ) -> ItemStatus:
     if not error.retryable:
-        return "failed_permanent"
+        return ItemStatus.FAILED_PERMANENT
     if count_attempt and attempt_count >= max_attempts:
-        return "failed_permanent"
-    return "failed_retryable"
+        return ItemStatus.FAILED_PERMANENT
+    return ItemStatus.FAILED_RETRYABLE

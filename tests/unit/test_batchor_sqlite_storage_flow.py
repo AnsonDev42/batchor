@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from batchor import BatchRunner, ModelResolutionError, OpenAIProviderConfig
+from batchor import (
+    BatchRunner,
+    ItemStatus,
+    ModelResolutionError,
+    OpenAIProviderConfig,
+    ProviderKind,
+    RunLifecycleStatus,
+)
 from batchor.models import ChunkPolicy, InflightPolicy, ItemFailure, RetryPolicy
 from batchor.sqlite_storage import SQLiteStorage
 from batchor.state import (
@@ -63,8 +70,8 @@ def test_sqlite_storage_submission_and_terminal_summary(tmp_path: Path) -> None:
     storage.create_run(run_id="run_1", config=_config(), items=_items())
 
     initial = storage.get_run_summary(run_id="run_1")
-    assert initial.status == "running"
-    assert initial.status_counts == {"pending": 2}
+    assert initial.status is RunLifecycleStatus.RUNNING
+    assert initial.status_counts == {ItemStatus.PENDING: 2}
 
     claimed_first = storage.claim_items_for_submission(run_id="run_1", max_attempts=2, limit=1)
     assert [item.item_id for item in claimed_first] == ["row1"]
@@ -131,15 +138,17 @@ def test_sqlite_storage_submission_and_terminal_summary(tmp_path: Path) -> None:
     )
 
     records = storage.get_item_records(run_id="run_1")
-    assert records[0].status == "completed"
-    assert records[1].status == "failed_permanent"
+    assert records[0].status is ItemStatus.COMPLETED
+    assert records[1].status is ItemStatus.FAILED_PERMANENT
     assert records[1].error is not None
     assert records[1].error.error_class == "invalid_json"
 
     summary = storage.get_run_summary(run_id="run_1")
-    assert summary.status == "completed"
+    assert summary.status is RunLifecycleStatus.COMPLETED
     assert summary.completed_items == 1
     assert summary.failed_items == 1
+    config = storage.get_run_config(run_id="run_1")
+    assert config.provider_config.provider_kind is ProviderKind.OPENAI
 
 
 def test_sqlite_storage_reset_and_backoff(tmp_path: Path) -> None:
@@ -177,7 +186,7 @@ def test_sqlite_storage_reset_and_backoff(tmp_path: Path) -> None:
         ),
     )
     pending_summary = storage.get_run_summary(run_id="run_2")
-    assert pending_summary.status_counts["pending"] == 1
+    assert pending_summary.status_counts[ItemStatus.PENDING] == 1
 
     backoff = storage.record_batch_retry_failure(
         run_id="run_2",

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from batchor.enums import OpenAIEndpoint
 from batchor.models import OpenAIProviderConfig, PromptParts
 from batchor.openai_provider import OpenAIBatchProvider, StructuredOutputSchema
 from batchor.validation import model_output_schema
@@ -73,7 +74,7 @@ def test_build_request_line_for_chat_completions_with_system_prompt() -> None:
         OpenAIProviderConfig(
             api_key="k",
             model="gpt-4.1",
-            endpoint="/v1/chat/completions",
+            endpoint=OpenAIEndpoint.CHAT_COMPLETIONS,
         ),
         client=_FakeClient(),
     )
