@@ -3,24 +3,26 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
+import pytest
 from pydantic import BaseModel
 
 from batchor import (
     BatchItem,
+    BatchJob,
     BatchRunner,
     MemoryStateStore,
     OpenAIProviderConfig,
     PromptParts,
     RetryPolicy,
-    StructuredBatchJob,
-    TextBatchJob,
+    RunNotFinishedError,
+    SQLiteStorage,
 )
 from batchor.openai_provider import OpenAIBatchProvider
 
 
-class _ClassificationResult(BaseModel):
+class ClassificationResult(BaseModel):
     label: str
     score: float
 
@@ -147,68 +149,78 @@ class _FakeBatchProvider:
         )
 
 
-def test_structured_batch_runner_returns_model_instances(tmp_path: Path) -> None:
+def test_structured_run_handle_returns_model_instances(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
         record_factory=lambda custom_id: _success_record(
             json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
         )
     )
     runner = BatchRunner(
+        storage="memory",
         provider_factory=lambda _cfg: provider,
         temp_root=tmp_path,
     )
-    summary = runner.run_and_wait(
-        StructuredBatchJob(
+    run = runner.start(
+        BatchJob(
             items=[
                 BatchItem(item_id="row1", payload={"text": "a"}),
                 BatchItem(item_id="row2", payload={"text": "b"}),
             ],
             build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
-            output_model=_ClassificationResult,
+            structured_output=ClassificationResult,
             provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
         )
     )
+    assert run.status == "running"
+    with pytest.raises(RunNotFinishedError):
+        run.results()
+    run.wait()
+    assert run.is_finished is True
+    summary = run.summary()
     assert summary.completed_items == 2
-    results = runner.results(summary.run_id)
-    assert isinstance(results[0].output, _ClassificationResult)
+    results = run.results()
+    assert isinstance(results[0].output, ClassificationResult)
     assert results[0].output.label == "row1"
 
 
-def test_text_batch_runner_returns_text_results(tmp_path: Path) -> None:
+def test_text_run_snapshot_exposes_partial_state(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(record_factory=lambda custom_id: _success_record(f"text:{custom_id}"))
     runner = BatchRunner(
+        storage="memory",
         provider_factory=lambda _cfg: provider,
         temp_root=tmp_path,
     )
-    summary = runner.run_and_wait(
-        TextBatchJob(
+    run = runner.start(
+        BatchJob(
             items=[BatchItem(item_id="row1", payload="hello")],
             build_prompt=lambda item: PromptParts(prompt=item.payload),
             provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
         )
     )
-    assert summary.completed_items == 1
-    results = runner.results(summary.run_id)
-    assert results[0].output_text == "text:row1:a1"
+    snapshot = run.snapshot()
+    assert snapshot.status == "running"
+    assert snapshot.items[0].status == "submitted"
+    run.refresh()
+    assert run.results()[0].output_text == "text:row1:a1"
 
 
 def test_invalid_json_retries_until_failed_permanent(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(record_factory=lambda _custom_id: _success_record("{not json}"))
     runner = BatchRunner(
+        storage="memory",
         provider_factory=lambda _cfg: provider,
         temp_root=tmp_path,
     )
-    summary = runner.run_and_wait(
-        StructuredBatchJob(
+    run = runner.run_and_wait(
+        BatchJob(
             items=[BatchItem(item_id="row1", payload={"text": "a"})],
             build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
-            output_model=_ClassificationResult,
+            structured_output=ClassificationResult,
             provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
             retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=0, max_backoff_sec=0),
         )
     )
-    assert summary.failed_items == 1
-    result = runner.results(summary.run_id)[0]
+    result = run.results()[0]
     assert result.status == "failed_permanent"
     assert result.attempt_count == 2
     assert result.error is not None
@@ -226,20 +238,20 @@ def test_missing_output_record_retries_without_consuming_attempt(tmp_path: Path)
 
     provider = _FakeBatchProvider(record_factory=record_factory)
     runner = BatchRunner(
+        storage="memory",
         provider_factory=lambda _cfg: provider,
         temp_root=tmp_path,
     )
-    summary = runner.run_and_wait(
-        StructuredBatchJob(
+    run = runner.run_and_wait(
+        BatchJob(
             items=[BatchItem(item_id="row1", payload={"text": "a"})],
             build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
-            output_model=_ClassificationResult,
+            structured_output=ClassificationResult,
             provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
             retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=0, max_backoff_sec=0),
         )
     )
-    assert summary.completed_items == 1
-    result = runner.results(summary.run_id)[0]
+    result = run.results()[0]
     assert result.status == "completed"
     assert result.attempt_count == 0
     assert seen_counts["row1:a1"] == 2
@@ -252,16 +264,16 @@ def test_enqueue_limit_create_failure_recovers_without_consuming_attempts(tmp_pa
         create_failures=[RuntimeError("Enqueued token limit reached for gpt-4.1")],
     )
     runner = BatchRunner(
+        storage=MemoryStateStore(now=clock.now),
         provider_factory=lambda _cfg: provider,
-        state_store=MemoryStateStore(now=clock.now),
         sleep=clock.sleep,
         temp_root=tmp_path,
     )
-    summary = runner.run_and_wait(
-        StructuredBatchJob(
+    run = runner.run_and_wait(
+        BatchJob(
             items=[BatchItem(item_id="row1", payload={"text": "a"})],
             build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
-            output_model=_ClassificationResult,
+            structured_output=ClassificationResult,
             provider_config=OpenAIProviderConfig(
                 api_key="k",
                 model="gpt-4.1",
@@ -270,8 +282,41 @@ def test_enqueue_limit_create_failure_recovers_without_consuming_attempts(tmp_pa
             retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=1.0, max_backoff_sec=1.0),
         )
     )
-    assert summary.completed_items == 1
-    result = runner.results(summary.run_id)[0]
+    result = run.results()[0]
     assert result.status == "completed"
     assert result.attempt_count == 0
     assert any(sleep >= 1.0 for sleep in clock.sleeps)
+
+
+def test_sqlite_storage_supports_rehydrating_run_handle(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    storage = SQLiteStorage(path=tmp_path / "batchor.sqlite3")
+    runner_one = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path / "one",
+    )
+    started = runner_one.start(
+        BatchJob(
+            items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        )
+    )
+    assert started.status == "running"
+
+    runner_two = BatchRunner(
+        storage=SQLiteStorage(path=storage.path),
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path / "two",
+    )
+    resumed = runner_two.get_run(started.run_id)
+    resumed.wait()
+    results = resumed.results()
+    assert results[0].output is not None
+    assert results[0].output.label == "row1"

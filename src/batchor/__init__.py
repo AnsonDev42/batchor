@@ -1,44 +1,46 @@
+from batchor.exceptions import ModelResolutionError, RunNotFinishedError
 from batchor.models import (
     BatchItem,
+    BatchJob,
     ChunkPolicy,
     InflightPolicy,
     ItemFailure,
     OpenAIProviderConfig,
     PromptParts,
     RetryPolicy,
-    RunHandle,
-    RunStatus,
+    RunSnapshot,
     RunSummary,
-    StructuredBatchJob,
     StructuredItemResult,
-    TextBatchJob,
     TextItemResult,
 )
 from batchor.openai_provider import OpenAIBatchProvider, StructuredOutputSchema
-from batchor.runner import BatchRunner
+from batchor.runner import BatchRunner, Run
+from batchor.sqlite_storage import SQLiteStorage
 from batchor.state import MemoryStateStore, StateStore
 from batchor.validation import StructuredOutputError, default_schema_name, model_output_schema
 
 __all__ = [
     "BatchItem",
+    "BatchJob",
     "BatchRunner",
     "ChunkPolicy",
     "InflightPolicy",
     "ItemFailure",
     "MemoryStateStore",
+    "ModelResolutionError",
     "OpenAIBatchProvider",
     "OpenAIProviderConfig",
     "PromptParts",
     "RetryPolicy",
-    "RunHandle",
-    "RunStatus",
+    "Run",
+    "RunNotFinishedError",
+    "RunSnapshot",
     "RunSummary",
+    "SQLiteStorage",
     "StateStore",
-    "StructuredBatchJob",
     "StructuredItemResult",
     "StructuredOutputError",
     "StructuredOutputSchema",
-    "TextBatchJob",
     "TextItemResult",
     "default_schema_name",
     "model_output_schema",

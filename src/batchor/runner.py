@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import importlib
 import json
 from pathlib import Path
 import tempfile
@@ -11,27 +12,28 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from batchor.types import BatchRemoteRecord, BatchRequestLine, JSONObject
-
+from batchor.exceptions import ModelResolutionError, RunNotFinishedError
 from batchor.models import (
     BatchItem,
     BatchJob,
+    BatchResultItem,
     PromptParts,
-    RunHandle,
-    RunStatus,
+    RunSnapshot,
     RunSummary,
-    StructuredBatchJob,
     StructuredItemResult,
-    TextBatchJob,
     TextItemResult,
 )
 from batchor.openai_provider import BatchProvider, OpenAIBatchProvider, StructuredOutputSchema
 from batchor.retry import classify_batch_error, is_enqueue_token_limit_error, is_retryable_batch_control_plane_error
+from batchor.sqlite_storage import SQLiteStorage
 from batchor.state import (
     ClaimedItem,
     CompletedItemRecord,
     ItemFailureRecord,
+    MaterializedItem,
     MemoryStateStore,
+    PersistedRunConfig,
+    PersistedItemRecord,
     PreparedSubmission,
     StateStore,
 )
@@ -40,6 +42,7 @@ from batchor.tokens import (
     effective_inflight_token_budget,
     estimate_request_tokens,
 )
+from batchor.types import BatchRemoteRecord, JSONObject, JSONValue
 from batchor.validation import model_output_schema, parse_structured_response, parse_text_response
 
 
@@ -47,15 +50,16 @@ from batchor.validation import model_output_schema, parse_structured_response, p
 class _PreparedItem:
     item_id: str
     custom_id: str
-    request_line: BatchRequestLine
+    request_line: JSONObject
     request_bytes: int
     submission_tokens: int
 
 
 @dataclass(frozen=True)
 class _RunContext:
-    job: BatchJob
+    config: PersistedRunConfig
     provider: BatchProvider
+    output_model: type[BaseModel] | None
     structured_output: StructuredOutputSchema | None
 
 
@@ -64,16 +68,92 @@ def generate_run_id() -> str:
     return f"batchor_{timestamp}_{uuid4().hex[:8]}"
 
 
+class Run:
+    def __init__(
+        self,
+        *,
+        runner: BatchRunner,
+        run_id: str,
+        context: _RunContext,
+        summary: RunSummary,
+    ) -> None:
+        self._runner = runner
+        self._context = context
+        self.run_id = run_id
+        self._summary = summary
+
+    @property
+    def status(self) -> str:
+        return self._summary.status
+
+    @property
+    def is_finished(self) -> bool:
+        return self.status == "completed"
+
+    def refresh(self) -> RunSummary:
+        self._summary = self._runner._refresh_run(self.run_id, self._context)
+        return self._summary
+
+    def wait(
+        self,
+        *,
+        timeout: float | None = None,
+        poll_interval: float | None = None,
+    ) -> Run:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            self.refresh()
+            if self.is_finished:
+                return self
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(f"timed out waiting for run {self.run_id}")
+            sleep_for = (
+                poll_interval
+                if poll_interval is not None
+                else self._context.config.provider_config.poll_interval_sec
+            )
+            if self._summary.backoff_remaining_sec > 0:
+                if sleep_for > 0:
+                    sleep_for = min(sleep_for, self._summary.backoff_remaining_sec)
+                else:
+                    sleep_for = self._summary.backoff_remaining_sec
+            if sleep_for > 0:
+                self._runner.sleep(sleep_for)
+
+    def summary(self) -> RunSummary:
+        self._summary = self._runner.state.get_run_summary(run_id=self.run_id)
+        return self._summary
+
+    def snapshot(self) -> RunSnapshot:
+        self._summary = self._runner.state.get_run_summary(run_id=self.run_id)
+        return RunSnapshot(
+            run_id=self._summary.run_id,
+            status=self._summary.status,
+            total_items=self._summary.total_items,
+            completed_items=self._summary.completed_items,
+            failed_items=self._summary.failed_items,
+            status_counts=dict(self._summary.status_counts),
+            active_batches=self._summary.active_batches,
+            backoff_remaining_sec=self._summary.backoff_remaining_sec,
+            items=self._runner._results_for_run(self.run_id, self._context),
+        )
+
+    def results(self) -> list[BatchResultItem]:
+        if not self.is_finished:
+            raise RunNotFinishedError(self.run_id)
+        return self._runner._results_for_run(self.run_id, self._context)
+
+
 class BatchRunner:
     def __init__(
         self,
         *,
-        state_store: StateStore | None = None,
+        storage: str | StateStore | None = None,
         provider_factory: Callable[[Any], BatchProvider] | None = None,
         sleep: Callable[[float], None] | None = None,
         temp_root: str | Path | None = None,
     ) -> None:
-        self.state = state_store or MemoryStateStore()
+        self.state = self._resolve_storage(storage)
         self.provider_factory = provider_factory or (
             lambda provider_config: OpenAIBatchProvider(provider_config)
         )
@@ -81,110 +161,146 @@ class BatchRunner:
         self.temp_root = Path(temp_root) if temp_root is not None else Path(tempfile.gettempdir()) / "batchor"
         self._contexts: dict[str, _RunContext] = {}
 
-    def run(self, job: BatchJob) -> RunHandle:
+    def start(self, job: BatchJob[Any, BaseModel]) -> Run:
         run_id = generate_run_id()
-        structured_output = self._structured_output_for_job(job)
-        provider = self.provider_factory(job.provider_config)
-        self.state.create_run(
+        config = self._persisted_config_for_job(job)
+        items = self._materialize_items(job)
+        self.state.create_run(run_id=run_id, config=config, items=items)
+        context = self._context_for_config(config=config, output_model=job.structured_output)
+        self._contexts[run_id] = context
+        self._submit_pending_items(run_id, context)
+        return Run(
+            runner=self,
             run_id=run_id,
-            items=cast(list[Any], job.items),
-            structured=structured_output is not None,
+            context=context,
+            summary=self.state.get_run_summary(run_id=run_id),
         )
-        self._contexts[run_id] = _RunContext(
-            job=job,
-            provider=provider,
-            structured_output=structured_output,
-        )
-        self._submit_pending_items(run_id, allow_wait_for_capacity=False)
-        status = self.state.get_run_status(run_id=run_id)
-        return RunHandle(run_id=run_id, status=status.status)
 
-    def wait(self, run_id: str) -> RunSummary:
-        context = self._context(run_id)
-        while True:
-            self._poll_once(run_id, context)
-            self._submit_pending_items(run_id, allow_wait_for_capacity=False)
-            status = self.state.get_run_status(run_id=run_id)
-            submit_eligible = status.status_counts.get("pending", 0) + status.status_counts.get("failed_retryable", 0)
-            if status.active_batches == 0 and submit_eligible == 0 and status.backoff_remaining_sec <= 0:
-                break
-            sleep_for = context.job.provider_config.poll_interval_sec
-            if status.backoff_remaining_sec > 0:
-                sleep_for = min(status.backoff_remaining_sec, max(sleep_for, 0.0))
-            if sleep_for > 0:
-                self.sleep(sleep_for)
-        final_status = self.state.get_run_status(run_id=run_id)
-        return RunSummary(
+    def run_and_wait(self, job: BatchJob[Any, BaseModel]) -> Run:
+        run = self.start(job)
+        return run.wait()
+
+    def get_run(self, run_id: str) -> Run:
+        context = self._contexts.get(run_id)
+        if context is None:
+            config = self.state.get_run_config(run_id=run_id)
+            output_model = self._resolve_output_model(config)
+            context = self._context_for_config(config=config, output_model=output_model)
+            self._contexts[run_id] = context
+        return Run(
+            runner=self,
             run_id=run_id,
-            status=final_status.status,
-            total_items=final_status.total_items,
-            completed_items=final_status.status_counts.get("completed", 0),
-            failed_items=final_status.status_counts.get("failed_permanent", 0),
+            context=context,
+            summary=self.state.get_run_summary(run_id=run_id),
         )
-
-    def run_and_wait(self, job: BatchJob) -> RunSummary:
-        handle = self.run(job)
-        return self.wait(handle.run_id)
-
-    def status(self, run_id: str) -> RunStatus:
-        return self.state.get_run_status(run_id=run_id)
-
-    def results(self, run_id: str) -> list[StructuredItemResult[BaseModel] | TextItemResult]:
-        structured = self.state.is_structured_run(run_id=run_id)
-        results: list[StructuredItemResult[BaseModel] | TextItemResult] = []
-        for record in self.state.get_item_snapshot(run_id=run_id):
-            if structured:
-                results.append(
-                    StructuredItemResult(
-                        item_id=str(record["item_id"]),
-                        status=record["status"],
-                        attempt_count=int(record["attempt_count"]),
-                        output=cast(BaseModel | None, record["output_model"]),
-                        output_text=cast(str | None, record["output_text"]),
-                        raw_response=cast(JSONObject | None, record["raw_response"]),
-                        error=record["error"],
-                        metadata=cast(JSONObject, record["metadata"]),
-                    )
-                )
-            else:
-                results.append(
-                    TextItemResult(
-                        item_id=str(record["item_id"]),
-                        status=record["status"],
-                        attempt_count=int(record["attempt_count"]),
-                        output_text=cast(str | None, record["output_text"]),
-                        raw_response=cast(JSONObject | None, record["raw_response"]),
-                        error=record["error"],
-                        metadata=cast(JSONObject, record["metadata"]),
-                    )
-                )
-        return results
 
     @staticmethod
     def make_custom_id(item_id: str, attempt: int) -> str:
         return f"{item_id}:a{attempt}"
 
-    @staticmethod
-    def _structured_output_for_job(job: BatchJob) -> StructuredOutputSchema | None:
-        if isinstance(job, TextBatchJob):
-            return None
-        schema_name, schema = model_output_schema(
-            job.output_model,
-            schema_name=job.schema_name,
-        )
-        return StructuredOutputSchema(name=schema_name, schema=schema)
+    def _resolve_storage(self, storage: str | StateStore | None) -> StateStore:
+        if storage is None or storage == "sqlite":
+            return SQLiteStorage(name="default")
+        if storage == "memory":
+            return MemoryStateStore()
+        if isinstance(storage, str):
+            raise ValueError(f"unsupported storage backend: {storage}")
+        return storage
 
-    def _submit_pending_items(self, run_id: str, *, allow_wait_for_capacity: bool) -> int:
-        context = self._context(run_id)
-        job = context.job
-        backoff_remaining = self.state.get_batch_retry_backoff_remaining_sec(run_id=run_id)
-        if backoff_remaining > 0:
-            if allow_wait_for_capacity:
-                self.sleep(backoff_remaining)
+    def _persisted_config_for_job(self, job: BatchJob[Any, BaseModel]) -> PersistedRunConfig:
+        structured_output_module = None
+        structured_output_qualname = None
+        if job.structured_output is not None:
+            structured_output_module = job.structured_output.__module__
+            structured_output_qualname = job.structured_output.__qualname__
+        return PersistedRunConfig(
+            provider_config=job.provider_config,
+            chunk_policy=job.chunk_policy,
+            retry_policy=job.retry_policy,
+            inflight_policy=job.inflight_policy,
+            batch_metadata=dict(job.batch_metadata),
+            schema_name=job.schema_name,
+            structured_output_module=structured_output_module,
+            structured_output_qualname=structured_output_qualname,
+        )
+
+    def _materialize_items(self, job: BatchJob[Any, BaseModel]) -> list[MaterializedItem]:
+        items: list[MaterializedItem] = []
+        seen_ids: set[str] = set()
+        for item_index, item in enumerate(job.items):
+            if item.item_id in seen_ids:
+                raise ValueError(f"duplicate item_id: {item.item_id}")
+            seen_ids.add(item.item_id)
+            prompt_parts = self._normalize_prompt_parts(job.build_prompt(item))
+            items.append(
+                MaterializedItem(
+                    item_id=item.item_id,
+                    item_index=item_index,
+                    payload=self._json_value(item.payload, label=f"payload for {item.item_id}"),
+                    metadata=self._json_object(item.metadata, label=f"metadata for {item.item_id}"),
+                    prompt=prompt_parts.prompt,
+                    system_prompt=prompt_parts.system_prompt,
+                )
+            )
+        return items
+
+    def _context_for_config(
+        self,
+        *,
+        config: PersistedRunConfig,
+        output_model: type[BaseModel] | None,
+    ) -> _RunContext:
+        structured_output = None
+        if output_model is not None:
+            schema_name, schema = model_output_schema(
+                output_model,
+                schema_name=config.schema_name,
+            )
+            structured_output = StructuredOutputSchema(name=schema_name, schema=schema)
+        return _RunContext(
+            config=config,
+            provider=self.provider_factory(config.provider_config),
+            output_model=output_model,
+            structured_output=structured_output,
+        )
+
+    def _resolve_output_model(
+        self,
+        config: PersistedRunConfig,
+    ) -> type[BaseModel] | None:
+        if not config.is_structured:
+            return None
+        module_name = config.structured_output_module
+        qualname = config.structured_output_qualname
+        if module_name is None or qualname is None:
+            return None
+        if "<locals>" in qualname:
+            raise ModelResolutionError(module_name, qualname)
+        try:
+            module = importlib.import_module(module_name)
+        except Exception as exc:  # noqa: BLE001
+            raise ModelResolutionError(module_name, qualname) from exc
+        target: Any = module
+        for attribute in qualname.split("."):
+            target = getattr(target, attribute, None)
+            if target is None:
+                raise ModelResolutionError(module_name, qualname)
+        if not isinstance(target, type) or not issubclass(target, BaseModel):
+            raise ModelResolutionError(module_name, qualname)
+        return cast(type[BaseModel], target)
+
+    def _refresh_run(self, run_id: str, context: _RunContext) -> RunSummary:
+        self._poll_once(run_id, context)
+        self._submit_pending_items(run_id, context)
+        return self.state.get_run_summary(run_id=run_id)
+
+    def _submit_pending_items(self, run_id: str, context: _RunContext) -> int:
+        config = context.config
+        if self.state.get_batch_retry_backoff_remaining_sec(run_id=run_id) > 0:
             return 0
         claimed = self.state.claim_items_for_submission(
             run_id=run_id,
-            max_attempts=job.retry_policy.max_attempts,
+            max_attempts=config.retry_policy.max_attempts,
             limit=None,
         )
         if not claimed:
@@ -193,25 +309,19 @@ class BatchRunner:
         prepared_items = [self._prepare_item(item, context) for item in claimed]
         chunks = chunk_request_rows(
             [self._prepared_dict(item) for item in prepared_items],
-            chunk_policy=job.chunk_policy,
-            inflight_policy=job.inflight_policy,
+            chunk_policy=config.chunk_policy,
+            inflight_policy=config.inflight_policy,
             estimate_row_bytes=lambda row: int(row["request_bytes"]),
             estimate_row_tokens=lambda row: int(row["submission_tokens"]),
         )
-        submitted_count = 0
         submitted_item_ids: set[str] = set()
+        submitted_count = 0
         run_dir = self.temp_root / run_id
 
         for chunk_index, chunk in enumerate(chunks, start=1):
             chunk_tokens = sum(int(row["submission_tokens"]) for row in chunk)
-            if not self._wait_for_inflight_capacity(
-                run_id=run_id,
-                context=context,
-                chunk_tokens=chunk_tokens,
-                allow_wait=allow_wait_for_capacity,
-            ):
+            if not self._has_inflight_capacity(run_id=run_id, context=context, chunk_tokens=chunk_tokens):
                 break
-
             request_lines = [
                 cast(JSONObject, row["request_line"])
                 for row in chunk
@@ -222,25 +332,31 @@ class BatchRunner:
                 request_path,
             )
             remote_input_file_id = context.provider.upload_input_file(request_file)
-
-            batch = self._create_batch_with_retry(
-                run_id=run_id,
-                context=context,
-                input_file_id=remote_input_file_id,
-                allow_wait=allow_wait_for_capacity,
-            )
-            if batch is None:
+            try:
+                batch = context.provider.create_batch(
+                    input_file_id=remote_input_file_id,
+                    metadata={"run_id": run_id, **context.config.batch_metadata},
+                )
+            except Exception as exc:  # noqa: BLE001
+                if not is_retryable_batch_control_plane_error(exc):
+                    raise
+                self.state.record_batch_retry_failure(
+                    run_id=run_id,
+                    error_class=classify_batch_error(exc),
+                    base_delay_sec=config.retry_policy.base_backoff_sec,
+                    max_delay_sec=config.retry_policy.max_backoff_sec,
+                )
                 break
 
+            self.state.clear_batch_retry_backoff(run_id=run_id)
             provider_batch_id = str(batch["id"])
             local_batch_id = f"batch-{chunk_index:04d}-{uuid4().hex[:8]}"
-            custom_ids = [str(row["custom_id"]) for row in chunk]
             self.state.register_batch(
                 run_id=run_id,
                 local_batch_id=local_batch_id,
                 provider_batch_id=provider_batch_id,
                 status=str(batch.get("status", "submitted")),
-                custom_ids=custom_ids,
+                custom_ids=[str(row["custom_id"]) for row in chunk],
             )
             self.state.mark_items_submitted(
                 run_id=run_id,
@@ -266,61 +382,23 @@ class BatchRunner:
             self.state.release_items_to_pending(run_id=run_id, item_ids=unsent)
         return submitted_count
 
-    def _create_batch_with_retry(
-        self,
-        *,
-        run_id: str,
-        context: _RunContext,
-        input_file_id: str,
-        allow_wait: bool,
-    ):
-        metadata = {"run_id": run_id, **context.job.batch_metadata}
-        while True:
-            try:
-                return context.provider.create_batch(
-                    input_file_id=input_file_id,
-                    metadata=metadata,
-                )
-            except Exception as exc:  # noqa: BLE001
-                if not is_retryable_batch_control_plane_error(exc):
-                    raise
-                backoff = self.state.record_batch_retry_failure(
-                    run_id=run_id,
-                    error_class=classify_batch_error(exc),
-                    base_delay_sec=context.job.retry_policy.base_backoff_sec,
-                    max_delay_sec=context.job.retry_policy.max_backoff_sec,
-                )
-                if not allow_wait:
-                    return None
-                if backoff.backoff_sec > 0:
-                    self.sleep(backoff.backoff_sec)
-
-    def _wait_for_inflight_capacity(
+    def _has_inflight_capacity(
         self,
         *,
         run_id: str,
         context: _RunContext,
         chunk_tokens: int,
-        allow_wait: bool,
     ) -> bool:
-        inflight_budget = effective_inflight_token_budget(context.job.inflight_policy)
+        inflight_budget = effective_inflight_token_budget(context.config.inflight_policy)
         if inflight_budget is None:
             return True
         if chunk_tokens > inflight_budget:
             raise ValueError(
                 f"chunk token estimate {chunk_tokens} exceeds inflight budget {inflight_budget}"
             )
-        while True:
-            active_tokens = self.state.get_active_submitted_token_estimate(run_id=run_id)
-            available = max(inflight_budget - active_tokens, 0)
-            if chunk_tokens <= available:
-                return True
-            if not allow_wait:
-                return False
-            self._poll_once(run_id, context)
-            poll_interval = context.job.provider_config.poll_interval_sec
-            if poll_interval > 0:
-                self.sleep(poll_interval)
+        active_tokens = self.state.get_active_submitted_token_estimate(run_id=run_id)
+        available = max(inflight_budget - active_tokens, 0)
+        return chunk_tokens <= available
 
     def _poll_once(self, run_id: str, context: _RunContext) -> None:
         for batch in self.state.get_active_batches(run_id=run_id):
@@ -332,8 +410,8 @@ class BatchRunner:
                 self.state.record_batch_retry_failure(
                     run_id=run_id,
                     error_class=classify_batch_error(exc),
-                    base_delay_sec=context.job.retry_policy.base_backoff_sec,
-                    max_delay_sec=context.job.retry_policy.max_backoff_sec,
+                    base_delay_sec=context.config.retry_policy.base_backoff_sec,
+                    max_delay_sec=context.config.retry_policy.max_backoff_sec,
                 )
                 continue
 
@@ -359,8 +437,8 @@ class BatchRunner:
                 self.state.record_batch_retry_failure(
                     run_id=run_id,
                     error_class=error.error_class,
-                    base_delay_sec=context.job.retry_policy.base_backoff_sec,
-                    max_delay_sec=context.job.retry_policy.max_backoff_sec,
+                    base_delay_sec=context.config.retry_policy.base_backoff_sec,
+                    max_delay_sec=context.config.retry_policy.max_backoff_sec,
                 )
                 self.state.reset_batch_items_to_pending(
                     run_id=run_id,
@@ -404,7 +482,7 @@ class BatchRunner:
 
         for custom_id, record in successes.items():
             processed_custom_ids.add(custom_id)
-            if context.structured_output is None:
+            if context.output_model is None:
                 completions.append(
                     CompletedItemRecord(
                         custom_id=custom_id,
@@ -414,18 +492,17 @@ class BatchRunner:
                 )
                 continue
             try:
-                output_text, _, validated = parse_structured_response(
+                output_text, parsed_json, _validated = parse_structured_response(
                     record,
-                    cast(StructuredBatchJob[Any, BaseModel], context.job).output_model,
+                    context.output_model,
                 )
             except Exception as exc:  # noqa: BLE001
-                message = str(exc)
                 failures.append(
                     ItemFailureRecord(
                         custom_id=custom_id,
                         error=self._item_failure(
                             error_class=getattr(exc, "error_class", "structured_output_validation_failed"),
-                            message=message,
+                            message=str(exc),
                             raw_error=getattr(exc, "raw_error", record),
                             retryable=True,
                         ),
@@ -438,7 +515,7 @@ class BatchRunner:
                     custom_id=custom_id,
                     output_text=output_text,
                     raw_response=record,
-                    output_model=validated,
+                    output_json=parsed_json,
                 )
             )
 
@@ -479,7 +556,7 @@ class BatchRunner:
             self.state.mark_items_failed(
                 run_id=run_id,
                 failures=failures,
-                max_attempts=context.job.retry_policy.max_attempts,
+                max_attempts=context.config.retry_policy.max_attempts,
             )
 
     @staticmethod
@@ -487,7 +564,7 @@ class BatchRunner:
         *,
         error_class: str,
         message: str,
-        raw_error: Any,
+        raw_error: JSONValue | JSONObject,
         retryable: bool,
     ):
         from batchor.models import ItemFailure
@@ -519,14 +596,9 @@ class BatchRunner:
         return PromptParts(prompt=str(prompt_value))
 
     def _prepare_item(self, item: ClaimedItem, context: _RunContext) -> _PreparedItem:
-        prompt_parts = self._normalize_prompt_parts(
-            context.job.build_prompt(
-                BatchItem(
-                    item_id=item.item_id,
-                    payload=item.payload,
-                    metadata=item.metadata,
-                )
-            )
+        prompt_parts = PromptParts(
+            prompt=item.prompt,
+            system_prompt=item.system_prompt,
         )
         request_line = context.provider.build_request_line(
             custom_id=self.make_custom_id(item.item_id, item.attempt_count + 1),
@@ -536,13 +608,13 @@ class BatchRunner:
         request_bytes = len((json.dumps(request_line, ensure_ascii=False) + "\n").encode("utf-8"))
         submission_tokens = estimate_request_tokens(
             request_line,
-            chars_per_token=context.job.chunk_policy.chars_per_token,
-            model=context.job.provider_config.model,
+            chars_per_token=context.config.chunk_policy.chars_per_token,
+            model=context.config.provider_config.model,
         )
         return _PreparedItem(
             item_id=item.item_id,
             custom_id=str(request_line["custom_id"]),
-            request_line=request_line,
+            request_line=cast(JSONObject, request_line),
             request_bytes=request_bytes,
             submission_tokens=submission_tokens,
         )
@@ -557,7 +629,54 @@ class BatchRunner:
             "submission_tokens": item.submission_tokens,
         }
 
-    def _context(self, run_id: str) -> _RunContext:
-        if run_id not in self._contexts:
-            raise KeyError(f"unknown run_id: {run_id}")
-        return self._contexts[run_id]
+    def _results_for_run(
+        self,
+        run_id: str,
+        context: _RunContext,
+    ) -> list[BatchResultItem]:
+        return [
+            self._result_from_record(record, context)
+            for record in self.state.get_item_records(run_id=run_id)
+        ]
+
+    def _result_from_record(
+        self,
+        record: PersistedItemRecord,
+        context: _RunContext,
+    ) -> BatchResultItem:
+        if context.output_model is None:
+            return TextItemResult(
+                item_id=record.item_id,
+                status=record.status,
+                attempt_count=record.attempt_count,
+                output_text=record.output_text,
+                raw_response=record.raw_response,
+                error=record.error,
+                metadata=record.metadata,
+            )
+        output_model = None
+        if record.output_json is not None:
+            output_model = context.output_model.model_validate(record.output_json)
+        return StructuredItemResult(
+            item_id=record.item_id,
+            status=record.status,
+            attempt_count=record.attempt_count,
+            output=output_model,
+            output_text=record.output_text,
+            raw_response=record.raw_response,
+            error=record.error,
+            metadata=record.metadata,
+        )
+
+    @staticmethod
+    def _json_value(value: Any, *, label: str) -> JSONValue:
+        try:
+            return cast(JSONValue, json.loads(json.dumps(value, ensure_ascii=False)))
+        except TypeError as exc:
+            raise TypeError(f"{label} must be JSON-serializable") from exc
+
+    def _json_object(self, value: Any, *, label: str) -> JSONObject:
+        normalized = self._json_value(value, label=label)
+        if not isinstance(normalized, dict):
+            raise TypeError(f"{label} must be a JSON object")
+        return normalized

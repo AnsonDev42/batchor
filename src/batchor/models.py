@@ -18,7 +18,7 @@ type ItemStatus = Literal[
     "failed_retryable",
     "failed_permanent",
 ]
-type RunLifecycleStatus = Literal["awaiting_completion", "completed"]
+type RunLifecycleStatus = Literal["running", "completed"]
 
 
 @dataclass(frozen=True)
@@ -70,30 +70,16 @@ class InflightPolicy:
 
 
 @dataclass(frozen=True)
-class StructuredBatchJob(Generic[PayloadT, ModelT]):
+class BatchJob(Generic[PayloadT, ModelT]):
     items: list[BatchItem[PayloadT]]
     build_prompt: PromptBuilder[PayloadT]
-    output_model: type[ModelT]
     provider_config: OpenAIProviderConfig
+    structured_output: type[ModelT] | None = None
     schema_name: str | None = None
     chunk_policy: ChunkPolicy = field(default_factory=ChunkPolicy)
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     inflight_policy: InflightPolicy = field(default_factory=InflightPolicy)
     batch_metadata: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class TextBatchJob(Generic[PayloadT]):
-    items: list[BatchItem[PayloadT]]
-    build_prompt: PromptBuilder[PayloadT]
-    provider_config: OpenAIProviderConfig
-    chunk_policy: ChunkPolicy = field(default_factory=ChunkPolicy)
-    retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
-    inflight_policy: InflightPolicy = field(default_factory=InflightPolicy)
-    batch_metadata: dict[str, str] = field(default_factory=dict)
-
-
-type BatchJob = StructuredBatchJob[Any, BaseModel] | TextBatchJob[Any]
 
 
 @dataclass(frozen=True)
@@ -127,20 +113,7 @@ class TextItemResult:
     metadata: JSONObject = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class RunHandle:
-    run_id: str
-    status: RunLifecycleStatus
-
-
-@dataclass(frozen=True)
-class RunStatus:
-    run_id: str
-    status: RunLifecycleStatus
-    total_items: int
-    status_counts: dict[str, int]
-    active_batches: int
-    backoff_remaining_sec: float
+type BatchResultItem = StructuredItemResult[BaseModel] | TextItemResult
 
 
 @dataclass(frozen=True)
@@ -150,3 +123,19 @@ class RunSummary:
     total_items: int
     completed_items: int
     failed_items: int
+    status_counts: dict[str, int]
+    active_batches: int
+    backoff_remaining_sec: float
+
+
+@dataclass(frozen=True)
+class RunSnapshot:
+    run_id: str
+    status: RunLifecycleStatus
+    total_items: int
+    completed_items: int
+    failed_items: int
+    status_counts: dict[str, int]
+    active_batches: int
+    backoff_remaining_sec: float
+    items: list[BatchResultItem]
