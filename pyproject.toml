@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "batchor"
+version = "0.1.0"
+description = "Structured-first OpenAI Batch runner with typed Pydantic results."
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "openai>=2.7.1",
+    "pydantic>=2.12.0,<3",
+    "tiktoken>=0.12.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-cov>=7.0.0",
+    "ty>=0.0.26",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/batchor"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-config --strict-markers --cov=src --cov-report=term-missing --cov-fail-under=85"
+pythonpath = ["src"]
+markers = [
+    "unit: fast isolated tests",
+    "integration: fake-provider and multi-component tests",
+]
+
+[tool.ty.environment]
+root = ["./src", "."]
+
+[tool.ty.src]
+include = ["src"]
+exclude = ["tests"]
