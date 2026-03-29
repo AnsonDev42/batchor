@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from batchor.sqlite_storage import SQLiteStorage
+from batchor.storage.sqlite import SQLiteStorage
 
 
 def test_sqlite_storage_default_path_resolution(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("batchor.sqlite_storage.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("batchor.storage.sqlite.Path.home", lambda: tmp_path)
     storage = SQLiteStorage(name="demo")
     assert storage.path == tmp_path / ".batchor" / "demo.sqlite3"
 

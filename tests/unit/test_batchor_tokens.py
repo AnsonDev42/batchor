@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from batchor.models import ChunkPolicy, InflightPolicy
-from batchor.tokens import (
+from batchor.core.models import ChunkPolicy, InflightPolicy
+from batchor.runtime.tokens import (
     chunk_request_rows,
     effective_inflight_token_budget,
     estimate_request_tokens,

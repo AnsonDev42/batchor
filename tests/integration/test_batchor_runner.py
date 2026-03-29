@@ -21,7 +21,7 @@ from batchor import (
     RunNotFinishedError,
     SQLiteStorage,
 )
-from batchor.openai_provider import OpenAIBatchProvider
+from batchor.providers.openai import OpenAIBatchProvider
 
 
 class ClassificationResult(BaseModel):

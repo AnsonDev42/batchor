@@ -4,10 +4,11 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from batchor.enums import OpenAIEndpoint
-from batchor.models import OpenAIProviderConfig, PromptParts
-from batchor.openai_provider import OpenAIBatchProvider, StructuredOutputSchema
-from batchor.validation import model_output_schema
+from batchor.core.enums import OpenAIEndpoint
+from batchor.core.models import OpenAIProviderConfig, PromptParts
+from batchor.providers.openai import OpenAIBatchProvider
+from batchor.providers.base import StructuredOutputSchema
+from batchor.runtime.validation import model_output_schema
 
 
 class _ClassificationResult(BaseModel):

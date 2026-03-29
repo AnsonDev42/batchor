@@ -6,7 +6,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
-from batchor.types import JSONObject, JSONValue
+from batchor.core.types import JSONObject, JSONValue
 
 
 class StructuredOutputError(ValueError):

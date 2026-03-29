@@ -10,8 +10,8 @@ from batchor import (
     StorageKind,
     build_default_provider_registry,
 )
-from batchor.sqlite_storage import SQLiteStorage
-from batchor.storage_registry import StorageRegistry
+from batchor.storage.registry import StorageRegistry
+from batchor.storage.sqlite import SQLiteStorage
 
 
 def test_default_provider_registry_round_trips_openai_config() -> None:

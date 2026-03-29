@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable
 
-from batchor.enums import StorageKind
-from batchor.state import MemoryStateStore, StateStore
+from batchor.core.enums import StorageKind
+from batchor.storage.state import MemoryStateStore, StateStore
 
 if TYPE_CHECKING:
-    from batchor.provider import ProviderRegistry
+    from batchor.providers.registry import ProviderRegistry
 
 
 type StorageFactory = Callable[[], StateStore]
@@ -32,7 +32,7 @@ def build_default_storage_registry(
     *,
     provider_registry: ProviderRegistry | None = None,
 ) -> StorageRegistry:
-    from batchor.sqlite_storage import SQLiteStorage
+    from batchor.storage.sqlite import SQLiteStorage
 
     registry = StorageRegistry()
     registry.register(

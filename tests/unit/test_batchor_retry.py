@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from batchor.retry import (
+from batchor.runtime.retry import (
     classify_batch_error,
     compute_backoff_delay,
     is_enqueue_token_limit_error,

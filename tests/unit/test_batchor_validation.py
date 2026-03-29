@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from batchor.validation import (
+from batchor.runtime.validation import (
     StructuredOutputError,
     default_schema_name,
     model_output_schema,

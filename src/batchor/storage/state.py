@@ -5,17 +5,17 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from batchor.enums import ItemStatus, RunLifecycleStatus
-from batchor.models import (
+from batchor.core.enums import ItemStatus, RunLifecycleStatus
+from batchor.core.models import (
     ChunkPolicy,
     InflightPolicy,
     ItemFailure,
     RetryPolicy,
     RunSummary,
 )
-from batchor.provider import ProviderConfig
-from batchor.retry import compute_backoff_delay
-from batchor.types import JSONObject, JSONValue
+from batchor.core.types import JSONObject, JSONValue
+from batchor.providers.base import ProviderConfig
+from batchor.runtime.retry import compute_backoff_delay
 
 
 @dataclass(frozen=True)

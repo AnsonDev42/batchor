@@ -5,9 +5,9 @@ from typing import Callable, Generic, TypeAlias, TypeVar
 
 from pydantic import BaseModel
 
-from batchor.enums import ItemStatus, OpenAIEndpoint, ProviderKind, RunLifecycleStatus
-from batchor.provider import ProviderConfig
-from batchor.types import JSONObject, JSONValue
+from batchor.core.enums import ItemStatus, OpenAIEndpoint, ProviderKind, RunLifecycleStatus
+from batchor.core.types import JSONObject, JSONValue
+from batchor.providers.base import ProviderConfig
 
 PayloadT = TypeVar("PayloadT")
 ModelT = TypeVar("ModelT", bound=BaseModel)

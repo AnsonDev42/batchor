@@ -5,9 +5,8 @@ import json
 from math import ceil
 from typing import Any, Callable
 
-from batchor.types import BatchRequestLine
-
-from batchor.models import ChunkPolicy, InflightPolicy
+from batchor.core.models import ChunkPolicy, InflightPolicy
+from batchor.core.types import BatchRequestLine
 
 
 def estimate_text_tokens(
