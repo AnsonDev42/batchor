@@ -61,6 +61,17 @@ class ClaimedItem:
     prompt: str
     system_prompt: str | None
     attempt_count: int
+    request_artifact_path: str | None = None
+    request_artifact_line: int | None = None
+    request_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class RequestArtifactPointer:
+    item_id: str
+    artifact_path: str
+    line_number: int
+    request_sha256: str
 
 
 @dataclass(frozen=True)
@@ -145,6 +156,14 @@ class StateStore(ABC):
 
     @abstractmethod
     def release_items_to_pending(self, *, run_id: str, item_ids: list[str]) -> None: ...
+
+    @abstractmethod
+    def record_request_artifacts(
+        self,
+        *,
+        run_id: str,
+        pointers: list[RequestArtifactPointer],
+    ) -> None: ...
 
     @abstractmethod
     def register_batch(
@@ -257,6 +276,9 @@ class _StoredItem:
     metadata: JSONObject
     prompt: str
     system_prompt: str | None = None
+    request_artifact_path: str | None = None
+    request_artifact_line: int | None = None
+    request_sha256: str | None = None
     status: ItemStatus = ItemStatus.PENDING
     attempt_count: int = 0
     active_batch_id: str | None = None
@@ -364,6 +386,9 @@ class MemoryStateStore(StateStore):
                     prompt=item.prompt,
                     system_prompt=item.system_prompt,
                     attempt_count=item.attempt_count,
+                    request_artifact_path=item.request_artifact_path,
+                    request_artifact_line=item.request_artifact_line,
+                    request_sha256=item.request_sha256,
                 )
             )
             if limit is not None and len(claimed) >= limit:
@@ -377,6 +402,26 @@ class MemoryStateStore(StateStore):
             item = run.items[item_id]
             if item.status == ItemStatus.QUEUED_LOCAL:
                 item.status = ItemStatus.PENDING
+        self._refresh_run_status(run)
+
+    def record_request_artifacts(
+        self,
+        *,
+        run_id: str,
+        pointers: list[RequestArtifactPointer],
+    ) -> None:
+        if not pointers:
+            return
+        run = self._get_run(run_id)
+        for pointer in pointers:
+            item = run.items[pointer.item_id]
+            item.request_artifact_path = pointer.artifact_path
+            item.request_artifact_line = pointer.line_number
+            item.request_sha256 = pointer.request_sha256
+            # Once the durable request line exists, large inline fields are no longer needed.
+            item.payload = None
+            item.prompt = ""
+            item.system_prompt = None
         self._refresh_run_status(run)
 
     def register_batch(

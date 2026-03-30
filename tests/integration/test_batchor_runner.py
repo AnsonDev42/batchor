@@ -7,6 +7,7 @@ from typing import Callable
 
 import pytest
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from batchor import (
     BatchItem,
@@ -24,6 +25,7 @@ from batchor import (
     SQLiteStorage,
 )
 from batchor.providers.openai import OpenAIBatchProvider
+from batchor.storage import sqlite as storage_sqlite
 
 
 class ClassificationResult(BaseModel):
@@ -168,6 +170,18 @@ class _FakeBatchProvider:
         if not isinstance(prompt, str):
             raise TypeError("request input must be a string")
         return max(len(prompt), 1)
+
+
+class _ArtifactOnlyBatchProvider(_FakeBatchProvider):
+    def build_request_line(
+        self,
+        *,
+        custom_id: str,
+        prompt_parts: PromptParts,
+        structured_output=None,  # noqa: ANN001
+    ) -> dict[str, object]:
+        del custom_id, prompt_parts, structured_output
+        raise AssertionError("request line should be replayed from persisted artifact")
 
 
 def test_structured_run_handle_returns_model_instances(tmp_path: Path) -> None:
@@ -341,6 +355,60 @@ def test_sqlite_storage_supports_rehydrating_run_handle(tmp_path: Path) -> None:
     results = resumed.results()
     assert results[0].output is not None
     assert results[0].output.label == "row1"
+
+
+def test_sqlite_resume_retries_from_persisted_request_artifact(tmp_path: Path) -> None:
+    first_provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        ),
+        create_failures=[RuntimeError("temporary service unavailable")],
+    )
+    storage = SQLiteStorage(path=tmp_path / "artifact_resume.sqlite3")
+    first_runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: first_provider,
+    )
+    started = first_runner.start(
+        BatchJob(
+            items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+            retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=0, max_backoff_sec=0),
+        )
+    )
+
+    with storage.engine.begin() as conn:
+        row = conn.execute(
+            select(
+                storage_sqlite.ITEMS_TABLE.c.prompt,
+                storage_sqlite.ITEMS_TABLE.c.request_artifact_path,
+                storage_sqlite.ITEMS_TABLE.c.request_artifact_line,
+                storage_sqlite.ITEMS_TABLE.c.request_sha256,
+                storage_sqlite.ITEMS_TABLE.c.status,
+            ).where(storage_sqlite.ITEMS_TABLE.c.run_id == started.run_id)
+        ).mappings().one()
+    assert row["prompt"] == ""
+    assert row["request_artifact_path"] is not None
+    assert row["request_artifact_line"] == 1
+    assert row["request_sha256"] is not None
+    assert row["status"] == ItemStatus.PENDING
+
+    second_provider = _ArtifactOnlyBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    resumed = BatchRunner(
+        storage=SQLiteStorage(path=storage.path),
+        provider_factory=lambda _cfg: second_provider,
+    ).get_run(started.run_id)
+    resumed.wait(poll_interval=0)
+    result = resumed.results()[0]
+    assert result.status is ItemStatus.COMPLETED
+    assert result.output is not None
+    assert result.output.label == "row1"
 
 
 def test_auto_splits_large_input_into_multiple_batches(tmp_path: Path) -> None:

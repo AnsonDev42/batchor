@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import importlib
 import json
 from pathlib import Path
@@ -25,7 +26,7 @@ from batchor.core.models import (
     StructuredItemResult,
     TextItemResult,
 )
-from batchor.core.types import BatchRemoteRecord, JSONObject, JSONValue
+from batchor.core.types import BatchRemoteRecord, BatchRequestLine, JSONObject, JSONValue
 from batchor.providers.base import (
     BatchProvider,
     StructuredOutputSchema,
@@ -60,6 +61,7 @@ from batchor.storage.state import (
     PersistedItemRecord,
     PreparedSubmission,
     QueuedItemFailureRecord,
+    RequestArtifactPointer,
     StateStore,
 )
 
@@ -180,7 +182,15 @@ class BatchRunner:
         self.state = self._resolve_storage(storage)
         self.provider_factory = provider_factory
         self.sleep = sleep or time.sleep
-        self.temp_root = Path(temp_root) if temp_root is not None else Path(tempfile.gettempdir()) / "batchor"
+        if temp_root is not None:
+            self.temp_root = Path(temp_root)
+        else:
+            artifact_root = getattr(self.state, "artifact_root", None)
+            self.temp_root = (
+                Path(cast(str | Path, artifact_root))
+                if artifact_root is not None
+                else Path(tempfile.gettempdir()) / "batchor"
+            )
         self._contexts: dict[str, _RunContext] = {}
 
     def start(self, job: BatchJob[Any, BaseModel]) -> Run:
@@ -421,7 +431,6 @@ class BatchRunner:
         )
         submitted_item_ids: set[str] = set()
         submitted_count = 0
-        run_dir = self.temp_root / run_id
 
         for chunk_index, chunk in enumerate(chunks, start=1):
             chunk_tokens = sum(int(row["submission_tokens"]) for row in chunk)
@@ -435,10 +444,25 @@ class BatchRunner:
                 cast(JSONObject, row["request_line"])
                 for row in chunk
             ]
-            request_path = run_dir / f"requests_{chunk_index:04d}.jsonl"
+            request_relative_path = self._request_artifact_relative_path(run_id)
+            request_path = self.temp_root / request_relative_path
             request_file = context.provider.write_requests_jsonl(
                 cast(list[Any], request_lines),
                 request_path,
+            )
+            self.state.record_request_artifacts(
+                run_id=run_id,
+                pointers=[
+                    RequestArtifactPointer(
+                        item_id=str(row["item_id"]),
+                        artifact_path=request_relative_path.as_posix(),
+                        line_number=line_number,
+                        request_sha256=self._request_sha256(
+                            cast(JSONObject, row["request_line"])
+                        ),
+                    )
+                    for line_number, row in enumerate(chunk, start=1)
+                ],
             )
             remote_input_file_id = context.provider.upload_input_file(request_file)
             try:
@@ -750,15 +774,29 @@ class BatchRunner:
         return PromptParts(prompt=str(prompt_value))
 
     def _prepare_item(self, item: ClaimedItem, context: _RunContext) -> _PreparedItem:
-        prompt_parts = PromptParts(
-            prompt=item.prompt,
-            system_prompt=item.system_prompt,
-        )
-        request_line = context.provider.build_request_line(
-            custom_id=self.make_custom_id(item.item_id, item.attempt_count + 1),
-            prompt_parts=prompt_parts,
-            structured_output=context.structured_output,
-        )
+        custom_id = self.make_custom_id(item.item_id, item.attempt_count + 1)
+        if item.request_artifact_path is not None:
+            if item.request_artifact_line is None or item.request_sha256 is None:
+                raise ValueError(
+                    f"incomplete request artifact pointer for item {item.item_id}"
+                )
+            request_line = self._load_request_artifact_line(
+                artifact_path=item.request_artifact_path,
+                line_number=item.request_artifact_line,
+                expected_sha256=item.request_sha256,
+            )
+            request_line["custom_id"] = custom_id
+        else:
+            prompt_parts = PromptParts(
+                prompt=item.prompt,
+                system_prompt=item.system_prompt,
+            )
+            request_line = context.provider.build_request_line(
+                custom_id=custom_id,
+                prompt_parts=prompt_parts,
+                structured_output=context.structured_output,
+            )
+        request_line = cast(BatchRequestLine, request_line)
         request_bytes = len((json.dumps(request_line, ensure_ascii=False) + "\n").encode("utf-8"))
         submission_tokens = context.provider.estimate_request_tokens(
             request_line,
@@ -781,6 +819,51 @@ class BatchRunner:
             "request_bytes": item.request_bytes,
             "submission_tokens": item.submission_tokens,
         }
+
+    @staticmethod
+    def _request_sha256(request_line: JSONObject) -> str:
+        encoded = json.dumps(
+            request_line,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _request_artifact_relative_path(run_id: str) -> Path:
+        return Path(run_id) / "requests" / f"requests_{uuid4().hex}.jsonl"
+
+    def _load_request_artifact_line(
+        self,
+        *,
+        artifact_path: str,
+        line_number: int,
+        expected_sha256: str,
+    ) -> JSONObject:
+        if line_number <= 0:
+            raise ValueError("line_number must be > 0")
+        path = self.temp_root / artifact_path
+        with path.open("r", encoding="utf-8") as handle:
+            for index, raw_line in enumerate(handle, start=1):
+                if index != line_number:
+                    continue
+                record = json.loads(raw_line)
+                if not isinstance(record, dict):
+                    raise TypeError(
+                        f"request artifact line must be a JSON object: {artifact_path}:{line_number}"
+                    )
+                request_line = cast(JSONObject, record)
+                actual_sha256 = self._request_sha256(request_line)
+                if actual_sha256 != expected_sha256:
+                    raise ValueError(
+                        "request artifact hash mismatch for "
+                        f"{artifact_path}:{line_number}"
+                    )
+                return request_line
+        raise FileNotFoundError(
+            f"request artifact line missing: {artifact_path}:{line_number}"
+        )
 
     def _results_for_run(
         self,

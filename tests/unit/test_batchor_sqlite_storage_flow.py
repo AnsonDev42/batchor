@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from batchor import (
     BatchRunner,
@@ -15,6 +16,7 @@ from batchor import (
     RunLifecycleStatus,
 )
 from batchor.core.models import ChunkPolicy, ItemFailure, RetryPolicy
+from batchor.storage import sqlite as storage_sqlite
 from batchor.storage.sqlite import SQLiteStorage
 from batchor.storage.state import (
     CompletedItemRecord,
@@ -22,6 +24,7 @@ from batchor.storage.state import (
     MaterializedItem,
     PersistedRunConfig,
     PreparedSubmission,
+    RequestArtifactPointer,
 )
 
 
@@ -218,3 +221,45 @@ def test_get_run_raises_for_unresolvable_structured_model(tmp_path: Path) -> Non
     runner = BatchRunner(storage=SQLiteStorage(path=storage.path))
     with pytest.raises(ModelResolutionError, match="structured output model unavailable"):
         runner.get_run("run_3")
+
+
+def test_sqlite_storage_records_request_artifact_pointer_and_prunes_inline_request_fields(
+    tmp_path: Path,
+) -> None:
+    storage = SQLiteStorage(path=tmp_path / "artifacts.sqlite3")
+    storage.create_run(run_id="run_4", config=_config(), items=_items()[:1])
+
+    storage.record_request_artifacts(
+        run_id="run_4",
+        pointers=[
+            RequestArtifactPointer(
+                item_id="row1",
+                artifact_path="run_4/requests/requests_a.jsonl",
+                line_number=1,
+                request_sha256="abc123",
+            )
+        ],
+    )
+
+    claimed = storage.claim_items_for_submission(run_id="run_4", max_attempts=2)
+    assert claimed[0].request_artifact_path == "run_4/requests/requests_a.jsonl"
+    assert claimed[0].request_artifact_line == 1
+    assert claimed[0].request_sha256 == "abc123"
+    assert claimed[0].prompt == ""
+    assert claimed[0].system_prompt is None
+
+    with storage.engine.begin() as conn:
+        row = conn.execute(
+            select(
+                storage_sqlite.ITEMS_TABLE.c.payload_json,
+                storage_sqlite.ITEMS_TABLE.c.prompt,
+                storage_sqlite.ITEMS_TABLE.c.request_artifact_path,
+                storage_sqlite.ITEMS_TABLE.c.request_artifact_line,
+                storage_sqlite.ITEMS_TABLE.c.request_sha256,
+            ).where(storage_sqlite.ITEMS_TABLE.c.run_id == "run_4")
+        ).mappings().one()
+    assert row["payload_json"] == "null"
+    assert row["prompt"] == ""
+    assert row["request_artifact_path"] == "run_4/requests/requests_a.jsonl"
+    assert row["request_artifact_line"] == 1
+    assert row["request_sha256"] == "abc123"

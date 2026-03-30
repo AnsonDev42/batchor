@@ -10,6 +10,12 @@ This document describes the OpenAI-specific behavior inside `batchor`.
 
 Structured-output jobs derive JSON Schema from a Pydantic v2 model and send strict schema instructions in the request body. Text jobs omit structured output configuration.
 
+### Durable Request Artifacts
+
+For SQLite-backed runs, prepared OpenAI request rows are written to durable JSONL artifacts before upload. `batchor` stores per-item pointers to the artifact path, line number, and request hash in SQLite.
+
+This lets retry/resume replay the prepared request body without rebuilding the prompt from the original CSV/JSONL source after the request artifact already exists.
+
 ### Token Estimation
 
 Token estimation is `tiktoken`-first:
@@ -49,6 +55,8 @@ If a single request exceeds the allowed OpenAI token limit by itself, that item 
 ### Provider Errors
 
 Transient provider errors and enqueue-capacity failures do not consume item attempts. Validation failures and parse failures do consume item attempts.
+
+If a retryable control-plane failure happens after a request artifact has been written but before the batch is registered, the item can still be retried from the stored request artifact on the next refresh/resume cycle.
 
 ## TBD
 

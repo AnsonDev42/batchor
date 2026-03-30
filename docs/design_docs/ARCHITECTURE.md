@@ -48,6 +48,7 @@ Execution and validation behavior:
 - `BatchRunner`
 - `Run`
 - token estimation and request chunking
+- durable request-artifact replay for retry/resume
 - retry helpers
 - response validation and structured-output parsing
 
@@ -67,6 +68,7 @@ Durable and ephemeral state backends:
 - SQLite implementation
 - in-memory implementation
 - storage registry
+- request-artifact pointers for replayable submissions
 
 ## Current Invariants
 
@@ -76,6 +78,7 @@ Durable and ephemeral state backends:
 4. Structured outputs require a module-level Pydantic v2 model for rehydration.
 5. `Run.results()` is terminal-only.
 6. `Run.refresh()` is explicit; status properties do not implicitly hit the provider.
+7. SQLite-backed runs can replay prepared request JSONL artifacts without rebuilding prompts from the original item source.
 
 ## Extension Seams
 
@@ -84,6 +87,7 @@ The code is intentionally shaped for future providers and storage backends:
 - provider config serialization goes through the provider registry
 - storage creation goes through the storage registry
 - runtime code works in terms of provider/store contracts instead of direct OpenAI/SQLite branches
+- durable request replay is provider-agnostic at the runner/store boundary and currently materializes as local JSONL artifacts for SQLite
 
 ## TBD
 

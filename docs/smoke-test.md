@@ -44,6 +44,7 @@ uv run pytest tests/integration/test_batchor_runner.py --no-cov -q
 Expected:
 
 - durable `Run` lifecycle still works
+- retry/resume from persisted request artifacts still works for SQLite-backed runs
 - OpenAI request splitting and enqueue-limit logic still behave as expected
 - structured-output parsing remains stable
 

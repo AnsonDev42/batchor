@@ -12,6 +12,7 @@ Structured-first OpenAI Batch runner with durable `Run` handles, Pydantic v2 val
 - `runner.get_run(run_id)` rehydrates a run from storage
 - local SQLAlchemy 2 SQLite storage is the default backend
 - `BatchRunner(storage="memory")` is available for ephemeral tests and one-off runs
+- replayable request JSONL artifacts are stored durably beside SQLite so retry/resume does not depend on the original input iterator after a request has been prepared
 - OpenAI-specific enqueue-limit controls live on `OpenAIProviderConfig.enqueue_limits`
 
 Structured-output rehydration requires a module-level Pydantic model class. If a stored structured model cannot be imported later, `batchor` raises a clear model-resolution error instead of silently returning raw dicts.
@@ -210,3 +211,7 @@ runner = BatchRunner(
 ```
 
 Most users should keep the defaults. The registries exist so new vendors and durable backends can plug in cleanly later.
+
+## Durable Request Artifacts
+
+For SQLite-backed runs, `batchor` now treats SQLite as the control-plane ledger and stores replayable request JSONL artifacts on disk beside the database under a sibling `*_artifacts/` directory. Once a request artifact has been written, `batchor` can resume or retry that item without rebuilding the prompt from the original source input.

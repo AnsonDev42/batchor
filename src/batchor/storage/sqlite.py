@@ -43,6 +43,7 @@ from batchor.storage.state import (
     PersistedRunConfig,
     PreparedSubmission,
     QueuedItemFailureRecord,
+    RequestArtifactPointer,
     RetryBackoffState,
     StateStore,
     serialize_item_failure,
@@ -76,6 +77,9 @@ ITEMS_TABLE = Table(
     Column("metadata_json", Text, nullable=False),
     Column("prompt", Text, nullable=False),
     Column("system_prompt", Text, nullable=True),
+    Column("request_artifact_path", String, nullable=True),
+    Column("request_artifact_line", Integer, nullable=True),
+    Column("request_sha256", String, nullable=True),
     Column("status", String, nullable=False),
     Column("attempt_count", Integer, nullable=False),
     Column("active_batch_id", String, nullable=True),
@@ -133,6 +137,7 @@ class SQLiteStorage(StateStore):
             future=True,
         )
         METADATA.create_all(self.engine)
+        self._ensure_schema()
 
     @staticmethod
     def default_path(name: str) -> Path:
@@ -141,6 +146,10 @@ class SQLiteStorage(StateStore):
 
     def close(self) -> None:
         self.engine.dispose()
+
+    @property
+    def artifact_root(self) -> Path:
+        return self.path.parent / f"{self.path.stem}_artifacts"
 
     def __del__(self) -> None:
         try:
@@ -254,6 +263,9 @@ class SQLiteStorage(StateStore):
                     prompt=str(row["prompt"]),
                     system_prompt=_nullable_str(row["system_prompt"]),
                     attempt_count=int(row["attempt_count"]),
+                    request_artifact_path=_nullable_str(row["request_artifact_path"]),
+                    request_artifact_line=_nullable_int(row["request_artifact_line"]),
+                    request_sha256=_nullable_str(row["request_sha256"]),
                 )
                 for row in rows
             ]
@@ -365,6 +377,47 @@ class SQLiteStorage(StateStore):
                     output_file_id=output_file_id,
                     error_file_id=error_file_id,
                 )
+            )
+            self._refresh_run_status(conn, run_id)
+
+    def record_request_artifacts(
+        self,
+        *,
+        run_id: str,
+        pointers: list[RequestArtifactPointer],
+    ) -> None:
+        if not pointers:
+            return
+        statement = (
+            update(ITEMS_TABLE)
+            .where(
+                and_(
+                    ITEMS_TABLE.c.run_id == bindparam("b_run_id"),
+                    ITEMS_TABLE.c.item_id == bindparam("b_item_id"),
+                )
+            )
+            .values(
+                request_artifact_path=bindparam("b_request_artifact_path"),
+                request_artifact_line=bindparam("b_request_artifact_line"),
+                request_sha256=bindparam("b_request_sha256"),
+                payload_json="null",
+                prompt="",
+                system_prompt=None,
+            )
+        )
+        with self.engine.begin() as conn:
+            conn.execute(
+                statement,
+                [
+                    {
+                        "b_run_id": run_id,
+                        "b_item_id": pointer.item_id,
+                        "b_request_artifact_path": pointer.artifact_path,
+                        "b_request_artifact_line": pointer.line_number,
+                        "b_request_sha256": pointer.request_sha256,
+                    }
+                    for pointer in pointers
+                ],
             )
             self._refresh_run_status(conn, run_id)
 
@@ -746,6 +799,9 @@ class SQLiteStorage(StateStore):
                     "metadata_json": _encode_json(item.metadata),
                     "prompt": item.prompt,
                     "system_prompt": item.system_prompt,
+                    "request_artifact_path": None,
+                    "request_artifact_line": None,
+                    "request_sha256": None,
                     "status": ItemStatus.PENDING,
                     "attempt_count": 0,
                     "active_batch_id": None,
@@ -785,6 +841,24 @@ class SQLiteStorage(StateStore):
             structured_output_module=_nullable_str(row["structured_output_module"]),
             structured_output_qualname=_nullable_str(row["structured_output_qualname"]),
         )
+
+    def _ensure_schema(self) -> None:
+        with self.engine.begin() as conn:
+            columns = {
+                str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(items)").fetchall()
+            }
+            if "request_artifact_path" not in columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE items ADD COLUMN request_artifact_path TEXT"
+                )
+            if "request_artifact_line" not in columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE items ADD COLUMN request_artifact_line INTEGER"
+                )
+            if "request_sha256" not in columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE items ADD COLUMN request_sha256 TEXT"
+                )
 
     def _fetch_retry_state(self, conn: Connection, run_id: str) -> RetryBackoffState:
         row = conn.execute(
@@ -937,6 +1011,14 @@ def _nullable_str(value: object) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _nullable_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    return int(str(value))
 
 
 def _decode_dict(value: object) -> dict[str, object]:

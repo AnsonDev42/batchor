@@ -9,6 +9,7 @@ Some documents describe current behavior. Others intentionally mark extension wo
 | Doc | Purpose |
 | --- | --- |
 | `smoke-test.md` | Fast validation flow for local development and extraction readiness. |
+| `design_docs/BOUNDARY_AND_PHILOSOPHY.md` | Concrete ownership boundary between `batchor`, SQLite/artifacts, and user pipelines. |
 | `design_docs/ARCHITECTURE.md` | High-level package structure, runtime boundaries, and public API shape. |
 | `design_docs/OPENAI_BATCHING.md` | OpenAI Batch request construction, token estimation, enqueue-limit handling, and splitting semantics. |
 | `design_docs/STORAGE_AND_RUNS.md` | Durable `Run` model, SQLite persistence, and storage abstraction surface. |
