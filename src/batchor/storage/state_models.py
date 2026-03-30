@@ -159,6 +159,17 @@ class StateStore(ABC):
     ) -> None: ...
 
     @abstractmethod
+    def get_request_artifact_paths(self, *, run_id: str) -> list[str]: ...
+
+    @abstractmethod
+    def clear_request_artifact_pointers(
+        self,
+        *,
+        run_id: str,
+        artifact_paths: list[str],
+    ) -> int: ...
+
+    @abstractmethod
     def register_batch(
         self,
         *,

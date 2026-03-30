@@ -263,3 +263,40 @@ def test_sqlite_storage_records_request_artifact_pointer_and_prunes_inline_reque
     assert row["request_artifact_path"] == "run_4/requests/requests_a.jsonl"
     assert row["request_artifact_line"] == 1
     assert row["request_sha256"] == "abc123"
+
+
+def test_sqlite_storage_lists_and_clears_request_artifact_pointers(tmp_path: Path) -> None:
+    storage = SQLiteStorage(path=tmp_path / "artifact_cleanup.sqlite3")
+    storage.create_run(run_id="run_5", config=_config(), items=_items())
+    storage.record_request_artifacts(
+        run_id="run_5",
+        pointers=[
+            RequestArtifactPointer(
+                item_id="row1",
+                artifact_path="run_5/requests/requests_a.jsonl",
+                line_number=1,
+                request_sha256="sha_a",
+            ),
+            RequestArtifactPointer(
+                item_id="row2",
+                artifact_path="run_5/requests/requests_a.jsonl",
+                line_number=2,
+                request_sha256="sha_b",
+            ),
+        ],
+    )
+
+    assert storage.get_request_artifact_paths(run_id="run_5") == [
+        "run_5/requests/requests_a.jsonl"
+    ]
+
+    cleared = storage.clear_request_artifact_pointers(
+        run_id="run_5",
+        artifact_paths=["run_5/requests/requests_a.jsonl"],
+    )
+    assert cleared == 2
+    assert storage.get_request_artifact_paths(run_id="run_5") == []
+
+    claimed = storage.claim_items_for_submission(run_id="run_5", max_attempts=2)
+    assert claimed[0].request_artifact_path is None
+    assert claimed[1].request_artifact_path is None

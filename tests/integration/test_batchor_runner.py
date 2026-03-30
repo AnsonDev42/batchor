@@ -411,6 +411,72 @@ def test_sqlite_resume_retries_from_persisted_request_artifact(tmp_path: Path) -
     assert result.output.label == "row1"
 
 
+def test_completed_run_can_prune_persisted_request_artifacts(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    storage = SQLiteStorage(path=tmp_path / "artifact_prune.sqlite3")
+    runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+    )
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        )
+    )
+
+    artifact_paths = storage.get_request_artifact_paths(run_id=run.run_id)
+    assert len(artifact_paths) == 1
+    assert artifact_paths[0].startswith(f"{run.run_id}/requests/")
+    artifact_path = runner.temp_root / artifact_paths[0]
+    assert artifact_path.exists()
+
+    report = run.prune_artifacts()
+    assert report.run_id == run.run_id
+    assert report.removed_artifact_paths == artifact_paths
+    assert report.missing_artifact_paths == []
+    assert report.cleared_item_pointers == 1
+    assert artifact_path.exists() is False
+    assert storage.get_request_artifact_paths(run_id=run.run_id) == []
+    assert run.results()[0].output is not None
+    assert run.prune_artifacts().cleared_item_pointers == 0
+
+
+def test_prune_artifacts_requires_a_terminal_run(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    storage = SQLiteStorage(path=tmp_path / "artifact_guard.sqlite3")
+    runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+    )
+    run = runner.start(
+        BatchJob(
+            items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        )
+    )
+
+    artifact_path = runner.temp_root / storage.get_request_artifact_paths(run_id=run.run_id)[0]
+    assert artifact_path.exists()
+
+    with pytest.raises(RunNotFinishedError):
+        run.prune_artifacts()
+
+    assert artifact_path.exists()
+
+
 def test_auto_splits_large_input_into_multiple_batches(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
         record_factory=lambda custom_id: _success_record(

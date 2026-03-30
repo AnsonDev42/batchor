@@ -179,6 +179,36 @@ class MemoryStateStore(StateStore):
             item.system_prompt = None
         self._refresh_run_status(run)
 
+    def get_request_artifact_paths(self, *, run_id: str) -> list[str]:
+        run = self._get_run(run_id)
+        artifact_paths = {
+            item.request_artifact_path
+            for item in run.items.values()
+            if item.request_artifact_path is not None
+        }
+        return sorted(artifact_path for artifact_path in artifact_paths if artifact_path is not None)
+
+    def clear_request_artifact_pointers(
+        self,
+        *,
+        run_id: str,
+        artifact_paths: list[str],
+    ) -> int:
+        if not artifact_paths:
+            return 0
+        run = self._get_run(run_id)
+        target_paths = set(artifact_paths)
+        cleared = 0
+        for item in run.items.values():
+            if item.request_artifact_path not in target_paths:
+                continue
+            item.request_artifact_path = None
+            item.request_artifact_line = None
+            item.request_sha256 = None
+            cleared += 1
+        self._refresh_run_status(run)
+        return cleared
+
     def register_batch(
         self,
         *,

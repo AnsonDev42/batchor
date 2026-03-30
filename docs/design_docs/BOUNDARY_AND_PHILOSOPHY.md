@@ -25,6 +25,7 @@ The library should stay narrow and reliable: accept work items, persist enough s
 - provider request construction and batch submission
 - retry classification and attempt tracking
 - durable replayable request persistence once a request artifact has been prepared
+- explicit terminal cleanup of replay artifacts
 - result parsing, validation, and run rehydration
 - lightweight lineage metadata needed to join results back to user systems
 
@@ -61,5 +62,6 @@ This means a fresh worker can resume a run from the same SQLite database plus si
 
 - SQLite-backed runs persist per-item request artifact path, line number, and request hash.
 - Once that pointer exists, `batchor` can prune large inline request-building fields from SQLite.
+- Once the run is terminal, `batchor` exposes explicit artifact pruning so users can reclaim replay storage without losing terminal results.
 - Artifact storage is local filesystem only today.
 - Mid-ingest crash recovery before the first request artifact exists is still `TBD`.

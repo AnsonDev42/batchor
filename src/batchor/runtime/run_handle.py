@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from batchor.core.enums import RunLifecycleStatus
 from batchor.core.exceptions import RunNotFinishedError
-from batchor.core.models import BatchResultItem, RunSnapshot, RunSummary
+from batchor.core.models import ArtifactPruneResult, BatchResultItem, RunSnapshot, RunSummary
 from batchor.core.types import JSONObject
 from batchor.providers.base import BatchProvider, StructuredOutputSchema
 from batchor.storage.state import PersistedRunConfig
@@ -115,3 +115,7 @@ class Run:
         if not self.is_finished:
             raise RunNotFinishedError(self.run_id)
         return self._runner._results_for_run(self.run_id, self._context)
+
+    def prune_artifacts(self) -> ArtifactPruneResult:
+        self._summary = self._runner.state.get_run_summary(run_id=self.run_id)
+        return self._runner.prune_artifacts(self.run_id)

@@ -10,6 +10,7 @@ Structured-first OpenAI Batch runner with durable `Run` handles, Pydantic v2 val
 - iterable or file-backed item inputs via `CsvItemSource` and `JsonlItemSource`
 - `runner.start(...) -> Run` returns immediately with a durable `run_id`
 - `runner.get_run(run_id)` rehydrates a run from storage
+- completed runs can explicitly prune replayable request artifacts through `Run.prune_artifacts()`
 - local SQLAlchemy 2 SQLite storage is the default backend
 - `BatchRunner(storage="memory")` is available for ephemeral tests and one-off runs
 - replayable request JSONL artifacts are stored durably beside SQLite so retry/resume does not depend on the original input iterator after a request has been prepared
@@ -215,3 +216,12 @@ Most users should keep the defaults. The registries exist so new vendors and dur
 ## Durable Request Artifacts
 
 For SQLite-backed runs, `batchor` now treats SQLite as the control-plane ledger and stores replayable request JSONL artifacts on disk beside the database under a sibling `*_artifacts/` directory. Once a request artifact has been written, `batchor` can resume or retry that item without rebuilding the prompt from the original source input.
+
+When a run is terminal, users can explicitly reclaim that replay storage:
+
+```python
+report = run.prune_artifacts()
+print(report.removed_artifact_paths)
+```
+
+Pruning clears the request-artifact pointers from storage and removes the on-disk request files, but it keeps terminal item results and errors available through `run.results()` and `run.snapshot()`.

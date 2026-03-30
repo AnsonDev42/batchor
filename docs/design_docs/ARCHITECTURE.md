@@ -49,6 +49,7 @@ Execution and validation behavior:
 - `Run`
 - token estimation and request chunking
 - durable request-artifact replay for retry/resume
+- explicit terminal-run artifact pruning
 - retry helpers
 - response validation and structured-output parsing
 
@@ -79,6 +80,7 @@ Durable and ephemeral state backends:
 5. `Run.results()` is terminal-only.
 6. `Run.refresh()` is explicit; status properties do not implicitly hit the provider.
 7. SQLite-backed runs can replay prepared request JSONL artifacts without rebuilding prompts from the original item source.
+8. `Run.prune_artifacts()` is explicit and terminal-only; it is not automatic garbage collection.
 
 ## Extension Seams
 

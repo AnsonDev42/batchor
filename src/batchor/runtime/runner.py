@@ -11,8 +11,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from batchor.core.exceptions import ModelResolutionError
+from batchor.core.enums import RunLifecycleStatus
+from batchor.core.exceptions import ModelResolutionError, RunNotFinishedError
 from batchor.core.models import (
+    ArtifactPruneResult,
     BatchJob,
     BatchResultItem,
     PromptParts,
@@ -102,6 +104,41 @@ class BatchRunner:
             run_id=run_id,
             context=context,
             summary=self.state.get_run_summary(run_id=run_id),
+        )
+
+    def prune_artifacts(self, run_id: str) -> ArtifactPruneResult:
+        summary = self.state.get_run_summary(run_id=run_id)
+        if summary.status is not RunLifecycleStatus.COMPLETED:
+            raise RunNotFinishedError(run_id)
+        artifact_paths = self.state.get_request_artifact_paths(run_id=run_id)
+        if not artifact_paths:
+            return ArtifactPruneResult(
+                run_id=run_id,
+                removed_artifact_paths=[],
+                missing_artifact_paths=[],
+                cleared_item_pointers=0,
+            )
+        removed: list[str] = []
+        missing: list[str] = []
+        for artifact_path in artifact_paths:
+            path = self._artifact_full_path(artifact_path)
+            if path.exists():
+                if not path.is_file():
+                    raise IsADirectoryError(f"artifact path is not a file: {artifact_path}")
+                path.unlink()
+                removed.append(artifact_path)
+            else:
+                missing.append(artifact_path)
+        cleared_item_pointers = self.state.clear_request_artifact_pointers(
+            run_id=run_id,
+            artifact_paths=artifact_paths,
+        )
+        self._prune_empty_artifact_dirs(artifact_paths)
+        return ArtifactPruneResult(
+            run_id=run_id,
+            removed_artifact_paths=removed,
+            missing_artifact_paths=missing,
+            cleared_item_pointers=cleared_item_pointers,
         )
 
     @staticmethod
@@ -288,7 +325,7 @@ class BatchRunner:
     ) -> JSONObject:
         if line_number <= 0:
             raise ValueError("line_number must be > 0")
-        path = self.temp_root / artifact_path
+        path = self._artifact_full_path(artifact_path)
         with path.open("r", encoding="utf-8") as handle:
             for index, raw_line in enumerate(handle, start=1):
                 if index != line_number:
@@ -361,3 +398,24 @@ class BatchRunner:
         if not isinstance(normalized, dict):
             raise TypeError(f"{label} must be a JSON object")
         return normalized
+
+    def _artifact_full_path(self, artifact_path: str) -> Path:
+        relative_path = Path(artifact_path)
+        if relative_path.is_absolute():
+            raise ValueError(f"artifact path must be relative: {artifact_path}")
+        if ".." in relative_path.parts:
+            raise ValueError(f"artifact path must not escape temp_root: {artifact_path}")
+        return self.temp_root / relative_path
+
+    def _prune_empty_artifact_dirs(self, artifact_paths: list[str]) -> None:
+        candidate_dirs: set[Path] = set()
+        for artifact_path in artifact_paths:
+            for parent in self._artifact_full_path(artifact_path).parents:
+                if parent == self.temp_root:
+                    break
+                candidate_dirs.add(parent)
+        for directory in sorted(candidate_dirs, key=lambda path: len(path.parts), reverse=True):
+            try:
+                directory.rmdir()
+            except OSError:
+                continue

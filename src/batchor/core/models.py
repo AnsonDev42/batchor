@@ -267,3 +267,11 @@ class RunSnapshot:
     active_batches: int
     backoff_remaining_sec: float
     items: list[BatchResultItem]
+
+
+@dataclass(frozen=True)
+class ArtifactPruneResult:
+    run_id: str
+    removed_artifact_paths: list[str]
+    missing_artifact_paths: list[str]
+    cleared_item_pointers: int

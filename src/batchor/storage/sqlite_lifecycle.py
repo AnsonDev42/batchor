@@ -289,6 +289,47 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
             )
             self._refresh_run_status(conn, run_id)
 
+    def clear_request_artifact_pointers(
+        self,
+        *,
+        run_id: str,
+        artifact_paths: list[str],
+    ) -> int:
+        if not artifact_paths:
+            return 0
+        with self.engine.begin() as conn:
+            target_paths = sorted(set(artifact_paths))
+            row_count = len(
+                list(
+                    conn.execute(
+                        select(ITEMS_TABLE.c.item_id).where(
+                            and_(
+                                ITEMS_TABLE.c.run_id == run_id,
+                                ITEMS_TABLE.c.request_artifact_path.in_(target_paths),
+                            )
+                        )
+                    ).scalars()
+                )
+            )
+            if row_count == 0:
+                return 0
+            conn.execute(
+                update(ITEMS_TABLE)
+                .where(
+                    and_(
+                        ITEMS_TABLE.c.run_id == run_id,
+                        ITEMS_TABLE.c.request_artifact_path.in_(target_paths),
+                    )
+                )
+                .values(
+                    request_artifact_path=None,
+                    request_artifact_line=None,
+                    request_sha256=None,
+                )
+            )
+            self._refresh_run_status(conn, run_id)
+            return row_count
+
     def get_active_batches(self, *, run_id: str) -> list[ActiveBatchRecord]:
         with self.engine.begin() as conn:
             rows = conn.execute(

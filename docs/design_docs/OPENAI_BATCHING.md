@@ -16,6 +16,8 @@ For SQLite-backed runs, prepared OpenAI request rows are written to durable JSON
 
 This lets retry/resume replay the prepared request body without rebuilding the prompt from the original CSV/JSONL source after the request artifact already exists.
 
+After a run reaches a terminal state, users can call `Run.prune_artifacts()` to delete those replay files and clear their SQLite pointers. That preserves terminal results while reclaiming the request-side disk footprint.
+
 ### Token Estimation
 
 Token estimation is `tiktoken`-first:

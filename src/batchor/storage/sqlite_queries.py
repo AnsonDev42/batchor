@@ -131,6 +131,23 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
         remaining = (state.next_retry_at - self._now()).total_seconds()
         return remaining if remaining > 0 else 0.0
 
+    def get_request_artifact_paths(self, *, run_id: str) -> list[str]:
+        with self.engine.begin() as conn:
+            rows = conn.execute(
+                select(ITEMS_TABLE.c.request_artifact_path)
+                .where(
+                    (ITEMS_TABLE.c.run_id == run_id)
+                    & ITEMS_TABLE.c.request_artifact_path.is_not(None)
+                )
+                .distinct()
+                .order_by(ITEMS_TABLE.c.request_artifact_path)
+            )
+            return [
+                artifact_path
+                for artifact_path in (_nullable_str(value) for value in rows.scalars())
+                if artifact_path is not None
+            ]
+
     def _summary_for_run(
         self,
         conn: Connection,

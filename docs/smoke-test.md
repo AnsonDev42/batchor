@@ -45,6 +45,7 @@ Expected:
 
 - durable `Run` lifecycle still works
 - retry/resume from persisted request artifacts still works for SQLite-backed runs
+- terminal runs can prune request artifacts without losing persisted results
 - OpenAI request splitting and enqueue-limit logic still behave as expected
 - structured-output parsing remains stable
 

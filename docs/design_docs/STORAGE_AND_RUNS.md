@@ -16,8 +16,9 @@ The public handle exposes:
 - `snapshot()`
 - `summary()`
 - `results()`
+- `prune_artifacts()`
 
-`results()` is intentionally terminal-only.
+`results()` and `prune_artifacts()` are intentionally terminal-only.
 
 ## Current Durable Backend
 
@@ -45,6 +46,8 @@ In-memory storage exists for tests and short-lived local runs.
 
 Once an item has a durable request artifact pointer, `batchor` may prune large inline request-building fields from SQLite and rely on the artifact for later retries.
 
+Once the whole run is terminal, users may explicitly call `Run.prune_artifacts()` or `BatchRunner.prune_artifacts(run_id)` to remove replayable request files and clear their storage pointers. This is a manual lifecycle step today; `batchor` does not auto-delete artifacts behind the user's back.
+
 ## Current Gaps
 
 - SQLite is the only durable backend implemented today
@@ -55,6 +58,6 @@ Once an item has a durable request artifact pointer, `batchor` may prune large i
 ## TBD
 
 - Postgres backend and migration story
-- artifact retention policy
+- automated retention windows and archive/export workflow beyond explicit terminal pruning
 - explicit schema migration/versioning guidance
 - partial-result read APIs for non-terminal runs

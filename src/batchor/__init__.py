@@ -7,6 +7,7 @@ from batchor.core.enums import (
 )
 from batchor.core.exceptions import ModelResolutionError, RunNotFinishedError
 from batchor.core.models import (
+    ArtifactPruneResult,
     BatchItem,
     BatchJob,
     ChunkPolicy,
@@ -40,6 +41,7 @@ from batchor.storage.state import MemoryStateStore, StateStore
 
 __all__ = [
     "BatchProvider",
+    "ArtifactPruneResult",
     "BatchItem",
     "BatchJob",
     "BatchRunner",
