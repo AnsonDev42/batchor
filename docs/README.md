@@ -13,6 +13,8 @@ Some documents describe current behavior. Others intentionally mark extension wo
 | `design_docs/OPENAI_BATCHING.md` | OpenAI Batch request construction, token estimation, enqueue-limit handling, and splitting semantics. |
 | `design_docs/STORAGE_AND_RUNS.md` | Durable `Run` model, SQLite persistence, and storage abstraction surface. |
 | `design_docs/ROADMAP.md` | Planned work and intentionally unimplemented areas. |
+| `plans/README.md` | Index of forward-looking implementation plans for future agents. |
+| `plans/DURABLE_EXECUTION_BOUNDARY.md` | Proposed boundary between `batchor`, SQLite, and user pipelines for durable retry/resume. |
 
 ## Scope
 

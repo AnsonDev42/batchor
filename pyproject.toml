@@ -19,6 +19,7 @@ dependencies = [
 dev = [
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
+    "pytest-xdist>=3.8.0",
     "ty>=0.0.26",
 ]
 
@@ -26,7 +27,7 @@ dev = [
 packages = ["src/batchor"]
 
 [tool.pytest.ini_options]
-addopts = "-q --strict-config --strict-markers --cov=src --cov-report=term-missing --cov-fail-under=85"
+addopts = "-q -n auto --strict-config --strict-markers --cov=src --cov-report=term-missing --cov-fail-under=85"
 pythonpath = ["src"]
 markers = [
     "unit: fast isolated tests",

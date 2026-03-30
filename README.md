@@ -72,6 +72,8 @@ uv run ty check src
 uv run pytest -q
 ```
 
+The default pytest configuration runs tests in parallel and enforces an `85%` coverage floor.
+
 ## Structured Output
 
 ```python

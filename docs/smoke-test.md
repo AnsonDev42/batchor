@@ -29,7 +29,8 @@ Expected:
 
 - exit code `0`
 - type checks pass
-- coverage gate passes
+- coverage gate passes at `85%` or higher
+- pytest runs in parallel through the default project config
 
 ## Level 2: Targeted Runtime Smoke
 
@@ -45,6 +46,11 @@ Expected:
 - durable `Run` lifecycle still works
 - OpenAI request splitting and enqueue-limit logic still behave as expected
 - structured-output parsing remains stable
+
+Notes:
+
+- The default pytest configuration includes `-n auto` and the `85%` coverage gate.
+- `--no-cov` is only for supplemental targeted runs after the main smoke test already passed.
 
 ## Live OpenAI Smoke
 
