@@ -40,7 +40,9 @@ That keeps the current behavior stable while making future provider and database
 
 ```text
 batchor/
+  AGENTS.md
   README.md
+  docs/
   pyproject.toml
   src/batchor/
     core/
@@ -50,6 +52,16 @@ batchor/
     storage/
   tests/
 ```
+
+## Docs
+
+- [AGENTS.md](AGENTS.md)
+- [docs/README.md](docs/README.md)
+- [docs/design_docs/ARCHITECTURE.md](docs/design_docs/ARCHITECTURE.md)
+- [docs/design_docs/OPENAI_BATCHING.md](docs/design_docs/OPENAI_BATCHING.md)
+- [docs/design_docs/STORAGE_AND_RUNS.md](docs/design_docs/STORAGE_AND_RUNS.md)
+- [docs/design_docs/ROADMAP.md](docs/design_docs/ROADMAP.md)
+- [docs/smoke-test.md](docs/smoke-test.md)
 
 ## Quickstart
 
