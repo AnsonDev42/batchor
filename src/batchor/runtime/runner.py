@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import tempfile
 import time
-from typing import Any, Callable, cast
+from typing import Any, Callable, Iterator, cast
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -18,6 +18,7 @@ from batchor.core.models import (
     BatchItem,
     BatchJob,
     BatchResultItem,
+    OpenAIProviderConfig,
     PromptParts,
     RunSnapshot,
     RunSummary,
@@ -41,6 +42,8 @@ from batchor.runtime.retry import (
 from batchor.runtime.tokens import (
     chunk_request_rows,
     effective_inflight_token_budget,
+    resolve_openai_batch_token_limit,
+    split_rows_by_token_limit,
 )
 from batchor.runtime.validation import (
     model_output_schema,
@@ -56,6 +59,7 @@ from batchor.storage.state import (
     PersistedRunConfig,
     PersistedItemRecord,
     PreparedSubmission,
+    QueuedItemFailureRecord,
     StateStore,
 )
 
@@ -182,11 +186,12 @@ class BatchRunner:
     def start(self, job: BatchJob[Any, BaseModel]) -> Run:
         run_id = generate_run_id()
         config = self._persisted_config_for_job(job)
-        items = self._materialize_items(job)
-        self.state.create_run(run_id=run_id, config=config, items=items)
+        self.state.create_run(run_id=run_id, config=config, items=[])
         context = self._context_for_config(config=config, output_model=job.structured_output)
         self._contexts[run_id] = context
-        self._submit_pending_items(run_id, context)
+        for item_chunk in self._materialize_item_chunks(job):
+            self.state.append_items(run_id=run_id, items=item_chunk)
+            self._submit_pending_items(run_id, context)
         return Run(
             runner=self,
             run_id=run_id,
@@ -238,22 +243,28 @@ class BatchRunner:
             provider_config=job.provider_config,
             chunk_policy=job.chunk_policy,
             retry_policy=job.retry_policy,
-            inflight_policy=job.inflight_policy,
             batch_metadata=dict(job.batch_metadata),
             schema_name=job.schema_name,
             structured_output_module=structured_output_module,
             structured_output_qualname=structured_output_qualname,
         )
 
-    def _materialize_items(self, job: BatchJob[Any, BaseModel]) -> list[MaterializedItem]:
-        items: list[MaterializedItem] = []
+    def _materialize_item_chunks(
+        self,
+        job: BatchJob[Any, BaseModel],
+        *,
+        chunk_size: int = 1000,
+    ) -> Iterator[list[MaterializedItem]]:
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be > 0")
+        current_chunk: list[MaterializedItem] = []
         seen_ids: set[str] = set()
         for item_index, item in enumerate(job.items):
             if item.item_id in seen_ids:
                 raise ValueError(f"duplicate item_id: {item.item_id}")
             seen_ids.add(item.item_id)
             prompt_parts = self._normalize_prompt_parts(job.build_prompt(item))
-            items.append(
+            current_chunk.append(
                 MaterializedItem(
                     item_id=item.item_id,
                     item_index=item_index,
@@ -263,7 +274,11 @@ class BatchRunner:
                     system_prompt=prompt_parts.system_prompt,
                 )
             )
-        return items
+            if len(current_chunk) >= chunk_size:
+                yield current_chunk
+                current_chunk = []
+        if current_chunk:
+            yield current_chunk
 
     def _context_for_config(
         self,
@@ -328,10 +343,79 @@ class BatchRunner:
             return 0
 
         prepared_items = [self._prepare_item(item, context) for item in claimed]
+        batch_token_limit = self._batch_token_limit(config.provider_config)
+        inflight_budget = self._inflight_budget(config.provider_config)
+        failed_item_ids: set[str] = set()
+        if batch_token_limit is not None:
+            within_limit_rows, oversized_rows = split_rows_by_token_limit(
+                [self._prepared_dict(item) for item in prepared_items],
+                token_limit=batch_token_limit,
+                token_field="submission_tokens",
+            )
+            prepared_rows = within_limit_rows
+            if oversized_rows:
+                self.state.mark_queued_items_failed(
+                    run_id=run_id,
+                    failures=[
+                        QueuedItemFailureRecord(
+                            item_id=str(row["item_id"]),
+                            error=self._oversized_request_failure(
+                                provider_config=config.provider_config,
+                                limit_type="batch",
+                                submission_tokens=int(row["submission_tokens"]),
+                                limit=batch_token_limit,
+                            ),
+                            count_attempt=False,
+                        )
+                        for row in oversized_rows
+                    ],
+                    max_attempts=config.retry_policy.max_attempts,
+                )
+                failed_item_ids.update(str(row["item_id"]) for row in oversized_rows)
+        else:
+            prepared_rows = [self._prepared_dict(item) for item in prepared_items]
+
+        if inflight_budget is not None:
+            inflight_safe_rows, oversized_rows = split_rows_by_token_limit(
+                prepared_rows,
+                token_limit=inflight_budget,
+                token_field="submission_tokens",
+            )
+            prepared_rows = inflight_safe_rows
+            if oversized_rows:
+                self.state.mark_queued_items_failed(
+                    run_id=run_id,
+                    failures=[
+                        QueuedItemFailureRecord(
+                            item_id=str(row["item_id"]),
+                            error=self._oversized_request_failure(
+                                provider_config=config.provider_config,
+                                limit_type="inflight",
+                                submission_tokens=int(row["submission_tokens"]),
+                                limit=inflight_budget,
+                            ),
+                            count_attempt=False,
+                        )
+                        for row in oversized_rows
+                    ],
+                    max_attempts=config.retry_policy.max_attempts,
+                )
+                failed_item_ids.update(str(row["item_id"]) for row in oversized_rows)
+
+        if not prepared_rows:
+            unsent = [
+                item.item_id
+                for item in claimed
+                if item.item_id not in failed_item_ids
+            ]
+            if unsent:
+                self.state.release_items_to_pending(run_id=run_id, item_ids=unsent)
+            return 0
+
         chunks = chunk_request_rows(
-            [self._prepared_dict(item) for item in prepared_items],
+            prepared_rows,
             chunk_policy=config.chunk_policy,
-            inflight_policy=config.inflight_policy,
+            max_tokens=batch_token_limit,
             estimate_row_bytes=lambda row: int(row["request_bytes"]),
             estimate_row_tokens=lambda row: int(row["submission_tokens"]),
         )
@@ -341,7 +425,11 @@ class BatchRunner:
 
         for chunk_index, chunk in enumerate(chunks, start=1):
             chunk_tokens = sum(int(row["submission_tokens"]) for row in chunk)
-            if not self._has_inflight_capacity(run_id=run_id, context=context, chunk_tokens=chunk_tokens):
+            if not self._has_inflight_capacity(
+                run_id=run_id,
+                inflight_budget=inflight_budget,
+                chunk_tokens=chunk_tokens,
+            ):
                 break
             request_lines = [
                 cast(JSONObject, row["request_line"])
@@ -397,7 +485,7 @@ class BatchRunner:
         unsent = [
             item.item_id
             for item in claimed
-            if item.item_id not in submitted_item_ids
+            if item.item_id not in submitted_item_ids and item.item_id not in failed_item_ids
         ]
         if unsent:
             self.state.release_items_to_pending(run_id=run_id, item_ids=unsent)
@@ -407,19 +495,64 @@ class BatchRunner:
         self,
         *,
         run_id: str,
-        context: _RunContext,
+        inflight_budget: int | None,
         chunk_tokens: int,
     ) -> bool:
-        inflight_budget = effective_inflight_token_budget(context.config.inflight_policy)
         if inflight_budget is None:
             return True
         if chunk_tokens > inflight_budget:
-            raise ValueError(
-                f"chunk token estimate {chunk_tokens} exceeds inflight budget {inflight_budget}"
-            )
+            return False
         active_tokens = self.state.get_active_submitted_token_estimate(run_id=run_id)
         available = max(inflight_budget - active_tokens, 0)
         return chunk_tokens <= available
+
+    @staticmethod
+    def _inflight_budget(provider_config: Any) -> int | None:
+        if not isinstance(provider_config, OpenAIProviderConfig):
+            return None
+        return effective_inflight_token_budget(provider_config.enqueue_limits)
+
+    @staticmethod
+    def _batch_token_limit(provider_config: Any) -> int | None:
+        if not isinstance(provider_config, OpenAIProviderConfig):
+            return None
+        return resolve_openai_batch_token_limit(provider_config.enqueue_limits)
+
+    @staticmethod
+    def _oversized_request_failure(
+        *,
+        provider_config: Any,
+        limit_type: str,
+        submission_tokens: int,
+        limit: int,
+    ):
+        from batchor.core.models import ItemFailure
+
+        provider_name = "provider"
+        if isinstance(provider_config, OpenAIProviderConfig):
+            provider_name = provider_config.provider_kind.value
+        if limit_type == "batch":
+            error_class = f"{provider_name}_request_exceeds_batch_token_limit"
+            message = (
+                "request token estimate exceeds the provider batch token limit "
+                f"({submission_tokens} > {limit})"
+            )
+        else:
+            error_class = f"{provider_name}_request_exceeds_inflight_token_limit"
+            message = (
+                "request token estimate exceeds the provider inflight token budget "
+                f"({submission_tokens} > {limit})"
+            )
+        return ItemFailure(
+            error_class=error_class,
+            message=message,
+            raw_error={
+                "submission_tokens": submission_tokens,
+                "limit": limit,
+                "limit_type": limit_type,
+            },
+            retryable=False,
+        )
 
     def _poll_once(self, run_id: str, context: _RunContext) -> None:
         for batch in self.state.get_active_batches(run_id=run_id):

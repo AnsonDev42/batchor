@@ -26,7 +26,6 @@ from sqlalchemy.engine import Connection, Engine, RowMapping
 from batchor.core.enums import ItemStatus, RunLifecycleStatus
 from batchor.core.models import (
     ChunkPolicy,
-    InflightPolicy,
     ItemFailure,
     RetryPolicy,
     RunSummary,
@@ -43,6 +42,7 @@ from batchor.storage.state import (
     PersistedItemRecord,
     PersistedRunConfig,
     PreparedSubmission,
+    QueuedItemFailureRecord,
     RetryBackoffState,
     StateStore,
     serialize_item_failure,
@@ -60,7 +60,6 @@ RUNS_TABLE = Table(
     Column("provider_config_json", Text, nullable=False),
     Column("chunk_policy_json", Text, nullable=False),
     Column("retry_policy_json", Text, nullable=False),
-    Column("inflight_policy_json", Text, nullable=False),
     Column("batch_metadata_json", Text, nullable=False),
     Column("schema_name", String, nullable=True),
     Column("structured_output_module", String, nullable=True),
@@ -156,32 +155,6 @@ class SQLiteStorage(StateStore):
         config: PersistedRunConfig,
         items: list[MaterializedItem],
     ) -> None:
-        seen_ids: set[str] = set()
-        item_rows: list[dict[str, object | None]] = []
-        for item in sorted(items, key=lambda entry: entry.item_index):
-            if item.item_id in seen_ids:
-                raise ValueError(f"duplicate item_id: {item.item_id}")
-            seen_ids.add(item.item_id)
-            item_rows.append(
-                {
-                    "run_id": run_id,
-                    "item_id": item.item_id,
-                    "item_index": item.item_index,
-                    "payload_json": _encode_json(item.payload),
-                    "metadata_json": _encode_json(item.metadata),
-                    "prompt": item.prompt,
-                    "system_prompt": item.system_prompt,
-                    "status": ItemStatus.PENDING,
-                    "attempt_count": 0,
-                    "active_batch_id": None,
-                    "active_custom_id": None,
-                    "active_submission_tokens": 0,
-                    "output_text": None,
-                    "output_json": None,
-                    "raw_response_json": None,
-                    "error_json": None,
-                }
-            )
         with self.engine.begin() as conn:
             conn.execute(
                 RUNS_TABLE.insert(),
@@ -195,7 +168,6 @@ class SQLiteStorage(StateStore):
                         ),
                         "chunk_policy_json": _encode_json(asdict(config.chunk_policy)),
                         "retry_policy_json": _encode_json(asdict(config.retry_policy)),
-                        "inflight_policy_json": _encode_json(asdict(config.inflight_policy)),
                         "batch_metadata_json": _encode_json(config.batch_metadata),
                         "schema_name": config.schema_name,
                         "structured_output_module": config.structured_output_module,
@@ -216,8 +188,20 @@ class SQLiteStorage(StateStore):
                     }
                 ],
             )
-            if item_rows:
-                conn.execute(ITEMS_TABLE.insert(), item_rows)
+            if items:
+                conn.execute(ITEMS_TABLE.insert(), self._item_rows(run_id=run_id, items=items))
+            self._refresh_run_status(conn, run_id)
+
+    def append_items(
+        self,
+        *,
+        run_id: str,
+        items: list[MaterializedItem],
+    ) -> None:
+        if not items:
+            return
+        with self.engine.begin() as conn:
+            conn.execute(ITEMS_TABLE.insert(), self._item_rows(run_id=run_id, items=items))
             self._refresh_run_status(conn, run_id)
 
     def get_run_config(self, *, run_id: str) -> PersistedRunConfig:
@@ -534,6 +518,71 @@ class SQLiteStorage(StateStore):
             conn.execute(statement, payloads)
             self._refresh_run_status(conn, run_id)
 
+    def mark_queued_items_failed(
+        self,
+        *,
+        run_id: str,
+        failures: list[QueuedItemFailureRecord],
+        max_attempts: int,
+    ) -> None:
+        if not failures:
+            return
+        with self.engine.begin() as conn:
+            item_ids = [failure.item_id for failure in failures]
+            rows = conn.execute(
+                select(
+                    ITEMS_TABLE.c.item_id,
+                    ITEMS_TABLE.c.attempt_count,
+                ).where(
+                    and_(
+                        ITEMS_TABLE.c.run_id == run_id,
+                        ITEMS_TABLE.c.item_id.in_(item_ids),
+                    )
+                )
+            ).mappings()
+            attempts_by_item_id = {
+                str(row["item_id"]): int(row["attempt_count"])
+                for row in rows
+            }
+            payloads: list[dict[str, object | None]] = []
+            for failure in failures:
+                attempt_count = attempts_by_item_id[failure.item_id]
+                if failure.count_attempt:
+                    attempt_count += 1
+                payloads.append(
+                    {
+                        "b_run_id": run_id,
+                        "b_item_id": failure.item_id,
+                        "b_attempt_count": attempt_count,
+                        "b_status": _failed_status(
+                            attempt_count=attempt_count,
+                            error=failure.error,
+                            max_attempts=max_attempts,
+                            count_attempt=failure.count_attempt,
+                        ),
+                        "b_error_json": _encode_json(serialize_item_failure(failure.error)),
+                    }
+                )
+            statement = (
+                update(ITEMS_TABLE)
+                .where(
+                    and_(
+                        ITEMS_TABLE.c.run_id == bindparam("b_run_id"),
+                        ITEMS_TABLE.c.item_id == bindparam("b_item_id"),
+                    )
+                )
+                .values(
+                    attempt_count=bindparam("b_attempt_count"),
+                    status=bindparam("b_status"),
+                    error_json=bindparam("b_error_json"),
+                    active_batch_id=None,
+                    active_custom_id=None,
+                    active_submission_tokens=0,
+                )
+            )
+            conn.execute(statement, payloads)
+            self._refresh_run_status(conn, run_id)
+
     def reset_batch_items_to_pending(
         self,
         *,
@@ -676,10 +725,43 @@ class SQLiteStorage(StateStore):
             select(RUNS_TABLE).where(RUNS_TABLE.c.run_id == run_id)
         ).mappings().one()
 
+    @staticmethod
+    def _item_rows(
+        *,
+        run_id: str,
+        items: list[MaterializedItem],
+    ) -> list[dict[str, object | None]]:
+        rows: list[dict[str, object | None]] = []
+        seen_ids: set[str] = set()
+        for item in sorted(items, key=lambda entry: entry.item_index):
+            if item.item_id in seen_ids:
+                raise ValueError(f"duplicate item_id: {item.item_id}")
+            seen_ids.add(item.item_id)
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "item_id": item.item_id,
+                    "item_index": item.item_index,
+                    "payload_json": _encode_json(item.payload),
+                    "metadata_json": _encode_json(item.metadata),
+                    "prompt": item.prompt,
+                    "system_prompt": item.system_prompt,
+                    "status": ItemStatus.PENDING,
+                    "attempt_count": 0,
+                    "active_batch_id": None,
+                    "active_custom_id": None,
+                    "active_submission_tokens": 0,
+                    "output_text": None,
+                    "output_json": None,
+                    "raw_response_json": None,
+                    "error_json": None,
+                }
+            )
+        return rows
+
     def _run_config_from_row(self, row: RowMapping) -> PersistedRunConfig:
         chunk_data = _decode_dict(row["chunk_policy_json"])
         retry_data = _decode_dict(row["retry_policy_json"])
-        inflight_data = _decode_dict(row["inflight_policy_json"])
         metadata = {
             key: str(value)
             for key, value in _decode_dict(row["batch_metadata_json"]).items()
@@ -691,18 +773,12 @@ class SQLiteStorage(StateStore):
             chunk_policy=ChunkPolicy(
                 max_requests=_require_int(chunk_data, "max_requests"),
                 max_file_bytes=_require_int(chunk_data, "max_file_bytes"),
-                max_enqueued_tokens=_require_int(chunk_data, "max_enqueued_tokens"),
                 chars_per_token=_require_int(chunk_data, "chars_per_token"),
             ),
             retry_policy=RetryPolicy(
                 max_attempts=_require_int(retry_data, "max_attempts"),
                 base_backoff_sec=_require_float(retry_data, "base_backoff_sec"),
                 max_backoff_sec=_require_float(retry_data, "max_backoff_sec"),
-            ),
-            inflight_policy=InflightPolicy(
-                enqueued_token_limit=_require_int(inflight_data, "enqueued_token_limit"),
-                target_ratio=_require_float(inflight_data, "target_ratio"),
-                headroom=_require_int(inflight_data, "headroom"),
             ),
             batch_metadata=metadata,
             schema_name=_nullable_str(row["schema_name"]),

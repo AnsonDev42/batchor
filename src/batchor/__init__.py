@@ -10,8 +10,8 @@ from batchor.core.models import (
     BatchItem,
     BatchJob,
     ChunkPolicy,
-    InflightPolicy,
     ItemFailure,
+    OpenAIEnqueueLimitConfig,
     OpenAIProviderConfig,
     PromptParts,
     RetryPolicy,
@@ -32,6 +32,8 @@ from batchor.providers.registry import (
 )
 from batchor.runtime.runner import BatchRunner, Run
 from batchor.runtime.validation import StructuredOutputError, default_schema_name, model_output_schema
+from batchor.sources.base import ItemSource
+from batchor.sources.files import CsvItemSource, JsonlItemSource
 from batchor.storage.registry import StorageRegistry, build_default_storage_registry
 from batchor.storage.sqlite import SQLiteStorage
 from batchor.storage.state import MemoryStateStore, StateStore
@@ -42,13 +44,16 @@ __all__ = [
     "BatchJob",
     "BatchRunner",
     "ChunkPolicy",
-    "InflightPolicy",
+    "CsvItemSource",
     "ItemFailure",
     "ItemStatus",
+    "ItemSource",
+    "JsonlItemSource",
     "MemoryStateStore",
     "ModelResolutionError",
     "OpenAIBatchProvider",
     "OpenAIEndpoint",
+    "OpenAIEnqueueLimitConfig",
     "OpenAIProviderConfig",
     "ProviderConfig",
     "ProviderKind",

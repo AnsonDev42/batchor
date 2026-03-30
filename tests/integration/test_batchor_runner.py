@@ -12,8 +12,10 @@ from batchor import (
     BatchItem,
     BatchJob,
     BatchRunner,
+    JsonlItemSource,
     ItemStatus,
     MemoryStateStore,
+    OpenAIEnqueueLimitConfig,
     OpenAIProviderConfig,
     PromptParts,
     RetryPolicy,
@@ -76,6 +78,7 @@ class _FakeBatchProvider:
         self._current_lines: list[dict[str, object]] = []
         self._file_to_lines: dict[str, list[dict[str, object]]] = {}
         self._batch_to_file: dict[str, str] = {}
+        self.created_batches: list[str] = []
         self._parser = OpenAIBatchProvider(
             OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
             client=object(),
@@ -118,6 +121,7 @@ class _FakeBatchProvider:
         batch_id = f"batch_{self._next_batch}"
         self._next_batch += 1
         self._batch_to_file[batch_id] = input_file_id
+        self.created_batches.append(batch_id)
         return {"id": batch_id, "status": "submitted", "metadata": metadata or {}}
 
     def get_batch(self, batch_id: str) -> dict[str, object]:
@@ -337,3 +341,150 @@ def test_sqlite_storage_supports_rehydrating_run_handle(tmp_path: Path) -> None:
     results = resumed.results()
     assert results[0].output is not None
     assert results[0].output.label == "row1"
+
+
+def test_auto_splits_large_input_into_multiple_batches(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path,
+    )
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[
+                BatchItem(item_id="row1", payload={"text": "aaa"}),
+                BatchItem(item_id="row2", payload={"text": "bbb"}),
+                BatchItem(item_id="row3", payload={"text": "cc"}),
+            ],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(
+                api_key="k",
+                model="gpt-4.1",
+                enqueue_limits=OpenAIEnqueueLimitConfig(max_batch_enqueued_tokens=5),
+            ),
+        )
+    )
+    assert len(provider.created_batches) == 2
+    assert [result.status for result in run.results()] == [
+        ItemStatus.COMPLETED,
+        ItemStatus.COMPLETED,
+        ItemStatus.COMPLETED,
+    ]
+
+
+def test_inflight_limit_defers_later_submissions_without_consuming_attempts(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path,
+    )
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[
+                BatchItem(item_id="row1", payload={"text": "aaa"}),
+                BatchItem(item_id="row2", payload={"text": "bbb"}),
+                BatchItem(item_id="row3", payload={"text": "cc"}),
+            ],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(
+                api_key="k",
+                model="gpt-4.1",
+                enqueue_limits=OpenAIEnqueueLimitConfig(
+                    enqueued_token_limit=5,
+                    target_ratio=1.0,
+                    max_batch_enqueued_tokens=5,
+                ),
+            ),
+        )
+    )
+    assert len(provider.created_batches) == 2
+    assert [result.attempt_count for result in run.results()] == [0, 0, 0]
+
+
+def test_oversized_request_becomes_permanent_failure_instead_of_aborting_run(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path,
+    )
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[
+                BatchItem(item_id="row1", payload={"text": "abcdef"}),
+                BatchItem(item_id="row2", payload={"text": "ok"}),
+            ],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(
+                api_key="k",
+                model="gpt-4.1",
+                enqueue_limits=OpenAIEnqueueLimitConfig(max_batch_enqueued_tokens=5),
+            ),
+        )
+    )
+    results = run.results()
+    assert results[0].status is ItemStatus.FAILED_PERMANENT
+    assert results[0].error is not None
+    assert results[0].error.error_class == "openai_request_exceeds_batch_token_limit"
+    assert results[0].attempt_count == 0
+    assert results[1].status is ItemStatus.COMPLETED
+    assert len(provider.created_batches) == 1
+
+
+def test_file_backed_jsonl_job_matches_in_memory_results(tmp_path: Path) -> None:
+    file_path = tmp_path / "items.jsonl"
+    file_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"id": "row1", "text": "hello"}),
+                json.dumps({"id": "row2", "text": "world"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    source = JsonlItemSource(
+        file_path,
+        item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+        payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path / "source",
+    )
+    run = runner.run_and_wait(
+        BatchJob(
+            items=source,
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        )
+    )
+    assert [result.item_id for result in run.results()] == ["row1", "row2"]
+    assert [result.output.label if result.output is not None else None for result in run.results()] == [
+        "row1",
+        "row2",
+    ]

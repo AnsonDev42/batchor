@@ -8,7 +8,6 @@ from typing import Callable
 from batchor.core.enums import ItemStatus, RunLifecycleStatus
 from batchor.core.models import (
     ChunkPolicy,
-    InflightPolicy,
     ItemFailure,
     RetryPolicy,
     RunSummary,
@@ -23,7 +22,6 @@ class PersistedRunConfig:
     provider_config: ProviderConfig
     chunk_policy: ChunkPolicy
     retry_policy: RetryPolicy
-    inflight_policy: InflightPolicy
     batch_metadata: dict[str, str]
     schema_name: str | None = None
     structured_output_module: str | None = None
@@ -88,6 +86,13 @@ class ItemFailureRecord:
 
 
 @dataclass(frozen=True)
+class QueuedItemFailureRecord:
+    item_id: str
+    error: ItemFailure
+    count_attempt: bool
+
+
+@dataclass(frozen=True)
 class ActiveBatchRecord:
     provider_batch_id: str
     status: str
@@ -115,6 +120,14 @@ class StateStore(ABC):
         *,
         run_id: str,
         config: PersistedRunConfig,
+        items: list[MaterializedItem],
+    ) -> None: ...
+
+    @abstractmethod
+    def append_items(
+        self,
+        *,
+        run_id: str,
         items: list[MaterializedItem],
     ) -> None: ...
 
@@ -189,6 +202,15 @@ class StateStore(ABC):
         *,
         run_id: str,
         failures: list[ItemFailureRecord],
+        max_attempts: int,
+    ) -> None: ...
+
+    @abstractmethod
+    def mark_queued_items_failed(
+        self,
+        *,
+        run_id: str,
+        failures: list[QueuedItemFailureRecord],
         max_attempts: int,
     ) -> None: ...
 
@@ -289,11 +311,22 @@ class MemoryStateStore(StateStore):
         if run_id in self._runs:
             raise ValueError(f"run already exists: {run_id}")
         run = _StoredRun(run_id=run_id, config=config)
-        seen_ids: set[str] = set()
+        self._runs[run_id] = run
+        self.append_items(run_id=run_id, items=items)
+        self._refresh_run_status(run)
+
+    def append_items(
+        self,
+        *,
+        run_id: str,
+        items: list[MaterializedItem],
+    ) -> None:
+        if not items:
+            return
+        run = self._get_run(run_id)
         for item in sorted(items, key=lambda entry: entry.item_index):
-            if item.item_id in seen_ids:
+            if item.item_id in run.items:
                 raise ValueError(f"duplicate item_id: {item.item_id}")
-            seen_ids.add(item.item_id)
             run.item_ids.append(item.item_id)
             run.items[item.item_id] = _StoredItem(
                 item_id=item.item_id,
@@ -303,7 +336,6 @@ class MemoryStateStore(StateStore):
                 prompt=item.prompt,
                 system_prompt=item.system_prompt,
             )
-        self._runs[run_id] = run
         self._refresh_run_status(run)
 
     def get_run_config(self, *, run_id: str) -> PersistedRunConfig:
@@ -457,6 +489,30 @@ class MemoryStateStore(StateStore):
         run = self._get_run(run_id)
         for failure in failures:
             item = self._item_for_custom_id(run, failure.custom_id)
+            if failure.count_attempt:
+                item.attempt_count += 1
+            item.status = self._failed_status(
+                attempt_count=item.attempt_count,
+                error=failure.error,
+                max_attempts=max_attempts,
+                count_attempt=failure.count_attempt,
+            )
+            item.error = failure.error
+            item.active_batch_id = None
+            item.active_custom_id = None
+            item.active_submission_tokens = 0
+        self._refresh_run_status(run)
+
+    def mark_queued_items_failed(
+        self,
+        *,
+        run_id: str,
+        failures: list[QueuedItemFailureRecord],
+        max_attempts: int,
+    ) -> None:
+        run = self._get_run(run_id)
+        for failure in failures:
+            item = run.items[failure.item_id]
             if failure.count_attempt:
                 item.attempt_count += 1
             item.status = self._failed_status(

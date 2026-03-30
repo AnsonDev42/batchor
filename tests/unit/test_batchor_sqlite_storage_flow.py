@@ -9,11 +9,12 @@ from batchor import (
     BatchRunner,
     ItemStatus,
     ModelResolutionError,
+    OpenAIEnqueueLimitConfig,
     OpenAIProviderConfig,
     ProviderKind,
     RunLifecycleStatus,
 )
-from batchor.core.models import ChunkPolicy, InflightPolicy, ItemFailure, RetryPolicy
+from batchor.core.models import ChunkPolicy, ItemFailure, RetryPolicy
 from batchor.storage.sqlite import SQLiteStorage
 from batchor.storage.state import (
     CompletedItemRecord,
@@ -34,10 +35,18 @@ class _FrozenClock:
 
 def _config(*, structured: bool = False) -> PersistedRunConfig:
     return PersistedRunConfig(
-        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        provider_config=OpenAIProviderConfig(
+            api_key="k",
+            model="gpt-4.1",
+            enqueue_limits=OpenAIEnqueueLimitConfig(
+                enqueued_token_limit=1000,
+                target_ratio=0.7,
+                headroom=50,
+                max_batch_enqueued_tokens=500,
+            ),
+        ),
         chunk_policy=ChunkPolicy(),
         retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=1.0, max_backoff_sec=5.0),
-        inflight_policy=InflightPolicy(),
         batch_metadata={"source": "test"},
         schema_name="classification_result" if structured else None,
         structured_output_module="missing.module" if structured else None,
@@ -149,6 +158,9 @@ def test_sqlite_storage_submission_and_terminal_summary(tmp_path: Path) -> None:
     assert summary.failed_items == 1
     config = storage.get_run_config(run_id="run_1")
     assert config.provider_config.provider_kind is ProviderKind.OPENAI
+    provider_config = config.provider_config
+    assert isinstance(provider_config, OpenAIProviderConfig)
+    assert provider_config.enqueue_limits.max_batch_enqueued_tokens == 500
 
 
 def test_sqlite_storage_reset_and_backoff(tmp_path: Path) -> None:

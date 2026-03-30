@@ -7,10 +7,12 @@ Structured-first OpenAI Batch runner with durable `Run` handles, Pydantic v2 val
 `batchor` lives here as an internal subproject that is ready to be split out later. The current API is designed around long-lived OpenAI Batch jobs:
 
 - one `BatchJob` type with optional `structured_output`
+- iterable or file-backed item inputs via `CsvItemSource` and `JsonlItemSource`
 - `runner.start(...) -> Run` returns immediately with a durable `run_id`
 - `runner.get_run(run_id)` rehydrates a run from storage
 - local SQLAlchemy 2 SQLite storage is the default backend
 - `BatchRunner(storage="memory")` is available for ephemeral tests and one-off runs
+- OpenAI-specific enqueue-limit controls live on `OpenAIProviderConfig.enqueue_limits`
 
 Structured-output rehydration requires a module-level Pydantic model class. If a stored structured model cannot be imported later, `batchor` raises a clear model-resolution error instead of silently returning raw dicts.
 
@@ -29,6 +31,8 @@ Today the built-in implementations are:
 - `OpenAIProviderConfig` + `OpenAIBatchProvider`
 - `SQLiteStorage`
 - `MemoryStateStore`
+- `CsvItemSource`
+- `JsonlItemSource`
 
 That keeps the current behavior stable while making future provider and database additions a focused implementation task rather than a runner rewrite.
 
@@ -42,6 +46,7 @@ batchor/
     core/
     providers/
     runtime/
+    sources/
     storage/
   tests/
 ```
@@ -60,7 +65,14 @@ uv run pytest -q
 ```python
 from pydantic import BaseModel
 
-from batchor import BatchItem, BatchJob, BatchRunner, OpenAIProviderConfig, PromptParts
+from batchor import (
+    BatchItem,
+    BatchJob,
+    BatchRunner,
+    OpenAIEnqueueLimitConfig,
+    OpenAIProviderConfig,
+    PromptParts,
+)
 
 
 class ClassificationResult(BaseModel):
@@ -79,6 +91,12 @@ run = runner.start(
         provider_config=OpenAIProviderConfig(
             api_key="YOUR_OPENAI_API_KEY",
             model="gpt-4.1",
+            enqueue_limits=OpenAIEnqueueLimitConfig(
+                enqueued_token_limit=2_000_000,
+                target_ratio=0.7,
+                headroom=50_000,
+                max_batch_enqueued_tokens=500_000,
+            ),
         ),
     )
 )
@@ -88,6 +106,8 @@ run.wait()
 results = run.results()
 print(results[0].output)
 ```
+
+`batchor` estimates request tokens with `tiktoken` when available and only falls back to the configured `chars_per_token` heuristic if tokenizer resolution fails.
 
 ## Text Mode
 
@@ -127,6 +147,33 @@ if not run.is_finished:
 
 print(run.results())
 ```
+
+## File Sources
+
+```python
+from batchor import BatchJob, BatchRunner, JsonlItemSource, OpenAIProviderConfig, PromptParts
+
+
+source = JsonlItemSource(
+    "input/items.jsonl",
+    item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+    payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+)
+
+runner = BatchRunner()
+run = runner.start(
+    BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(
+            api_key="YOUR_OPENAI_API_KEY",
+            model="gpt-4.1",
+        ),
+    )
+)
+```
+
+CSV sources work the same way through `CsvItemSource`, with explicit row-to-item mapping callbacks.
 
 ## Extension Hooks
 

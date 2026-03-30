@@ -5,7 +5,7 @@ import json
 from math import ceil
 from typing import Any, Callable
 
-from batchor.core.models import ChunkPolicy, InflightPolicy
+from batchor.core.models import ChunkPolicy, OpenAIEnqueueLimitConfig
 from batchor.core.types import BatchRequestLine
 
 
@@ -53,7 +53,7 @@ def chunk_request_rows(
     rows: list[dict[str, Any]],
     *,
     chunk_policy: ChunkPolicy,
-    inflight_policy: InflightPolicy,
+    max_tokens: int | None,
     estimate_row_bytes: Callable[[dict[str, Any]], int],
     estimate_row_tokens: Callable[[dict[str, Any]], int],
 ) -> list[list[dict[str, Any]]]:
@@ -62,32 +62,51 @@ def chunk_request_rows(
         max_requests=chunk_policy.max_requests,
         max_bytes=chunk_policy.max_file_bytes,
         estimate_row_bytes=estimate_row_bytes,
-        max_tokens=resolve_batch_token_limit(
-            chunk_policy=chunk_policy,
-            inflight_policy=inflight_policy,
-        ),
+        max_tokens=max_tokens,
         estimate_row_tokens=estimate_row_tokens,
     )
 
 
-def effective_inflight_token_budget(policy: InflightPolicy) -> int | None:
-    if policy.enqueued_token_limit <= 0:
+def effective_inflight_token_budget(
+    limits: OpenAIEnqueueLimitConfig,
+) -> int | None:
+    if limits.enqueued_token_limit <= 0:
         return None
-    by_ratio = int(policy.enqueued_token_limit * policy.target_ratio)
-    by_headroom = policy.enqueued_token_limit - policy.headroom
+    by_ratio = int(limits.enqueued_token_limit * limits.target_ratio)
+    by_headroom = limits.enqueued_token_limit - limits.headroom
     return min(by_ratio, by_headroom)
 
 
-def resolve_batch_token_limit(
-    *,
-    chunk_policy: ChunkPolicy,
-    inflight_policy: InflightPolicy,
+def resolve_openai_batch_token_limit(
+    limits: OpenAIEnqueueLimitConfig,
 ) -> int | None:
-    batch_limit = chunk_policy.max_enqueued_tokens if chunk_policy.max_enqueued_tokens > 0 else None
-    inflight_limit = effective_inflight_token_budget(inflight_policy)
+    batch_limit = (
+        limits.max_batch_enqueued_tokens
+        if limits.max_batch_enqueued_tokens > 0
+        else None
+    )
+    inflight_limit = effective_inflight_token_budget(limits)
     if batch_limit is not None and inflight_limit is not None:
         return min(batch_limit, inflight_limit)
     return batch_limit if batch_limit is not None else inflight_limit
+
+
+def split_rows_by_token_limit(
+    rows: list[dict[str, Any]],
+    *,
+    token_limit: int,
+    token_field: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if token_limit <= 0:
+        raise ValueError("token_limit must be > 0")
+    within_limit: list[dict[str, Any]] = []
+    oversized: list[dict[str, Any]] = []
+    for row in rows:
+        if int(row[token_field]) > token_limit:
+            oversized.append(row)
+        else:
+            within_limit.append(row)
+    return within_limit, oversized
 
 
 @lru_cache(maxsize=32)

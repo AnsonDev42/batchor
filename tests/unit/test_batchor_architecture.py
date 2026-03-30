@@ -4,6 +4,7 @@ from pathlib import Path
 
 from batchor import (
     MemoryStateStore,
+    OpenAIEnqueueLimitConfig,
     OpenAIProviderConfig,
     OpenAIBatchProvider,
     ProviderKind,
@@ -16,7 +17,16 @@ from batchor.storage.sqlite import SQLiteStorage
 
 def test_default_provider_registry_round_trips_openai_config() -> None:
     registry = build_default_provider_registry()
-    config = OpenAIProviderConfig(api_key="k", model="gpt-4.1")
+    config = OpenAIProviderConfig(
+        api_key="k",
+        model="gpt-4.1",
+        enqueue_limits=OpenAIEnqueueLimitConfig(
+            enqueued_token_limit=1000,
+            target_ratio=0.7,
+            headroom=10,
+            max_batch_enqueued_tokens=500,
+        ),
+    )
 
     payload = registry.dump_config(config)
     loaded = registry.load_config(payload)
@@ -25,6 +35,7 @@ def test_default_provider_registry_round_trips_openai_config() -> None:
     assert loaded.provider_kind is ProviderKind.OPENAI
     assert isinstance(loaded, OpenAIProviderConfig)
     assert loaded == config
+    assert loaded.enqueue_limits.max_batch_enqueued_tokens == 500
     assert isinstance(provider, OpenAIBatchProvider)
 
 
