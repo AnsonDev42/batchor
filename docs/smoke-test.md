@@ -135,7 +135,7 @@ uv run pytest tests/integration/test_batchor_live_openai.py --no-cov -q
 
 Behavior:
 
-- runs one single-item text job against the real OpenAI Batch API
+- runs a single-item text smoke and a two-CSV composition smoke against the real OpenAI Batch API
 - uses SQLite durability and the normal `BatchRunner` flow
 - defaults to `gpt-5-nano` unless `BATCHOR_LIVE_OPENAI_MODEL` is set
 - sends no reasoning field unless `BATCHOR_LIVE_OPENAI_REASONING_EFFORT` is set
@@ -145,7 +145,7 @@ Behavior:
 
 Cost controls:
 
-- one item only
+- three total items across both live tests
 - text output only
 - manual/local only
 - not part of default CI or release automation
