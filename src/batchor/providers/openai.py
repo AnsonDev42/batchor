@@ -99,19 +99,6 @@ class OpenAIBatchProvider(BatchProvider):
             "schema": structured_output.schema,
         }
 
-    def write_requests_jsonl(
-        self,
-        request_lines: list[BatchRequestLine],
-        output_path: str | Path,
-    ) -> Path:
-        output = Path(output_path)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with output.open("w", encoding="utf-8") as f:
-            for line in request_lines:
-                f.write(json.dumps(line, ensure_ascii=False))
-                f.write("\n")
-        return output
-
     def upload_input_file(self, input_path: str | Path) -> str:
         with Path(input_path).open("rb") as handle:
             uploaded = self.client.files.create(file=handle, purpose="batch")

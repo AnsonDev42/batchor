@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
+import textwrap
 from typing import Callable
 
 import pytest
@@ -113,7 +117,12 @@ class _FakeBatchProvider:
         output_path.write_text("\n".join(json.dumps(line) for line in request_lines), encoding="utf-8")
         return output_path
 
-    def upload_input_file(self, _input_path: Path) -> str:
+    def upload_input_file(self, input_path: Path) -> str:
+        self._current_lines = [
+            json.loads(raw_line)
+            for raw_line in input_path.read_text(encoding="utf-8").splitlines()
+            if raw_line.strip()
+        ]
         file_id = f"file_{self._next_file}"
         self._next_file += 1
         self._file_to_lines[file_id] = list(self._current_lines)
@@ -187,6 +196,128 @@ class _ArtifactOnlyBatchProvider(_FakeBatchProvider):
     ) -> dict[str, object]:
         del custom_id, prompt_parts, structured_output
         raise AssertionError("request line should be replayed from persisted artifact")
+
+
+def test_sqlite_subprocess_resume_retries_from_persisted_request_artifact(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "subprocess_resume.sqlite3"
+    artifact_root = tmp_path / "subprocess_artifacts"
+    run_id = "subprocess_resume_run"
+    child_code = textwrap.dedent(
+        f"""
+        import json
+        import os
+        from pathlib import Path
+
+        from batchor import BatchItem, BatchJob, BatchRunner, OpenAIProviderConfig, PromptParts, RetryPolicy, SQLiteStorage
+
+
+        class CrashAfterArtifactProvider:
+            def __init__(self) -> None:
+                self._next_file = 0
+
+            def build_request_line(self, *, custom_id, prompt_parts, structured_output=None):
+                del structured_output
+                return {{
+                    "custom_id": custom_id,
+                    "method": "POST",
+                    "url": "/v1/responses",
+                    "body": {{"input": prompt_parts.prompt}},
+                }}
+
+            def upload_input_file(self, input_path):
+                Path(input_path).read_text(encoding="utf-8")
+                file_id = f"file_{{self._next_file}}"
+                self._next_file += 1
+                return file_id
+
+            def delete_input_file(self, file_id):
+                del file_id
+
+            def create_batch(self, *, input_file_id, metadata=None):
+                del input_file_id, metadata
+                os._exit(97)
+
+            def get_batch(self, batch_id):
+                raise AssertionError(f"unexpected get_batch: {{batch_id}}")
+
+            def download_file_content(self, file_id):
+                raise AssertionError(f"unexpected download: {{file_id}}")
+
+            def parse_batch_output(self, *, output_content, error_content):
+                del output_content, error_content
+                return {{}}, {{}}, []
+
+            def estimate_request_tokens(self, request_line, *, chars_per_token):
+                del chars_per_token
+                return max(len(json.dumps(request_line)), 1)
+
+
+        runner = BatchRunner(
+            storage=SQLiteStorage(path=Path({str(db_path)!r})),
+            provider_factory=lambda _cfg: CrashAfterArtifactProvider(),
+            temp_root=Path({str(artifact_root)!r}),
+        )
+        runner.start(
+            BatchJob(
+                items=[BatchItem(item_id="row1", payload={{"text": "hello"}})],
+                build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+                structured_output=None,
+                provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+                retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=0, max_backoff_sec=0),
+            ),
+            run_id={run_id!r},
+        )
+        """
+    )
+    env = dict(os.environ)
+    pythonpath = str(Path(__file__).resolve().parents[2] / "src")
+    env["PYTHONPATH"] = (
+        f"{pythonpath}{os.pathsep}{env['PYTHONPATH']}"
+        if env.get("PYTHONPATH")
+        else pythonpath
+    )
+    child = subprocess.run(
+        [sys.executable, "-c", child_code],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert child.returncode == 97
+
+    storage = SQLiteStorage(path=db_path)
+    with storage.engine.begin() as conn:
+        row = conn.execute(
+            select(
+                storage_sqlite.ITEMS_TABLE.c.prompt,
+                storage_sqlite.ITEMS_TABLE.c.request_artifact_path,
+                storage_sqlite.ITEMS_TABLE.c.request_artifact_line,
+                storage_sqlite.ITEMS_TABLE.c.request_sha256,
+                storage_sqlite.ITEMS_TABLE.c.status,
+            ).where(storage_sqlite.ITEMS_TABLE.c.run_id == run_id)
+        ).mappings().one()
+    assert row["prompt"] == ""
+    assert row["request_artifact_path"] is not None
+    assert row["request_artifact_line"] == 1
+    assert row["request_sha256"] is not None
+    assert row["status"] == ItemStatus.QUEUED_LOCAL
+
+    resumed = BatchRunner(
+        storage=SQLiteStorage(path=db_path),
+        provider_factory=lambda _cfg: _ArtifactOnlyBatchProvider(
+            record_factory=lambda custom_id: _success_record(
+                json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+            )
+        ),
+        temp_root=artifact_root,
+    ).get_run(run_id)
+    resumed.wait(poll_interval=0)
+    result = resumed.results()[0]
+    assert result.status is ItemStatus.COMPLETED
+    assert result.output_text == '{"label": "row1", "score": 0.9}' or result.output_text is not None
 
 
 def test_structured_run_handle_returns_model_instances(tmp_path: Path) -> None:

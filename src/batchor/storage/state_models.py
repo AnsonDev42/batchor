@@ -199,6 +199,9 @@ class StateStore(ABC):
     def release_items_to_pending(self, *, run_id: str, item_ids: list[str]) -> None: ...
 
     @abstractmethod
+    def requeue_local_items(self, *, run_id: str) -> int: ...
+
+    @abstractmethod
     def record_request_artifacts(
         self,
         *,

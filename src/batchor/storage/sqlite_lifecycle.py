@@ -204,6 +204,40 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
             )
             self._refresh_run_status(conn, run_id)
 
+    def requeue_local_items(self, *, run_id: str) -> int:
+        with self.engine.begin() as conn:
+            row_count = len(
+                list(
+                    conn.execute(
+                        select(ITEMS_TABLE.c.item_id).where(
+                            and_(
+                                ITEMS_TABLE.c.run_id == run_id,
+                                ITEMS_TABLE.c.status == ItemStatus.QUEUED_LOCAL,
+                            )
+                        )
+                    ).scalars()
+                )
+            )
+            if row_count == 0:
+                return 0
+            conn.execute(
+                update(ITEMS_TABLE)
+                .where(
+                    and_(
+                        ITEMS_TABLE.c.run_id == run_id,
+                        ITEMS_TABLE.c.status == ItemStatus.QUEUED_LOCAL,
+                    )
+                )
+                .values(
+                    status=ItemStatus.PENDING,
+                    active_batch_id=None,
+                    active_custom_id=None,
+                    active_submission_tokens=0,
+                )
+            )
+            self._refresh_run_status(conn, run_id)
+            return row_count
+
     def register_batch(
         self,
         *,

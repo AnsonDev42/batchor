@@ -46,13 +46,6 @@ class BatchProvider(ABC):
     ) -> BatchRequestLine: ...
 
     @abstractmethod
-    def write_requests_jsonl(
-        self,
-        request_lines: list[BatchRequestLine],
-        output_path: str | Path,
-    ) -> Path: ...
-
-    @abstractmethod
     def upload_input_file(self, input_path: str | Path) -> str: ...
 
     @abstractmethod

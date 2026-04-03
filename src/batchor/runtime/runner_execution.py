@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
@@ -158,10 +159,10 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
             for row in chunk
         ]
         request_relative_path = self._request_artifact_relative_path(run_id)
-        request_path = self.temp_root / request_relative_path
-        request_file = context.provider.write_requests_jsonl(
-            cast(list[Any], request_lines),
-            request_path,
+        self.artifact_store.write_text(
+            request_relative_path.as_posix(),
+            self._serialize_jsonl(cast(list[JSONObject], request_lines)),
+            encoding="utf-8",
         )
         self.state.record_request_artifacts(
             run_id=run_id,
@@ -177,29 +178,33 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
                 for line_number, row in enumerate(chunk, start=1)
             ],
         )
-        remote_input_file_id = context.provider.upload_input_file(request_file)
-        try:
-            batch = context.provider.create_batch(
-                input_file_id=remote_input_file_id,
-                metadata={"run_id": run_id, **context.config.batch_metadata},
+        with ExitStack() as stack:
+            request_file = stack.enter_context(
+                self.artifact_store.stage_local_copy(request_relative_path.as_posix())
             )
-        except Exception as exc:  # noqa: BLE001
-            _cleanup_uploaded_input_file(context, remote_input_file_id)
-            if not is_retryable_batch_control_plane_error(exc):
-                raise
-            self.state.record_batch_retry_failure(
-                run_id=run_id,
-                error_class=classify_batch_error(exc),
-                base_delay_sec=config.retry_policy.base_backoff_sec,
-                max_delay_sec=config.retry_policy.max_backoff_sec,
-            )
-            self._emit_event(
-                "batch_submit_retry",
-                run_id=run_id,
-                provider_kind=context.config.provider_config.provider_kind,
-                data={"error_class": classify_batch_error(exc)},
-            )
-            break
+            remote_input_file_id = context.provider.upload_input_file(request_file)
+            try:
+                batch = context.provider.create_batch(
+                    input_file_id=remote_input_file_id,
+                    metadata={"run_id": run_id, **context.config.batch_metadata},
+                )
+            except Exception as exc:  # noqa: BLE001
+                _cleanup_uploaded_input_file(context, remote_input_file_id)
+                if not is_retryable_batch_control_plane_error(exc):
+                    raise
+                self.state.record_batch_retry_failure(
+                    run_id=run_id,
+                    error_class=classify_batch_error(exc),
+                    base_delay_sec=config.retry_policy.base_backoff_sec,
+                    max_delay_sec=config.retry_policy.max_backoff_sec,
+                )
+                self._emit_event(
+                    "batch_submit_retry",
+                    run_id=run_id,
+                    provider_kind=context.config.provider_config.provider_kind,
+                    data={"error_class": classify_batch_error(exc)},
+                )
+                break
 
         self.state.clear_batch_retry_backoff(run_id=run_id)
         provider_batch_id = str(batch["id"])

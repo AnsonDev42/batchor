@@ -42,16 +42,12 @@ class _FakeCliProvider:
             "body": {"input": prompt_parts.prompt},
         }
 
-    def write_requests_jsonl(self, request_lines: list[dict[str, object]], output_path: Path) -> Path:
-        self._current_lines = [dict(line) for line in request_lines]
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            "\n".join(json.dumps(line) for line in request_lines) + "\n",
-            encoding="utf-8",
-        )
-        return output_path
-
-    def upload_input_file(self, _input_path: Path) -> str:
+    def upload_input_file(self, input_path: Path) -> str:
+        self._current_lines = [
+            json.loads(raw_line)
+            for raw_line in input_path.read_text(encoding="utf-8").splitlines()
+            if raw_line.strip()
+        ]
         file_id = f"file_{self._next_file}"
         self._next_file += 1
         self._file_to_lines[file_id] = list(self._current_lines)
