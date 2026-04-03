@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "batchor"
-version = "0.1.0"
+version = "0.0.1"
 description = "Structured-first OpenAI Batch runner with typed Pydantic results."
 readme = "README.md"
 license = { file = "LICENSE" }
