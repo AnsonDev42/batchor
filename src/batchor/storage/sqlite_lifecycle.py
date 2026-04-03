@@ -49,7 +49,10 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                         "status": RunLifecycleStatus.RUNNING,
                         "created_at": _encode_datetime(self._now()),
                         "provider_config_json": _encode_json(
-                            self.provider_registry.dump_config(config.provider_config)
+                            self.provider_registry.dump_config(
+                                config.provider_config,
+                                include_secrets=False,
+                            )
                         ),
                         "chunk_policy_json": _encode_json(asdict(config.chunk_policy)),
                         "retry_policy_json": _encode_json(asdict(config.retry_policy)),

@@ -39,6 +39,13 @@ def _refresh_run(self: BatchRunner, run_id: str, context: _RunContext) -> RunSum
     return self.state.get_run_summary(run_id=run_id)
 
 
+def _cleanup_uploaded_input_file(context: _RunContext, file_id: str) -> None:
+    try:
+        context.provider.delete_input_file(file_id)
+    except Exception:  # noqa: BLE001
+        return
+
+
 def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) -> int:
     config = context.config
     if self.state.get_batch_retry_backoff_remaining_sec(run_id=run_id) > 0:
@@ -50,6 +57,12 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
     )
     if not claimed:
         return 0
+    self._emit_event(
+        "items_claimed_for_submission",
+        run_id=run_id,
+        provider_kind=context.config.provider_config.provider_kind,
+        data={"claimed_item_count": len(claimed)},
+    )
 
     prepared_items = [self._prepare_item(item, context) for item in claimed]
     batch_token_limit = _batch_token_limit(config.provider_config)
@@ -171,6 +184,7 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
                 metadata={"run_id": run_id, **context.config.batch_metadata},
             )
         except Exception as exc:  # noqa: BLE001
+            _cleanup_uploaded_input_file(context, remote_input_file_id)
             if not is_retryable_batch_control_plane_error(exc):
                 raise
             self.state.record_batch_retry_failure(
@@ -178,6 +192,12 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
                 error_class=classify_batch_error(exc),
                 base_delay_sec=config.retry_policy.base_backoff_sec,
                 max_delay_sec=config.retry_policy.max_backoff_sec,
+            )
+            self._emit_event(
+                "batch_submit_retry",
+                run_id=run_id,
+                provider_kind=context.config.provider_config.provider_kind,
+                data={"error_class": classify_batch_error(exc)},
             )
             break
 
@@ -202,6 +222,16 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
                 )
                 for row in chunk
             ],
+        )
+        self._emit_event(
+            "batch_submitted",
+            run_id=run_id,
+            provider_kind=context.config.provider_config.provider_kind,
+            data={
+                "provider_batch_id": provider_batch_id,
+                "submitted_item_count": len(chunk),
+                "submission_tokens": chunk_tokens,
+            },
         )
         submitted_count += len(chunk)
         submitted_item_ids.update(str(row["item_id"]) for row in chunk)
@@ -294,6 +324,15 @@ def _poll_once(self: BatchRunner, run_id: str, context: _RunContext) -> None:
             continue
 
         status = str(remote["status"])
+        self._emit_event(
+            "batch_polled",
+            run_id=run_id,
+            provider_kind=context.config.provider_config.provider_kind,
+            data={
+                "provider_batch_id": batch.provider_batch_id,
+                "status": status,
+            },
+        )
         self.state.update_batch_status(
             run_id=run_id,
             provider_batch_id=batch.provider_batch_id,
@@ -311,6 +350,12 @@ def _poll_once(self: BatchRunner, run_id: str, context: _RunContext) -> None:
                 error_file_id=remote.get("error_file_id"),
             )
             self.state.clear_batch_retry_backoff(run_id=run_id)
+            self._emit_event(
+                "batch_completed",
+                run_id=run_id,
+                provider_kind=context.config.provider_config.provider_kind,
+                data={"provider_batch_id": batch.provider_batch_id},
+            )
         elif status in {"failed", "cancelled", "expired"}:
             output_file_id = remote.get("output_file_id")
             error_file_id = remote.get("error_file_id")
@@ -350,6 +395,15 @@ def _poll_once(self: BatchRunner, run_id: str, context: _RunContext) -> None:
                 run_id=run_id,
                 provider_batch_id=batch.provider_batch_id,
                 error=error,
+            )
+            self._emit_event(
+                "batch_terminal_failure",
+                run_id=run_id,
+                provider_kind=context.config.provider_config.provider_kind,
+                data={
+                    "provider_batch_id": batch.provider_batch_id,
+                    "error_class": error.error_class,
+                },
             )
 
 
@@ -483,11 +537,23 @@ def _consume_completed_batch(
 
     if completions:
         self.state.mark_items_completed(run_id=run_id, completions=completions)
+        self._emit_event(
+            "items_completed",
+            run_id=run_id,
+            provider_kind=context.config.provider_config.provider_kind,
+            data={"completed_item_count": len(completions)},
+        )
     if failures:
         self.state.mark_items_failed(
             run_id=run_id,
             failures=failures,
             max_attempts=context.config.retry_policy.max_attempts,
+        )
+        self._emit_event(
+            "items_failed",
+            run_id=run_id,
+            provider_kind=context.config.provider_config.provider_kind,
+            data={"failed_item_count": len(failures)},
         )
 
 

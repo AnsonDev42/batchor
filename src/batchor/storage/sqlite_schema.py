@@ -2,6 +2,14 @@ from sqlalchemy import Column, Float, Integer, MetaData, String, Table, Text
 
 
 METADATA = MetaData()
+SQLITE_SCHEMA_VERSION = 1
+
+STORAGE_METADATA_TABLE = Table(
+    "storage_metadata",
+    METADATA,
+    Column("key", String, primary_key=True),
+    Column("value", Text, nullable=False),
+)
 
 RUNS_TABLE = Table(
     "runs",

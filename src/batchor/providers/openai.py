@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, cast
 
@@ -8,6 +9,18 @@ from batchor.core.models import OpenAIProviderConfig, PromptParts
 from batchor.core.types import BatchRemoteRecord, BatchRequestLine, JSONObject
 from batchor.providers.base import BatchProvider, StructuredOutputSchema
 from batchor.runtime.tokens import estimate_request_tokens
+
+
+def resolve_openai_api_key(config: OpenAIProviderConfig) -> str:
+    if config.api_key:
+        return config.api_key
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if api_key:
+        return api_key
+    raise ValueError(
+        "OpenAI API key is required; pass OpenAIProviderConfig(api_key=...) "
+        "or set OPENAI_API_KEY"
+    )
 
 
 class OpenAIBatchProvider(BatchProvider):
@@ -18,7 +31,10 @@ class OpenAIBatchProvider(BatchProvider):
     def _build_default_client(self) -> Any:
         from openai import OpenAI
 
-        return OpenAI(api_key=self.config.api_key, timeout=self.config.request_timeout_sec)
+        return OpenAI(
+            api_key=resolve_openai_api_key(self.config),
+            timeout=self.config.request_timeout_sec,
+        )
 
     def build_request_line(
         self,
@@ -38,7 +54,6 @@ class OpenAIBatchProvider(BatchProvider):
                 {
                     "model": self.config.model,
                     "messages": messages,
-                    "temperature": 0,
                 },
             )
             if structured_output_json_schema is not None:
@@ -52,11 +67,12 @@ class OpenAIBatchProvider(BatchProvider):
                 {
                     "model": self.config.model,
                     "input": prompt_parts.prompt,
-                    "temperature": 0,
                 },
             )
             if prompt_parts.system_prompt:
                 body["instructions"] = prompt_parts.system_prompt
+            if self.config.reasoning_effort is not None:
+                body["reasoning"] = {"effort": self.config.reasoning_effort}
             if structured_output_json_schema is not None:
                 body["text"] = {
                     "format": {
@@ -100,6 +116,9 @@ class OpenAIBatchProvider(BatchProvider):
         with Path(input_path).open("rb") as handle:
             uploaded = self.client.files.create(file=handle, purpose="batch")
         return uploaded.id
+
+    def delete_input_file(self, file_id: str) -> None:
+        self.client.files.delete(file_id)
 
     def create_batch(
         self,

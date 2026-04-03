@@ -1,36 +1,18 @@
 # batchor
 
-Structured-first OpenAI Batch runner with durable `Run` handles, Pydantic v2 validation, and local SQLite persistence by default.
+`batchor` is a durable OpenAI Batch runner with typed Pydantic results, local SQLite persistence, and a small operator CLI for file-backed text jobs.
 
 ## Status
 
-`batchor` lives here as an internal subproject that is ready to be split out later. The current API is designed around long-lived OpenAI Batch jobs:
+`batchor` is published as an alpha `0.x` package:
 
-- one `BatchJob` type with optional `structured_output`
-- iterable or file-backed item inputs via `CsvItemSource` and `JsonlItemSource`
-- `runner.start(...) -> Run` returns immediately with a durable `run_id`
-- `runner.get_run(run_id)` rehydrates a run from storage
-- `runner.start(..., run_id="...")` can resume incomplete file-backed ingestion for the same durable run
-- completed runs can explicitly prune replayable request artifacts through `Run.prune_artifacts()`
-- completed runs can export raw request/output artifacts plus final results through `Run.export_artifacts(...)`
-- local SQLAlchemy 2 SQLite storage is the default backend
-- `BatchRunner(storage="memory")` is available for ephemeral tests and one-off runs
-- replayable request JSONL artifacts are stored durably beside SQLite so retry/resume does not depend on the original input iterator after a request has been prepared
-- OpenAI-specific enqueue-limit controls live on `OpenAIProviderConfig.enqueue_limits`
+- library-first, OpenAI-first, SQLite-first
+- durable `Run` handles with rehydration through local storage
+- typed structured-output parsing for Python API users
+- replayable request artifacts plus explicit export/prune lifecycle
+- Typer-based CLI for CSV/JSONL text jobs and run operations
 
-Structured-output rehydration requires a module-level Pydantic model class. If a stored structured model cannot be imported later, `batchor` raises a clear model-resolution error instead of silently returning raw dicts.
-
-## Architecture
-
-The runtime is now built on explicit extension seams instead of hardcoded OpenAI/SQLite branches:
-
-- `ProviderConfig` and `BatchProvider` are the provider-side base contracts
-- `ProviderRegistry` owns provider config persistence and provider construction
-- `StateStore` is an abstract durable state contract
-- `StorageRegistry` owns storage backend construction
-- `ItemStatus`, `RunLifecycleStatus`, `ProviderKind`, and `StorageKind` are exported enums
-
-Today the built-in implementations are:
+The current built-in implementations are:
 
 - `OpenAIProviderConfig` + `OpenAIBatchProvider`
 - `SQLiteStorage`
@@ -38,47 +20,58 @@ Today the built-in implementations are:
 - `CsvItemSource`
 - `JsonlItemSource`
 
-That keeps the current behavior stable while making future provider and database additions a focused implementation task rather than a runner rewrite.
+For IDE-friendly model selection, `batchor` exports typed OpenAI model names through `OpenAIModel`, while still accepting raw strings in `OpenAIProviderConfig(model=...)`.
 
-## Project Layout
+## License
 
-```text
-batchor/
-  AGENTS.md
-  README.md
-  docs/
-  pyproject.toml
-  src/batchor/
-    core/
-    providers/
-    runtime/
-    sources/
-    storage/
-  tests/
-```
+This project is licensed under PolyForm Noncommercial 1.0.0. See [LICENSE](LICENSE).
 
-## Docs
-
-- [AGENTS.md](AGENTS.md)
-- [docs/README.md](docs/README.md)
-- [docs/design_docs/ARCHITECTURE.md](docs/design_docs/ARCHITECTURE.md)
-- [docs/design_docs/OPENAI_BATCHING.md](docs/design_docs/OPENAI_BATCHING.md)
-- [docs/design_docs/STORAGE_AND_RUNS.md](docs/design_docs/STORAGE_AND_RUNS.md)
-- [docs/design_docs/ROADMAP.md](docs/design_docs/ROADMAP.md)
-- [docs/smoke-test.md](docs/smoke-test.md)
-
-## Quickstart
+## Install
 
 ```bash
-cd batchor
-uv sync --all-groups
-uv run ty check src
-uv run pytest -q
+pip install batchor
 ```
 
-The default pytest configuration runs tests in parallel and enforces an `85%` coverage floor.
+Python support:
 
-## Structured Output
+- `3.12`
+- `3.13`
+
+## Auth
+
+For Python API usage, auth resolution is:
+
+1. explicit `OpenAIProviderConfig(api_key=...)`
+2. ambient `OPENAI_API_KEY`
+
+The Python library does not auto-load `.env`.
+
+The CLI loads a local `.env` as a convenience for interactive/operator use, then uses `OPENAI_API_KEY`.
+
+## Python Quickstart
+
+### Text jobs
+
+```python
+from batchor import BatchItem, BatchJob, BatchRunner, OpenAIProviderConfig, PromptParts
+
+
+runner = BatchRunner(storage="memory")
+run = runner.run_and_wait(
+    BatchJob(
+        items=[BatchItem(item_id="row1", payload="Summarize this text")],
+        build_prompt=lambda item: PromptParts(prompt=item.payload),
+        provider_config=OpenAIProviderConfig(
+            model="gpt-4.1",
+            api_key="YOUR_OPENAI_API_KEY",
+        ),
+    )
+)
+
+print(run.results()[0].output_text)
+```
+
+### Structured output
 
 ```python
 from pydantic import BaseModel
@@ -101,14 +94,12 @@ class ClassificationResult(BaseModel):
 runner = BatchRunner()
 run = runner.start(
     BatchJob(
-        items=[
-            BatchItem(item_id="row1", payload={"text": "classify this"}),
-        ],
+        items=[BatchItem(item_id="row1", payload={"text": "classify this"})],
         build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
         structured_output=ClassificationResult,
         provider_config=OpenAIProviderConfig(
-            api_key="YOUR_OPENAI_API_KEY",
             model="gpt-4.1",
+            api_key="YOUR_OPENAI_API_KEY",
             enqueue_limits=OpenAIEnqueueLimitConfig(
                 enqueued_token_limit=2_000_000,
                 target_ratio=0.7,
@@ -119,36 +110,19 @@ run = runner.start(
     )
 )
 
-print(run.run_id)
 run.wait()
-results = run.results()
-print(results[0].output)
+print(run.results()[0].output)
 ```
 
-`batchor` estimates request tokens with `tiktoken` when available and only falls back to the configured `chars_per_token` heuristic if tokenizer resolution fails.
-
-## Text Mode
+You can also use typed model names:
 
 ```python
-from batchor import BatchItem, BatchJob, BatchRunner, OpenAIProviderConfig, PromptParts
+from batchor import OpenAIModel, OpenAIProviderConfig
 
-
-runner = BatchRunner(storage="memory")
-run = runner.run_and_wait(
-    BatchJob(
-        items=[BatchItem(item_id="row1", payload="Summarize this text")],
-        build_prompt=lambda item: PromptParts(prompt=item.payload),
-        provider_config=OpenAIProviderConfig(
-            api_key="YOUR_OPENAI_API_KEY",
-            model="gpt-4.1",
-        ),
-    )
-)
-
-print(run.results()[0].output_text)
+config = OpenAIProviderConfig(model=OpenAIModel.GPT_5_NANO)
 ```
 
-## Rehydrating A Run
+### Rehydrate a durable run
 
 ```python
 from batchor import BatchRunner, SQLiteStorage
@@ -158,15 +132,10 @@ storage = SQLiteStorage(name="default")
 runner = BatchRunner(storage=storage)
 
 run = runner.get_run("batchor_20260329T120000Z_ab12cd34")
-snapshot = run.snapshot()
-
-if not run.is_finished:
-    run.wait()
-
-print(run.results())
+print(run.summary())
 ```
 
-## File Sources
+### File-backed input sources
 
 ```python
 from batchor import BatchJob, BatchRunner, JsonlItemSource, OpenAIProviderConfig, PromptParts
@@ -183,71 +152,144 @@ run = runner.start(
     BatchJob(
         items=source,
         build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
-        provider_config=OpenAIProviderConfig(
-            api_key="YOUR_OPENAI_API_KEY",
-            model="gpt-4.1",
-        ),
-    )
+        provider_config=OpenAIProviderConfig(model="gpt-4.1"),
+    ),
+    run_id="customer_export_20260403",
 )
-```
-
-CSV sources work the same way through `CsvItemSource`, with explicit row-to-item mapping callbacks.
-
-For long file-backed ingests, prefer a caller-supplied `run_id` so a killed worker can safely re-enter the same run:
-
-```python
-run = runner.start(job, run_id="customer_export_20260403")
 ```
 
 If the source file and job config still match the persisted checkpoint, rerunning `start(job, run_id=...)` resumes from the last durable source position instead of duplicating previously materialized items.
 
-## Extension Hooks
+## CLI Quickstart
 
-```python
-from batchor import (
-    BatchRunner,
-    ProviderRegistry,
-    StorageRegistry,
-    StorageKind,
-)
+The CLI is intentionally narrow in v1:
 
+- file-backed inputs only
+- CSV and JSONL only
+- SQLite-backed durable runs only
 
-provider_registry = ProviderRegistry()
-storage_registry = StorageRegistry()
+It supports both text jobs and structured-output jobs. Structured output requires an importable module-level Pydantic model class.
 
-runner = BatchRunner(
-    provider_registry=provider_registry,
-    storage_registry=storage_registry,
-)
+Create a local `.env`:
+
+```bash
+echo "OPENAI_API_KEY=sk-..." > .env
 ```
 
-Most users should keep the defaults. The registries exist so new vendors and durable backends can plug in cleanly later.
+Start a run from JSONL:
 
-## Durable Request Artifacts
-
-For SQLite-backed runs, `batchor` now treats SQLite as the control-plane ledger and stores replayable request JSONL artifacts on disk beside the database under a sibling `*_artifacts/` directory. Once a request artifact has been written, `batchor` can resume or retry that item without rebuilding the prompt from the original source input.
-
-When a run is terminal, users can explicitly reclaim that replay storage:
-
-```python
-report = run.prune_artifacts()
-print(report.removed_artifact_paths)
+```bash
+batchor start \
+  --input input/items.jsonl \
+  --id-field id \
+  --prompt-field text \
+  --model gpt-4.1
 ```
 
-Pruning clears the request-artifact pointers from storage and removes the on-disk request files, but it keeps terminal item results and errors available through `run.results()` and `run.snapshot()`.
+Start a run from CSV using a prompt template:
 
-## Raw Output Export And Retention
-
-For completed batches, `batchor` also persists raw provider output and error JSONL beside the run artifacts. Those raw files are treated as user-facing evidence, not just replay state.
-
-```python
-export = run.export_artifacts("exports")
-print(export.manifest_path)
-
-run.prune_artifacts(include_raw_output_artifacts=True)
+```bash
+batchor start \
+  --input input/items.csv \
+  --id-field id \
+  --prompt-template "Summarize: {text}" \
+  --model gpt-4.1
 ```
 
-Retention rule:
+Start a structured-output run:
 
-- request artifacts may be pruned once the run is terminal
-- raw output/error artifacts require an explicit export before pruning
+```bash
+batchor start \
+  --input input/items.jsonl \
+  --id-field id \
+  --prompt-field text \
+  --structured-output-class your_package.models:ClassificationResult \
+  --schema-name classification_result \
+  --model gpt-4.1
+```
+
+Inspect and operate on the durable run:
+
+```bash
+batchor status --run-id batchor_20260403T120000Z_ab12cd34
+batchor wait --run-id batchor_20260403T120000Z_ab12cd34
+batchor results --run-id batchor_20260403T120000Z_ab12cd34 --output results.jsonl
+batchor export-artifacts --run-id batchor_20260403T120000Z_ab12cd34 --destination-dir exports
+batchor prune-artifacts --run-id batchor_20260403T120000Z_ab12cd34
+```
+
+The CLI prints JSON summaries by default.
+
+## Observability
+
+`BatchRunner` accepts an optional observer callback for coarse lifecycle telemetry:
+
+```python
+from batchor import BatchRunner, RunEvent
+
+
+def observer(event: RunEvent) -> None:
+    print(event.event_type, event.run_id, event.data)
+
+
+runner = BatchRunner(observer=observer)
+```
+
+Current events include run creation/resume, item ingestion, batch submission/polling/completion, item completion/failure, and artifact export/prune.
+
+## Durable artifacts
+
+For SQLite-backed runs, `batchor` stores replayable request JSONL artifacts on disk beside the database under a sibling `*_artifacts/` directory. Once a request artifact has been written, retry and resume no longer depend on the original item iterator.
+
+Completed runs can:
+
+- export raw request/output/error artifacts plus final results
+- prune replayable request artifacts
+- prune raw output/error artifacts only after export
+
+## Development
+
+```bash
+uv sync --all-groups
+uv run ty check src
+uv run pytest -q
+uv build
+```
+
+The default pytest configuration enforces an `85%` coverage floor.
+
+Manual live OpenAI smoke:
+
+```bash
+export OPENAI_API_KEY=sk-...
+export BATCHOR_RUN_LIVE_TESTS=1
+uv run pytest tests/integration/test_batchor_live_openai.py --no-cov -q
+```
+
+If `BATCHOR_LIVE_OPENAI_MODEL` is unset, the harness defaults to `gpt-5-nano`.
+If `BATCHOR_LIVE_OPENAI_REASONING_EFFORT` is unset, no reasoning field is sent.
+The live smoke also requires an OpenAI account with Batch API access and available billing quota.
+
+## Docs
+
+- [docs/README.md](docs/README.md)
+- [docs/design_docs/ARCHITECTURE.md](docs/design_docs/ARCHITECTURE.md)
+- [docs/design_docs/OPENAI_BATCHING.md](docs/design_docs/OPENAI_BATCHING.md)
+- [docs/design_docs/STORAGE_AND_RUNS.md](docs/design_docs/STORAGE_AND_RUNS.md)
+- [docs/design_docs/STORAGE_MIGRATIONS.md](docs/design_docs/STORAGE_MIGRATIONS.md)
+- [docs/design_docs/ROADMAP.md](docs/design_docs/ROADMAP.md)
+- [docs/smoke-test.md](docs/smoke-test.md)
+- [SUPPORT.md](SUPPORT.md)
+- [VERSIONING.md](VERSIONING.md)
+
+## Scope
+
+Today `batchor` is intentionally narrow:
+
+- one built-in provider: OpenAI Batch
+- one durable backend: SQLite
+- one ephemeral backend: in-memory storage
+- structured output is Python API-first
+- CLI job creation is text-only and file-backed
+
+Anything outside that scope should be treated as out of scope or `TBD`, not implied support.

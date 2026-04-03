@@ -38,27 +38,63 @@ def model_output_schema(
     return resolved_schema_name, cast(JSONObject, model.model_json_schema())
 
 
+def _extract_content_text(content: Any) -> list[str]:
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    fragments: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            fragments.append(part)
+            continue
+        if not isinstance(part, dict):
+            continue
+        text = part.get("text")
+        if isinstance(text, str):
+            fragments.append(text)
+            continue
+        if isinstance(text, dict):
+            value = text.get("value")
+            if isinstance(value, str):
+                fragments.append(value)
+    return fragments
+
+
 def extract_response_text(response_record: dict[str, Any]) -> str:
     body = response_record.get("response", {}).get("body") or response_record.get("body")
     if not isinstance(body, dict):
         return ""
 
+    fragments: list[str] = []
     output = body.get("output")
-    if isinstance(output, list) and output:
-        content = output[0].get("content") if isinstance(output[0], dict) else None
-        if isinstance(content, list) and content:
-            text = content[0].get("text") if isinstance(content[0], dict) else None
+    if isinstance(output, list):
+        for output_item in output:
+            if not isinstance(output_item, dict):
+                continue
+            fragments.extend(_extract_content_text(output_item.get("content")))
+            text = output_item.get("text")
             if isinstance(text, str):
-                return text
+                fragments.append(text)
+            elif isinstance(text, dict):
+                value = text.get("value")
+                if isinstance(value, str):
+                    fragments.append(value)
+    output_text = body.get("output_text")
+    if isinstance(output_text, str):
+        fragments.append(output_text)
 
     choices = body.get("choices")
-    if isinstance(choices, list) and choices:
-        msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
-        text = msg.get("content") if isinstance(msg, dict) else None
-        if isinstance(text, str):
-            return text
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            msg = choice.get("message", {})
+            if not isinstance(msg, dict):
+                continue
+            fragments.extend(_extract_content_text(msg.get("content")))
 
-    return ""
+    return "\n".join(fragment for fragment in fragments if fragment)
 
 
 def strip_json_fence(text: str) -> str:

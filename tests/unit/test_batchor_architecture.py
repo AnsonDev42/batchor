@@ -5,6 +5,7 @@ from pathlib import Path
 from batchor import (
     MemoryStateStore,
     OpenAIEnqueueLimitConfig,
+    OpenAIModel,
     OpenAIProviderConfig,
     OpenAIBatchProvider,
     ProviderKind,
@@ -37,6 +38,22 @@ def test_default_provider_registry_round_trips_openai_config() -> None:
     assert loaded == config
     assert loaded.enqueue_limits.max_batch_enqueued_tokens == 500
     assert isinstance(provider, OpenAIBatchProvider)
+
+
+def test_openai_provider_config_accepts_typed_model_name() -> None:
+    config = OpenAIProviderConfig(api_key="k", model=OpenAIModel.GPT_5_NANO)
+    assert config.model == OpenAIModel.GPT_5_NANO
+
+
+def test_default_provider_registry_can_dump_secretless_openai_config() -> None:
+    registry = build_default_provider_registry()
+    config = OpenAIProviderConfig(api_key="secret", model="gpt-4.1")
+
+    payload = registry.dump_config(config, include_secrets=False)
+
+    assert payload["provider_kind"] == ProviderKind.OPENAI.value
+    assert payload["config"]["model"] == "gpt-4.1"
+    assert "api_key" not in payload["config"]
 
 
 def test_storage_registry_supports_explicit_backend_factories(tmp_path: Path) -> None:

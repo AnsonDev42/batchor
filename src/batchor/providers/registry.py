@@ -35,10 +35,18 @@ class ProviderRegistry:
             raise ValueError(f"unsupported provider kind: {config.provider_kind}") from exc
         return factory(config)
 
-    def dump_config(self, config: ProviderConfig) -> JSONObject:
+    def dump_config(
+        self,
+        config: ProviderConfig,
+        *,
+        include_secrets: bool = True,
+    ) -> JSONObject:
+        config_payload = (
+            config.to_payload() if include_secrets else config.to_public_payload()
+        )
         return {
             "provider_kind": config.provider_kind.value,
-            "config": config.to_payload(),
+            "config": config_payload,
         }
 
     def load_config(self, payload: JSONObject) -> ProviderConfig:

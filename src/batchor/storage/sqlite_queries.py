@@ -26,6 +26,8 @@ from batchor.storage.sqlite_schema import (
     RUN_INGEST_STATE_TABLE,
     RUN_RETRY_STATE_TABLE,
     RUNS_TABLE,
+    SQLITE_SCHEMA_VERSION,
+    STORAGE_METADATA_TABLE,
 )
 from batchor.storage.state import (
     RunArtifactInventory,
@@ -154,6 +156,22 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
             if "artifact_export_root" not in run_columns:
                 conn.exec_driver_sql(
                     "ALTER TABLE runs ADD COLUMN artifact_export_root TEXT"
+                )
+            existing_schema_row = conn.execute(
+                select(STORAGE_METADATA_TABLE.c.value).where(
+                    STORAGE_METADATA_TABLE.c.key == "schema_version"
+                )
+            ).first()
+            if existing_schema_row is None:
+                conn.execute(
+                    STORAGE_METADATA_TABLE.insert(),
+                    [{"key": "schema_version", "value": str(SQLITE_SCHEMA_VERSION)}],
+                )
+            else:
+                conn.execute(
+                    STORAGE_METADATA_TABLE.update()
+                    .where(STORAGE_METADATA_TABLE.c.key == "schema_version")
+                    .values(value=str(SQLITE_SCHEMA_VERSION))
                 )
 
     def _fetch_retry_state(self, conn: Connection, run_id: str) -> RetryBackoffState:

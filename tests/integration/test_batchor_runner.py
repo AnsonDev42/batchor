@@ -20,6 +20,7 @@ from batchor import (
     OpenAIProviderConfig,
     PromptParts,
     RetryPolicy,
+    RunEvent,
     RunLifecycleStatus,
     RunNotFinishedError,
     SQLiteStorage,
@@ -81,6 +82,7 @@ class _FakeBatchProvider:
         self._file_to_lines: dict[str, list[dict[str, object]]] = {}
         self._batch_to_file: dict[str, str] = {}
         self.created_batches: list[str] = []
+        self.deleted_files: list[str] = []
         self._parser = OpenAIBatchProvider(
             OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
             client=object(),
@@ -133,6 +135,9 @@ class _FakeBatchProvider:
             "output_file_id": f"output_{batch_id}",
             "error_file_id": None,
         }
+
+    def delete_input_file(self, file_id: str) -> None:
+        self.deleted_files.append(file_id)
 
     def download_file_content(self, file_id: str) -> str:
         if not file_id.startswith("output_"):
@@ -321,6 +326,101 @@ def test_enqueue_limit_create_failure_recovers_without_consuming_attempts(tmp_pa
     assert result.status is ItemStatus.COMPLETED
     assert result.attempt_count == 0
     assert any(sleep >= 1.0 for sleep in clock.sleeps)
+    assert provider.deleted_files == ["file_0"]
+
+
+def test_sqlite_resume_ignores_api_key_mismatch(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    storage = SQLiteStorage(path=tmp_path / "resume_key.sqlite3")
+    runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+    )
+    run = runner.start(
+        BatchJob(
+            items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="first-key", model="gpt-4.1"),
+        )
+    )
+
+    resumed = runner.start(
+        BatchJob(
+            items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="rotated-key", model="gpt-4.1"),
+        ),
+        run_id=run.run_id,
+    )
+    resumed.wait()
+    assert resumed.results()[0].output is not None
+
+
+def test_sqlite_rehydration_loads_provider_config_without_persisted_api_key(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    storage = SQLiteStorage(path=tmp_path / "persisted_public.sqlite3")
+    runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+    )
+    run = runner.start(
+        BatchJob(
+            items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="secret-key", model="gpt-4.1"),
+        )
+    )
+    rehydrated = BatchRunner(
+        storage=SQLiteStorage(path=storage.path),
+        provider_factory=lambda _cfg: provider,
+    ).get_run(run.run_id)
+
+    assert isinstance(rehydrated._context.config.provider_config, OpenAIProviderConfig)
+    assert rehydrated._context.config.provider_config.api_key == ""
+
+
+def test_runner_observer_receives_provider_lifecycle_events(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    events: list[RunEvent] = []
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        observer=events.append,
+        temp_root=tmp_path,
+    )
+
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        )
+    )
+
+    assert run.results()[0].output is not None
+    event_types = {event.event_type for event in events}
+    assert "run_created" in event_types
+    assert "items_ingested" in event_types
+    assert "batch_submitted" in event_types
+    assert "batch_polled" in event_types
+    assert "batch_completed" in event_types
+    assert "items_completed" in event_types
 
 
 def test_sqlite_storage_supports_rehydrating_run_handle(tmp_path: Path) -> None:

@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from batchor.core.enums import RunLifecycleStatus
+from batchor.core.enums import ProviderKind, RunLifecycleStatus
 from batchor.core.exceptions import ModelResolutionError, RunNotFinishedError
 from batchor.core.models import (
     ArtifactExportResult,
@@ -20,6 +20,7 @@ from batchor.core.models import (
     BatchJob,
     BatchResultItem,
     PromptParts,
+    RunEvent,
     StructuredItemResult,
     TextItemResult,
 )
@@ -55,6 +56,7 @@ class BatchRunner:
         provider_registry: ProviderRegistry | None = None,
         storage_registry: StorageRegistry | None = None,
         provider_factory: Callable[[Any], BatchProvider] | None = None,
+        observer: Callable[[RunEvent], None] | None = None,
         sleep: Callable[[float], None] | None = None,
         temp_root: str | Path | None = None,
     ) -> None:
@@ -64,6 +66,7 @@ class BatchRunner:
         )
         self.state = self._resolve_storage(storage)
         self.provider_factory = provider_factory
+        self.observer = observer
         self.sleep = sleep or time.sleep
         if temp_root is not None:
             self.temp_root = Path(temp_root)
@@ -87,6 +90,11 @@ class BatchRunner:
         context = self._context_for_config(config=config, output_model=job.structured_output)
         self._contexts[resolved_run_id] = context
         if self.state.has_run(run_id=resolved_run_id):
+            self._emit_event(
+                "run_resumed",
+                run_id=resolved_run_id,
+                provider_kind=job.provider_config.provider_kind,
+            )
             self._resume_existing_run(
                 run_id=resolved_run_id,
                 job=job,
@@ -95,6 +103,11 @@ class BatchRunner:
             )
         else:
             self.state.create_run(run_id=resolved_run_id, config=config, items=[])
+            self._emit_event(
+                "run_created",
+                run_id=resolved_run_id,
+                provider_kind=job.provider_config.provider_kind,
+            )
             source = self._resumable_source(job)
             if source is not None:
                 identity = source.source_identity()
@@ -187,6 +200,12 @@ class BatchRunner:
             encoding="utf-8",
         )
         self.state.mark_artifacts_exported(run_id=run_id, export_root=str(export_root))
+        self._emit_event(
+            "artifacts_exported",
+            run_id=run_id,
+            provider_kind=context.config.provider_config.provider_kind if (context := self._contexts.get(run_id)) else None,
+            data={"destination_dir": str(export_root)},
+        )
         return ArtifactExportResult(
             run_id=run_id,
             destination_dir=str(export_root),
@@ -233,6 +252,15 @@ class BatchRunner:
                     artifact_paths=raw_artifact_paths,
                 )
                 self._prune_empty_artifact_dirs(raw_artifact_paths)
+        self._emit_event(
+            "artifacts_pruned",
+            run_id=run_id,
+            provider_kind=context.config.provider_config.provider_kind if (context := self._contexts.get(run_id)) else None,
+            data={
+                "removed_artifact_count": len(removed),
+                "include_raw_output_artifacts": include_raw_output_artifacts,
+            },
+        )
         return ArtifactPruneResult(
             run_id=run_id,
             removed_artifact_paths=removed,
@@ -282,7 +310,7 @@ class BatchRunner:
         context: _RunContext,
     ) -> None:
         stored_config = self.state.get_run_config(run_id=run_id)
-        if stored_config != config:
+        if not self._configs_match_for_resume(stored_config, config):
             raise ValueError(f"existing run config does not match supplied job: {run_id}")
         checkpoint = self.state.get_ingest_checkpoint(run_id=run_id)
         if checkpoint is not None and not checkpoint.ingestion_complete:
@@ -309,6 +337,15 @@ class BatchRunner:
         checkpointed = self._resumable_source(job) is not None
         for item_chunk in self._materialize_item_chunks(job, start_index=start_index):
             self.state.append_items(run_id=run_id, items=item_chunk)
+            self._emit_event(
+                "items_ingested",
+                run_id=run_id,
+                provider_kind=context.config.provider_config.provider_kind,
+                data={
+                    "chunk_item_count": len(item_chunk),
+                    "last_item_index": item_chunk[-1].item_index,
+                },
+            )
             next_item_index = item_chunk[-1].item_index + 1
             if checkpointed:
                 self.state.update_ingest_checkpoint(
@@ -418,6 +455,52 @@ class BatchRunner:
             provider=self._create_provider(config.provider_config),
             output_model=output_model,
             structured_output=structured_output,
+        )
+
+    def _emit_event(
+        self,
+        event_type: str,
+        *,
+        run_id: str,
+        provider_kind: ProviderKind | None = None,
+        data: JSONObject | None = None,
+    ) -> None:
+        if self.observer is None:
+            return
+        try:
+            self.observer(
+                RunEvent(
+                    event_type=event_type,
+                    run_id=run_id,
+                    provider_kind=provider_kind,
+                    data={} if data is None else data,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            return
+
+    def _configs_match_for_resume(
+        self,
+        stored_config: PersistedRunConfig,
+        supplied_config: PersistedRunConfig,
+    ) -> bool:
+        if (
+            stored_config.chunk_policy != supplied_config.chunk_policy
+            or stored_config.retry_policy != supplied_config.retry_policy
+            or stored_config.batch_metadata != supplied_config.batch_metadata
+            or stored_config.schema_name != supplied_config.schema_name
+            or stored_config.structured_output_module
+            != supplied_config.structured_output_module
+            or stored_config.structured_output_qualname
+            != supplied_config.structured_output_qualname
+        ):
+            return False
+        return self.provider_registry.dump_config(
+            stored_config.provider_config,
+            include_secrets=False,
+        ) == self.provider_registry.dump_config(
+            supplied_config.provider_config,
+            include_secrets=False,
         )
 
     def _resolve_output_model(

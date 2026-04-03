@@ -23,6 +23,7 @@ If you are working from the monorepo, run commands from `batchor/`. If you are w
 ```bash
 uv run ty check src
 uv run pytest -q
+uv build
 ```
 
 Expected:
@@ -31,6 +32,7 @@ Expected:
 - type checks pass
 - coverage gate passes at `85%` or higher
 - pytest runs in parallel through the default project config
+- sdist and wheel both build successfully
 
 ## Level 2: Targeted Runtime Smoke
 
@@ -56,8 +58,43 @@ Notes:
 - The default pytest configuration includes `-n auto` and the `85%` coverage gate.
 - `--no-cov` is only for supplemental targeted runs after the main smoke test already passed.
 
+## CLI Smoke
+
+The CLI auto-loads a local `.env` for operator usage. The Python library does not.
+
+Local example:
+
+```bash
+echo "OPENAI_API_KEY=sk-..." > .env
+batchor start --input input/items.jsonl --id-field id --prompt-field text --model gpt-4.1
+```
+
+This is not part of default CI. Prefer fake-provider tests for automated coverage and run live CLI smoke manually when changing CLI/provider wiring.
+
 ## Live OpenAI Smoke
 
-`TBD`
+Manual only. Recommended local flow:
 
-Current package tests rely on fake providers. When the extracted repo grows a stable live-API smoke harness, document it here with cost controls and required environment variables.
+```bash
+export OPENAI_API_KEY=sk-...
+export BATCHOR_RUN_LIVE_TESTS=1
+export BATCHOR_LIVE_OPENAI_MODEL=gpt-5-nano
+uv run pytest tests/integration/test_batchor_live_openai.py --no-cov -q
+```
+
+Behavior:
+
+- runs one single-item text job against the real OpenAI Batch API
+- uses SQLite durability and the normal `BatchRunner` flow
+- defaults to `gpt-5-nano` unless `BATCHOR_LIVE_OPENAI_MODEL` is set
+- sends no reasoning field unless `BATCHOR_LIVE_OPENAI_REASONING_EFFORT` is set
+- loads `.env` when present through the test harness for local use
+- is skipped unless `BATCHOR_RUN_LIVE_TESTS=1`
+- requires an OpenAI account with Batch API access and available billing quota
+
+Cost controls:
+
+- one item only
+- text output only
+- manual/local only
+- not part of default CI or release automation
