@@ -53,8 +53,10 @@ Expected:
 
 - durable `Run` lifecycle still works
 - subprocess crash + resume can recover `queued_local` work and replay persisted request artifacts
+- replaying multiple items from the same persisted request artifact does not require rereading that artifact file for each item
 - file-backed ingestion can resume from a persisted checkpoint when rerun with the same `run_id`
 - retry/resume from persisted request artifacts still works for SQLite-backed runs
+- transient batch-poll failures do not block unrelated pending submissions from being sent when capacity remains
 - raw output/error artifacts can be exported and require export before raw pruning
 - terminal runs, including `completed_with_failures`, can prune request artifacts without losing persisted results
 - shared storage-contract behavior remains aligned across SQLite and opt-in Postgres

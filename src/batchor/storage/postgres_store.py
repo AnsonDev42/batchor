@@ -130,7 +130,6 @@ class PostgresStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin
                 )
                 .values(status=ItemStatus.QUEUED_LOCAL)
             )
-            self._refresh_run_status(conn, run_id)
             return [
                 ClaimedItem(
                     item_id=str(row["item_id"]),

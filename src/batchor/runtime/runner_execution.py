@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
@@ -51,10 +52,11 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
     config = context.config
     if self.state.get_batch_retry_backoff_remaining_sec(run_id=run_id) > 0:
         return 0
+    claim_limit = _submission_claim_limit(config)
     claimed = self.state.claim_items_for_submission(
         run_id=run_id,
         max_attempts=config.retry_policy.max_attempts,
-        limit=None,
+        limit=claim_limit,
     )
     if not claimed:
         return 0
@@ -65,7 +67,11 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
         data={"claimed_item_count": len(claimed)},
     )
 
-    prepared_items = [self._prepare_item(item, context) for item in claimed]
+    artifact_cache: dict[str, list[str]] = {}
+    prepared_items = [
+        self._prepare_item(item, context, artifact_cache=artifact_cache)
+        for item in claimed
+    ]
     batch_token_limit = _batch_token_limit(config.provider_config)
     inflight_budget = _inflight_budget(config.provider_config)
     failed_item_ids: set[str] = set()
@@ -144,15 +150,15 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
     )
     submitted_item_ids: set[str] = set()
     submitted_count = 0
+    active_tokens = (
+        self.state.get_active_submitted_token_estimate(run_id=run_id)
+        if inflight_budget is not None
+        else 0
+    )
 
     for chunk_index, chunk in enumerate(chunks, start=1):
         chunk_tokens = sum(int(row["submission_tokens"]) for row in chunk)
-        if not _has_inflight_capacity(
-            self,
-            run_id=run_id,
-            inflight_budget=inflight_budget,
-            chunk_tokens=chunk_tokens,
-        ):
+        if inflight_budget is not None and chunk_tokens > max(inflight_budget - active_tokens, 0):
             break
         request_lines = [
             cast(JSONObject, row["request_line"])
@@ -240,6 +246,7 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
         )
         submitted_count += len(chunk)
         submitted_item_ids.update(str(row["item_id"]) for row in chunk)
+        active_tokens += chunk_tokens
 
     unsent = [
         item.item_id
@@ -251,20 +258,9 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
     return submitted_count
 
 
-def _has_inflight_capacity(
-    self: BatchRunner,
-    *,
-    run_id: str,
-    inflight_budget: int | None,
-    chunk_tokens: int,
-) -> bool:
-    if inflight_budget is None:
-        return True
-    if chunk_tokens > inflight_budget:
-        return False
-    active_tokens = self.state.get_active_submitted_token_estimate(run_id=run_id)
-    available = max(inflight_budget - active_tokens, 0)
-    return chunk_tokens <= available
+def _submission_claim_limit(config: Any) -> int:
+    max_requests = int(config.chunk_policy.max_requests)
+    return max(1, min(max_requests * 4, 8_192))
 
 
 def _inflight_budget(provider_config: Any) -> int | None:
@@ -314,20 +310,52 @@ def _oversized_request_failure(
 
 
 def _poll_once(self: BatchRunner, run_id: str, context: _RunContext) -> None:
-    for batch in self.state.get_active_batches(run_id=run_id):
+    batches = self.state.get_active_batches(run_id=run_id)
+    if not batches:
+        return
+
+    remote_by_batch_id: dict[str, BatchRemoteRecord] = {}
+    poll_errors: dict[str, Exception] = {}
+    if len(batches) == 1:
+        batch = batches[0]
         try:
-            remote = context.provider.get_batch(batch.provider_batch_id)
+            remote_by_batch_id[batch.provider_batch_id] = context.provider.get_batch(
+                batch.provider_batch_id
+            )
         except Exception as exc:  # noqa: BLE001
+            poll_errors[batch.provider_batch_id] = exc
+    else:
+        with ThreadPoolExecutor(max_workers=min(len(batches), 8)) as executor:
+            future_by_batch_id = {
+                batch.provider_batch_id: executor.submit(
+                    context.provider.get_batch,
+                    batch.provider_batch_id,
+                )
+                for batch in batches
+            }
+            for provider_batch_id, future in future_by_batch_id.items():
+                try:
+                    remote_by_batch_id[provider_batch_id] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    poll_errors[provider_batch_id] = exc
+
+    for batch in batches:
+        if batch.provider_batch_id in poll_errors:
+            exc = poll_errors[batch.provider_batch_id]
             if not is_retryable_batch_control_plane_error(exc):
-                raise
-            self.state.record_batch_retry_failure(
+                raise exc
+            self._emit_event(
+                "batch_poll_retry",
                 run_id=run_id,
-                error_class=classify_batch_error(exc),
-                base_delay_sec=context.config.retry_policy.base_backoff_sec,
-                max_delay_sec=context.config.retry_policy.max_backoff_sec,
+                provider_kind=context.config.provider_config.provider_kind,
+                data={
+                    "provider_batch_id": batch.provider_batch_id,
+                    "error_class": classify_batch_error(exc),
+                },
             )
             continue
 
+        remote = remote_by_batch_id[batch.provider_batch_id]
         status = str(remote["status"])
         self._emit_event(
             "batch_polled",
@@ -362,21 +390,16 @@ def _poll_once(self: BatchRunner, run_id: str, context: _RunContext) -> None:
                 data={"provider_batch_id": batch.provider_batch_id},
             )
         elif status in {"failed", "cancelled", "expired"}:
-            output_file_id = remote.get("output_file_id")
-            error_file_id = remote.get("error_file_id")
+            output_content, error_content = _download_batch_file_contents(
+                context=context,
+                output_file_id=remote.get("output_file_id"),
+                error_file_id=remote.get("error_file_id"),
+            )
             output_artifact_path, error_artifact_path = self._write_batch_result_artifacts(
                 run_id=run_id,
                 provider_batch_id=batch.provider_batch_id,
-                output_content=(
-                    context.provider.download_file_content(output_file_id)
-                    if isinstance(output_file_id, str)
-                    else None
-                ),
-                error_content=(
-                    context.provider.download_file_content(error_file_id)
-                    if isinstance(error_file_id, str)
-                    else None
-                ),
+                output_content=output_content,
+                error_content=error_content,
             )
             if output_artifact_path is not None or error_artifact_path is not None:
                 self.state.record_batch_artifacts(
@@ -412,6 +435,28 @@ def _poll_once(self: BatchRunner, run_id: str, context: _RunContext) -> None:
             )
 
 
+def _download_batch_file_contents(
+    *,
+    context: _RunContext,
+    output_file_id: object,
+    error_file_id: object,
+) -> tuple[str | None, str | None]:
+    output_id = output_file_id if isinstance(output_file_id, str) else None
+    error_id = error_file_id if isinstance(error_file_id, str) else None
+    if output_id is None and error_id is None:
+        return None, None
+    if output_id is not None and error_id is not None:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            output_future = executor.submit(context.provider.download_file_content, output_id)
+            error_future = executor.submit(context.provider.download_file_content, error_id)
+            return output_future.result(), error_future.result()
+    if output_id is not None:
+        return context.provider.download_file_content(output_id), None
+    if error_id is None:
+        return None, None
+    return None, context.provider.download_file_content(error_id)
+
+
 def _consume_completed_batch(
     self: BatchRunner,
     *,
@@ -421,21 +466,16 @@ def _consume_completed_batch(
     output_file_id: str | None,
     error_file_id: str | None,
 ) -> None:
-    output_content = (
-        context.provider.download_file_content(output_file_id)
-        if output_file_id
-        else ""
-    )
-    error_content = (
-        context.provider.download_file_content(error_file_id)
-        if error_file_id
-        else ""
+    output_content, error_content = _download_batch_file_contents(
+        context=context,
+        output_file_id=output_file_id,
+        error_file_id=error_file_id,
     )
     output_artifact_path, error_artifact_path = self._write_batch_result_artifacts(
         run_id=run_id,
         provider_batch_id=provider_batch_id,
-        output_content=output_content if output_file_id is not None else None,
-        error_content=error_content if error_file_id is not None else None,
+        output_content=output_content,
+        error_content=error_content,
     )
     if output_artifact_path is not None or error_artifact_path is not None:
         self.state.record_batch_artifacts(
@@ -449,8 +489,8 @@ def _consume_completed_batch(
             ],
         )
     successes, errors, _raw_records = context.provider.parse_batch_output(
-        output_content=output_content,
-        error_content=error_content,
+        output_content=output_content or "",
+        error_content=error_content or "",
     )
     submitted_custom_ids = set(
         self.state.get_submitted_custom_ids_for_batch(

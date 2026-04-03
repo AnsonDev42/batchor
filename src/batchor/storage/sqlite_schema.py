@@ -1,8 +1,8 @@
-from sqlalchemy import Column, Float, Integer, MetaData, String, Table, Text
+from sqlalchemy import Column, Float, Index, Integer, MetaData, String, Table, Text
 
 
 METADATA = MetaData()
-SQLITE_SCHEMA_VERSION = 1
+SQLITE_SCHEMA_VERSION = 2
 
 STORAGE_METADATA_TABLE = Table(
     "storage_metadata",
@@ -51,6 +51,10 @@ ITEMS_TABLE = Table(
     Column("raw_response_json", Text, nullable=True),
     Column("error_json", Text, nullable=True),
 )
+Index("ix_items_run_status_item_index", ITEMS_TABLE.c.run_id, ITEMS_TABLE.c.status, ITEMS_TABLE.c.item_index)
+Index("ix_items_run_active_custom_id", ITEMS_TABLE.c.run_id, ITEMS_TABLE.c.active_custom_id)
+Index("ix_items_run_active_batch_status", ITEMS_TABLE.c.run_id, ITEMS_TABLE.c.active_batch_id, ITEMS_TABLE.c.status)
+Index("ix_items_run_request_artifact_path", ITEMS_TABLE.c.run_id, ITEMS_TABLE.c.request_artifact_path)
 
 BATCHES_TABLE = Table(
     "batches",
@@ -65,6 +69,9 @@ BATCHES_TABLE = Table(
     Column("output_artifact_path", String, nullable=True),
     Column("error_artifact_path", String, nullable=True),
 )
+Index("ix_batches_run_status", BATCHES_TABLE.c.run_id, BATCHES_TABLE.c.status)
+Index("ix_batches_run_output_artifact_path", BATCHES_TABLE.c.run_id, BATCHES_TABLE.c.output_artifact_path)
+Index("ix_batches_run_error_artifact_path", BATCHES_TABLE.c.run_id, BATCHES_TABLE.c.error_artifact_path)
 
 RUN_RETRY_STATE_TABLE = Table(
     "run_retry_state",
