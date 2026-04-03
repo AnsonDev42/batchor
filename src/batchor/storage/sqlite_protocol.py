@@ -9,11 +9,13 @@ from batchor.core.enums import ItemStatus
 from batchor.core.models import ItemFailure, RunSummary
 from batchor.providers.registry import ProviderRegistry
 from batchor.storage.state import (
+    BatchArtifactPointer,
     IngestCheckpoint,
     MaterializedItem,
     PersistedItemRecord,
     PersistedRunConfig,
     RetryBackoffState,
+    RunArtifactInventory,
 )
 
 
@@ -90,3 +92,26 @@ class SQLiteStorageProtocol(Protocol):
         run_id: str,
         artifact_paths: list[str],
     ) -> int: ...
+
+    def record_batch_artifacts(
+        self,
+        *,
+        run_id: str,
+        pointers: list[BatchArtifactPointer],
+    ) -> None: ...
+
+    def get_artifact_inventory(self, *, run_id: str) -> RunArtifactInventory: ...
+
+    def clear_batch_artifact_pointers(
+        self,
+        *,
+        run_id: str,
+        artifact_paths: list[str],
+    ) -> int: ...
+
+    def mark_artifacts_exported(
+        self,
+        *,
+        run_id: str,
+        export_root: str,
+    ) -> None: ...

@@ -10,7 +10,13 @@ from pydantic import BaseModel
 
 from batchor.core.enums import RunLifecycleStatus
 from batchor.core.exceptions import RunNotFinishedError
-from batchor.core.models import ArtifactPruneResult, BatchResultItem, RunSnapshot, RunSummary
+from batchor.core.models import (
+    ArtifactExportResult,
+    ArtifactPruneResult,
+    BatchResultItem,
+    RunSnapshot,
+    RunSummary,
+)
 from batchor.core.types import JSONObject
 from batchor.providers.base import BatchProvider, StructuredOutputSchema
 from batchor.storage.state import PersistedRunConfig
@@ -116,6 +122,17 @@ class Run:
             raise RunNotFinishedError(self.run_id)
         return self._runner._results_for_run(self.run_id, self._context)
 
-    def prune_artifacts(self) -> ArtifactPruneResult:
+    def prune_artifacts(
+        self,
+        *,
+        include_raw_output_artifacts: bool = False,
+    ) -> ArtifactPruneResult:
         self._summary = self._runner.state.get_run_summary(run_id=self.run_id)
-        return self._runner.prune_artifacts(self.run_id)
+        return self._runner.prune_artifacts(
+            self.run_id,
+            include_raw_output_artifacts=include_raw_output_artifacts,
+        )
+
+    def export_artifacts(self, destination_dir: str) -> ArtifactExportResult:
+        self._summary = self._runner.state.get_run_summary(run_id=self.run_id)
+        return self._runner.export_artifacts(self.run_id, destination_dir=destination_dir)

@@ -64,5 +64,6 @@ This means a fresh worker can resume a run from the same SQLite database plus si
 - Once that pointer exists, `batchor` can prune large inline request-building fields from SQLite.
 - Built-in CSV and JSONL sources persist ingest checkpoints so `start(job, run_id=...)` can resume from the last durable source position before request-artifact replay takes over.
 - Once the run is terminal, `batchor` exposes explicit artifact pruning so users can reclaim replay storage without losing terminal results.
+- Raw output/error artifacts are retained until users explicitly export them, then prune them.
 - Artifact storage is local filesystem only today.
 - Mid-ingest crash recovery before the first request artifact exists is implemented for the built-in CSV and JSONL sources only. Other item iterables are still `TBD`.

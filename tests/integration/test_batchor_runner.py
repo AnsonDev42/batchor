@@ -448,6 +448,56 @@ def test_completed_run_can_prune_persisted_request_artifacts(tmp_path: Path) -> 
     assert run.prune_artifacts().cleared_item_pointers == 0
 
 
+def test_completed_run_exports_raw_artifacts_and_allows_pruning_after_export(
+    tmp_path: Path,
+) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    storage = SQLiteStorage(path=tmp_path / "artifact_export.sqlite3")
+    runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+    )
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        )
+    )
+
+    inventory = storage.get_artifact_inventory(run_id=run.run_id)
+    assert len(inventory.request_artifact_paths) == 1
+    assert len(inventory.output_artifact_paths) == 1
+    assert inventory.error_artifact_paths == []
+    raw_output_path = runner.temp_root / inventory.output_artifact_paths[0]
+    assert raw_output_path.exists()
+
+    with pytest.raises(ValueError, match="require export before pruning"):
+        run.prune_artifacts(include_raw_output_artifacts=True)
+
+    export = run.export_artifacts(str(tmp_path / "exports"))
+    assert Path(export.manifest_path).exists()
+    assert Path(export.results_path).exists()
+    manifest = json.loads(Path(export.manifest_path).read_text(encoding="utf-8"))
+    assert manifest["run_id"] == run.run_id
+    assert manifest["output_artifact_paths"] == inventory.output_artifact_paths
+    exported_output = Path(export.destination_dir) / inventory.output_artifact_paths[0]
+    assert exported_output.exists()
+
+    report = run.prune_artifacts(include_raw_output_artifacts=True)
+    assert inventory.output_artifact_paths[0] in report.removed_artifact_paths
+    assert report.cleared_batch_pointers == 1
+    assert raw_output_path.exists() is False
+    updated_inventory = storage.get_artifact_inventory(run_id=run.run_id)
+    assert updated_inventory.output_artifact_paths == []
+    assert run.results()[0].output is not None
+
+
 def test_prune_artifacts_requires_a_terminal_run(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
         record_factory=lambda custom_id: _success_record(

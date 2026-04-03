@@ -51,6 +51,7 @@ Execution and validation behavior:
 - durable request-artifact replay for retry/resume
 - resumable file-backed ingestion checkpoints
 - explicit terminal-run artifact pruning
+- explicit raw-artifact export before raw-artifact pruning
 - retry helpers
 - response validation and structured-output parsing
 
@@ -83,6 +84,7 @@ Durable and ephemeral state backends:
 7. SQLite-backed runs can replay prepared request JSONL artifacts without rebuilding prompts from the original item source.
 8. `Run.prune_artifacts()` is explicit and terminal-only; it is not automatic garbage collection.
 9. File-backed source resume requires a caller-supplied `run_id` plus a stable source fingerprint.
+10. Raw output/error artifacts persist by default and require export before raw-artifact pruning.
 
 ## Extension Seams
 

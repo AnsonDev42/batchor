@@ -16,6 +16,8 @@ RUNS_TABLE = Table(
     Column("schema_name", String, nullable=True),
     Column("structured_output_module", String, nullable=True),
     Column("structured_output_qualname", String, nullable=True),
+    Column("artifacts_exported_at", String, nullable=True),
+    Column("artifact_export_root", Text, nullable=True),
 )
 
 ITEMS_TABLE = Table(
@@ -52,6 +54,8 @@ BATCHES_TABLE = Table(
     Column("custom_ids_json", Text, nullable=False),
     Column("output_file_id", String, nullable=True),
     Column("error_file_id", String, nullable=True),
+    Column("output_artifact_path", String, nullable=True),
+    Column("error_artifact_path", String, nullable=True),
 )
 
 RUN_RETRY_STATE_TABLE = Table(

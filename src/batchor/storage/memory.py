@@ -10,6 +10,7 @@ from batchor.core.types import JSONObject, JSONValue
 from batchor.runtime.retry import compute_backoff_delay
 from batchor.storage.state_models import (
     ActiveBatchRecord,
+    BatchArtifactPointer,
     ClaimedItem,
     CompletedItemRecord,
     IngestCheckpoint,
@@ -21,6 +22,7 @@ from batchor.storage.state_models import (
     QueuedItemFailureRecord,
     RequestArtifactPointer,
     RetryBackoffState,
+    RunArtifactInventory,
     StateStore,
 )
 
@@ -55,6 +57,8 @@ class _StoredBatch:
     custom_ids: list[str]
     output_file_id: str | None = None
     error_file_id: str | None = None
+    output_artifact_path: str | None = None
+    error_artifact_path: str | None = None
 
 
 @dataclass
@@ -67,6 +71,8 @@ class _StoredRun:
     batches: dict[str, _StoredBatch] = field(default_factory=dict)
     backoff: RetryBackoffState = field(default_factory=RetryBackoffState)
     ingest_checkpoint: IngestCheckpoint | None = None
+    artifacts_exported_at: datetime | None = None
+    artifact_export_root: str | None = None
 
 
 class MemoryStateStore(StateStore):
@@ -244,6 +250,84 @@ class MemoryStateStore(StateStore):
             cleared += 1
         self._refresh_run_status(run)
         return cleared
+
+    def record_batch_artifacts(
+        self,
+        *,
+        run_id: str,
+        pointers: list[BatchArtifactPointer],
+    ) -> None:
+        if not pointers:
+            return
+        run = self._get_run(run_id)
+        for pointer in pointers:
+            batch = run.batches[pointer.provider_batch_id]
+            batch.output_artifact_path = pointer.output_artifact_path
+            batch.error_artifact_path = pointer.error_artifact_path
+
+    def get_artifact_inventory(self, *, run_id: str) -> RunArtifactInventory:
+        run = self._get_run(run_id)
+        request_paths = sorted(
+            {
+                item.request_artifact_path
+                for item in run.items.values()
+                if item.request_artifact_path is not None
+            }
+        )
+        output_paths = sorted(
+            {
+                batch.output_artifact_path
+                for batch in run.batches.values()
+                if batch.output_artifact_path is not None
+            }
+        )
+        error_paths = sorted(
+            {
+                batch.error_artifact_path
+                for batch in run.batches.values()
+                if batch.error_artifact_path is not None
+            }
+        )
+        return RunArtifactInventory(
+            request_artifact_paths=[path for path in request_paths if path is not None],
+            output_artifact_paths=[path for path in output_paths if path is not None],
+            error_artifact_paths=[path for path in error_paths if path is not None],
+            exported_at=run.artifacts_exported_at,
+            export_root=run.artifact_export_root,
+        )
+
+    def clear_batch_artifact_pointers(
+        self,
+        *,
+        run_id: str,
+        artifact_paths: list[str],
+    ) -> int:
+        if not artifact_paths:
+            return 0
+        run = self._get_run(run_id)
+        target_paths = set(artifact_paths)
+        cleared = 0
+        for batch in run.batches.values():
+            changed = False
+            if batch.output_artifact_path in target_paths:
+                batch.output_artifact_path = None
+                changed = True
+            if batch.error_artifact_path in target_paths:
+                batch.error_artifact_path = None
+                changed = True
+            if changed:
+                cleared += 1
+        return cleared
+
+    def mark_artifacts_exported(
+        self,
+        *,
+        run_id: str,
+        export_root: str,
+    ) -> None:
+        run = self._get_run(run_id)
+        run.artifacts_exported_at = self._now()
+        run.artifact_export_root = export_root
 
     def register_batch(
         self,

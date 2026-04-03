@@ -22,6 +22,7 @@ from batchor.storage.sqlite_schema import (
 )
 from batchor.storage.state import (
     ActiveBatchRecord,
+    BatchArtifactPointer,
     ClaimedItem,
     IngestCheckpoint,
     MaterializedItem,
@@ -374,6 +375,102 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
             )
             self._refresh_run_status(conn, run_id)
             return row_count
+
+    def record_batch_artifacts(
+        self,
+        *,
+        run_id: str,
+        pointers: list[BatchArtifactPointer],
+    ) -> None:
+        if not pointers:
+            return
+        statement = (
+            update(BATCHES_TABLE)
+            .where(
+                and_(
+                    BATCHES_TABLE.c.run_id == bindparam("b_run_id"),
+                    BATCHES_TABLE.c.provider_batch_id == bindparam("b_provider_batch_id"),
+                )
+            )
+            .values(
+                output_artifact_path=bindparam("b_output_artifact_path"),
+                error_artifact_path=bindparam("b_error_artifact_path"),
+            )
+        )
+        with self.engine.begin() as conn:
+            conn.execute(
+                statement,
+                [
+                    {
+                        "b_run_id": run_id,
+                        "b_provider_batch_id": pointer.provider_batch_id,
+                        "b_output_artifact_path": pointer.output_artifact_path,
+                        "b_error_artifact_path": pointer.error_artifact_path,
+                    }
+                    for pointer in pointers
+                ],
+            )
+
+    def clear_batch_artifact_pointers(
+        self,
+        *,
+        run_id: str,
+        artifact_paths: list[str],
+    ) -> int:
+        if not artifact_paths:
+            return 0
+        target_paths = sorted(set(artifact_paths))
+        with self.engine.begin() as conn:
+            row_count = len(
+                list(
+                    conn.execute(
+                        select(BATCHES_TABLE.c.provider_batch_id).where(
+                            and_(
+                                BATCHES_TABLE.c.run_id == run_id,
+                                (
+                                    BATCHES_TABLE.c.output_artifact_path.in_(target_paths)
+                                    | BATCHES_TABLE.c.error_artifact_path.in_(target_paths)
+                                ),
+                            )
+                        )
+                    ).scalars()
+                )
+            )
+            if row_count == 0:
+                return 0
+            conn.execute(
+                update(BATCHES_TABLE)
+                .where(
+                    and_(
+                        BATCHES_TABLE.c.run_id == run_id,
+                        (
+                            BATCHES_TABLE.c.output_artifact_path.in_(target_paths)
+                            | BATCHES_TABLE.c.error_artifact_path.in_(target_paths)
+                        ),
+                    )
+                )
+                .values(
+                    output_artifact_path=None,
+                    error_artifact_path=None,
+                )
+            )
+            return row_count
+
+    def mark_artifacts_exported(
+        self,
+        *,
+        run_id: str,
+        export_root: str,
+    ) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(
+                update(RUNS_TABLE)
+                .where(RUNS_TABLE.c.run_id == run_id)
+                .values(
+                    artifacts_exported_at=_encode_datetime(self._now()),
+                    artifact_export_root=export_root,
+                )
+            )
 
     def get_active_batches(self, *, run_id: str) -> list[ActiveBatchRecord]:
         with self.engine.begin() as conn:

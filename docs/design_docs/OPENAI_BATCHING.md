@@ -20,6 +20,8 @@ After a run reaches a terminal state, users can call `Run.prune_artifacts()` to 
 
 Before request artifacts exist, built-in CSV and JSONL sources can now resume ingestion from a persisted source checkpoint when the caller re-enters `start(job, run_id=...)` with the same file and config.
 
+Raw OpenAI batch output and error file contents are also persisted locally as artifacts when they are downloaded. Those files are intended for audit/export workflows and are only prunable after `Run.export_artifacts(...)` has been called.
+
 ### Token Estimation
 
 Token estimation is `tiktoken`-first:

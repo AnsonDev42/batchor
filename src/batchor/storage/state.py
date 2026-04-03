@@ -1,6 +1,7 @@
 from batchor.storage.memory import MemoryStateStore, serialize_item_failure
 from batchor.storage.state_models import (
     ActiveBatchRecord,
+    BatchArtifactPointer,
     ClaimedItem,
     CompletedItemRecord,
     IngestCheckpoint,
@@ -12,11 +13,13 @@ from batchor.storage.state_models import (
     QueuedItemFailureRecord,
     RequestArtifactPointer,
     RetryBackoffState,
+    RunArtifactInventory,
     StateStore,
 )
 
 __all__ = [
     "ActiveBatchRecord",
+    "BatchArtifactPointer",
     "ClaimedItem",
     "CompletedItemRecord",
     "IngestCheckpoint",
@@ -29,6 +32,7 @@ __all__ = [
     "QueuedItemFailureRecord",
     "RequestArtifactPointer",
     "RetryBackoffState",
+    "RunArtifactInventory",
     "StateStore",
     "serialize_item_failure",
 ]

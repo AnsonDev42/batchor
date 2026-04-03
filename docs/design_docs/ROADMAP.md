@@ -8,6 +8,7 @@ This file tracks important work that should be explicit in the extracted reposit
 - add provider-level observability hooks
 - add Postgres storage backend
 - extend resumable ingestion beyond the built-in CSV/JSONL sources
+- add automated retention windows on top of the explicit export/prune lifecycle
 - add more input adapters beyond CSV and JSONL
 - document API stability expectations before public release
 

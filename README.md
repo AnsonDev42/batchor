@@ -12,6 +12,7 @@ Structured-first OpenAI Batch runner with durable `Run` handles, Pydantic v2 val
 - `runner.get_run(run_id)` rehydrates a run from storage
 - `runner.start(..., run_id="...")` can resume incomplete file-backed ingestion for the same durable run
 - completed runs can explicitly prune replayable request artifacts through `Run.prune_artifacts()`
+- completed runs can export raw request/output artifacts plus final results through `Run.export_artifacts(...)`
 - local SQLAlchemy 2 SQLite storage is the default backend
 - `BatchRunner(storage="memory")` is available for ephemeral tests and one-off runs
 - replayable request JSONL artifacts are stored durably beside SQLite so retry/resume does not depend on the original input iterator after a request has been prepared
@@ -234,3 +235,19 @@ print(report.removed_artifact_paths)
 ```
 
 Pruning clears the request-artifact pointers from storage and removes the on-disk request files, but it keeps terminal item results and errors available through `run.results()` and `run.snapshot()`.
+
+## Raw Output Export And Retention
+
+For completed batches, `batchor` also persists raw provider output and error JSONL beside the run artifacts. Those raw files are treated as user-facing evidence, not just replay state.
+
+```python
+export = run.export_artifacts("exports")
+print(export.manifest_path)
+
+run.prune_artifacts(include_raw_output_artifacts=True)
+```
+
+Retention rule:
+
+- request artifacts may be pruned once the run is terminal
+- raw output/error artifacts require an explicit export before pruning

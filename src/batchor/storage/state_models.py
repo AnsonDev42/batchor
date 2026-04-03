@@ -77,6 +77,22 @@ class RequestArtifactPointer:
 
 
 @dataclass(frozen=True)
+class BatchArtifactPointer:
+    provider_batch_id: str
+    output_artifact_path: str | None = None
+    error_artifact_path: str | None = None
+
+
+@dataclass(frozen=True)
+class RunArtifactInventory:
+    request_artifact_paths: list[str]
+    output_artifact_paths: list[str]
+    error_artifact_paths: list[str]
+    exported_at: datetime | None = None
+    export_root: str | None = None
+
+
+@dataclass(frozen=True)
 class PreparedSubmission:
     item_id: str
     custom_id: str
@@ -200,6 +216,33 @@ class StateStore(ABC):
         run_id: str,
         artifact_paths: list[str],
     ) -> int: ...
+
+    @abstractmethod
+    def record_batch_artifacts(
+        self,
+        *,
+        run_id: str,
+        pointers: list[BatchArtifactPointer],
+    ) -> None: ...
+
+    @abstractmethod
+    def get_artifact_inventory(self, *, run_id: str) -> RunArtifactInventory: ...
+
+    @abstractmethod
+    def clear_batch_artifact_pointers(
+        self,
+        *,
+        run_id: str,
+        artifact_paths: list[str],
+    ) -> int: ...
+
+    @abstractmethod
+    def mark_artifacts_exported(
+        self,
+        *,
+        run_id: str,
+        export_root: str,
+    ) -> None: ...
 
     @abstractmethod
     def register_batch(

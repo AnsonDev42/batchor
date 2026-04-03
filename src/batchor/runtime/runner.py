@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import time
 from typing import Any, Callable, Iterator, cast
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 from batchor.core.enums import RunLifecycleStatus
 from batchor.core.exceptions import ModelResolutionError, RunNotFinishedError
 from batchor.core.models import (
+    ArtifactExportResult,
     ArtifactPruneResult,
     BatchJob,
     BatchResultItem,
@@ -140,39 +142,103 @@ class BatchRunner:
             summary=self.state.get_run_summary(run_id=run_id),
         )
 
-    def prune_artifacts(self, run_id: str) -> ArtifactPruneResult:
+    def export_artifacts(
+        self,
+        run_id: str,
+        *,
+        destination_dir: str | Path,
+    ) -> ArtifactExportResult:
         summary = self.state.get_run_summary(run_id=run_id)
         if summary.status is not RunLifecycleStatus.COMPLETED:
             raise RunNotFinishedError(run_id)
-        artifact_paths = self.state.get_request_artifact_paths(run_id=run_id)
-        if not artifact_paths:
-            return ArtifactPruneResult(
-                run_id=run_id,
-                removed_artifact_paths=[],
-                missing_artifact_paths=[],
-                cleared_item_pointers=0,
+        destination_root = Path(destination_dir).expanduser().resolve()
+        export_root = destination_root / run_id
+        export_root.mkdir(parents=True, exist_ok=True)
+        inventory = self.state.get_artifact_inventory(run_id=run_id)
+        exported_artifact_paths: list[str] = []
+        for artifact_path in (
+            inventory.request_artifact_paths
+            + inventory.output_artifact_paths
+            + inventory.error_artifact_paths
+        ):
+            source_path = self._artifact_full_path(artifact_path)
+            if not source_path.exists():
+                raise FileNotFoundError(f"artifact missing during export: {artifact_path}")
+            target_path = export_root / artifact_path
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, target_path)
+            exported_artifact_paths.append(artifact_path)
+        results_path = export_root / "results.jsonl"
+        self._write_results_export(run_id=run_id, results_path=results_path)
+        manifest_path = export_root / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "request_artifact_paths": inventory.request_artifact_paths,
+                    "output_artifact_paths": inventory.output_artifact_paths,
+                    "error_artifact_paths": inventory.error_artifact_paths,
+                    "results_path": "results.jsonl",
+                },
+                ensure_ascii=False,
+                indent=2,
             )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.state.mark_artifacts_exported(run_id=run_id, export_root=str(export_root))
+        return ArtifactExportResult(
+            run_id=run_id,
+            destination_dir=str(export_root),
+            manifest_path=str(manifest_path),
+            results_path=str(results_path),
+            exported_artifact_paths=exported_artifact_paths,
+        )
+
+    def prune_artifacts(
+        self,
+        run_id: str,
+        *,
+        include_raw_output_artifacts: bool = False,
+    ) -> ArtifactPruneResult:
+        summary = self.state.get_run_summary(run_id=run_id)
+        if summary.status is not RunLifecycleStatus.COMPLETED:
+            raise RunNotFinishedError(run_id)
+        inventory = self.state.get_artifact_inventory(run_id=run_id)
         removed: list[str] = []
         missing: list[str] = []
-        for artifact_path in artifact_paths:
-            path = self._artifact_full_path(artifact_path)
-            if path.exists():
-                if not path.is_file():
-                    raise IsADirectoryError(f"artifact path is not a file: {artifact_path}")
-                path.unlink()
-                removed.append(artifact_path)
-            else:
-                missing.append(artifact_path)
-        cleared_item_pointers = self.state.clear_request_artifact_pointers(
-            run_id=run_id,
-            artifact_paths=artifact_paths,
-        )
-        self._prune_empty_artifact_dirs(artifact_paths)
+        request_artifact_paths = inventory.request_artifact_paths
+        if request_artifact_paths:
+            removed, missing = self._remove_artifacts(request_artifact_paths)
+            cleared_item_pointers = self.state.clear_request_artifact_pointers(
+                run_id=run_id,
+                artifact_paths=request_artifact_paths,
+            )
+            self._prune_empty_artifact_dirs(request_artifact_paths)
+        else:
+            cleared_item_pointers = 0
+        cleared_batch_pointers = 0
+        if include_raw_output_artifacts:
+            if inventory.exported_at is None or inventory.export_root is None:
+                raise ValueError(
+                    f"raw output artifacts require export before pruning: {run_id}"
+                )
+            raw_artifact_paths = inventory.output_artifact_paths + inventory.error_artifact_paths
+            if raw_artifact_paths:
+                raw_removed, raw_missing = self._remove_artifacts(raw_artifact_paths)
+                removed.extend(raw_removed)
+                missing.extend(raw_missing)
+                cleared_batch_pointers = self.state.clear_batch_artifact_pointers(
+                    run_id=run_id,
+                    artifact_paths=raw_artifact_paths,
+                )
+                self._prune_empty_artifact_dirs(raw_artifact_paths)
         return ArtifactPruneResult(
             run_id=run_id,
             removed_artifact_paths=removed,
             missing_artifact_paths=missing,
             cleared_item_pointers=cleared_item_pointers,
+            cleared_batch_pointers=cleared_batch_pointers,
         )
 
     @staticmethod
@@ -477,6 +543,32 @@ class BatchRunner:
             f"request artifact line missing: {artifact_path}:{line_number}"
         )
 
+    def _write_batch_result_artifacts(
+        self,
+        *,
+        run_id: str,
+        provider_batch_id: str,
+        output_content: str | None,
+        error_content: str | None,
+    ) -> tuple[str | None, str | None]:
+        output_artifact_path = None
+        if output_content is not None:
+            output_artifact_path = (
+                Path(run_id) / "outputs" / f"{provider_batch_id}_output.jsonl"
+            ).as_posix()
+            full_output_path = self._artifact_full_path(output_artifact_path)
+            full_output_path.parent.mkdir(parents=True, exist_ok=True)
+            full_output_path.write_text(output_content, encoding="utf-8")
+        error_artifact_path = None
+        if error_content is not None:
+            error_artifact_path = (
+                Path(run_id) / "outputs" / f"{provider_batch_id}_error.jsonl"
+            ).as_posix()
+            full_error_path = self._artifact_full_path(error_artifact_path)
+            full_error_path.parent.mkdir(parents=True, exist_ok=True)
+            full_error_path.write_text(error_content, encoding="utf-8")
+        return output_artifact_path, error_artifact_path
+
     def _results_for_run(
         self,
         run_id: str,
@@ -536,6 +628,63 @@ class BatchRunner:
         if ".." in relative_path.parts:
             raise ValueError(f"artifact path must not escape temp_root: {artifact_path}")
         return self.temp_root / relative_path
+
+    def _remove_artifacts(self, artifact_paths: list[str]) -> tuple[list[str], list[str]]:
+        removed: list[str] = []
+        missing: list[str] = []
+        for artifact_path in artifact_paths:
+            path = self._artifact_full_path(artifact_path)
+            if path.exists():
+                if not path.is_file():
+                    raise IsADirectoryError(f"artifact path is not a file: {artifact_path}")
+                path.unlink()
+                removed.append(artifact_path)
+            else:
+                missing.append(artifact_path)
+        return removed, missing
+
+    def _write_results_export(
+        self,
+        *,
+        run_id: str,
+        results_path: Path,
+    ) -> None:
+        run = self.get_run(run_id)
+        lines = [
+            json.dumps(self._serialize_result(result), ensure_ascii=False)
+            for result in run.results()
+        ]
+        results_path.write_text(
+            ("\n".join(lines) + "\n") if lines else "",
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _serialize_result(result: BatchResultItem) -> JSONObject:
+        payload: JSONObject = {
+            "item_id": result.item_id,
+            "status": result.status.value,
+            "attempt_count": result.attempt_count,
+            "metadata": result.metadata,
+            "output_text": result.output_text,
+            "raw_response": result.raw_response,
+            "error": None,
+        }
+        if result.error is not None:
+            payload["error"] = {
+                "error_class": result.error.error_class,
+                "message": result.error.message,
+                "retryable": result.error.retryable,
+                "raw_error": result.error.raw_error,
+            }
+        if isinstance(result, StructuredItemResult):
+            output = result.output
+            payload["output_json"] = (
+                cast(BaseModel, output).model_dump(mode="json")
+                if output is not None
+                else None
+            )
+        return payload
 
     def _prune_empty_artifact_dirs(self, artifact_paths: list[str]) -> None:
         candidate_dirs: set[Path] = set()

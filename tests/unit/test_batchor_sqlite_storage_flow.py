@@ -19,6 +19,7 @@ from batchor.core.models import ChunkPolicy, ItemFailure, RetryPolicy
 from batchor.storage import sqlite as storage_sqlite
 from batchor.storage.sqlite import SQLiteStorage
 from batchor.storage.state import (
+    BatchArtifactPointer,
     CompletedItemRecord,
     IngestCheckpoint,
     ItemFailureRecord,
@@ -341,3 +342,50 @@ def test_sqlite_storage_persists_ingest_checkpoint(tmp_path: Path) -> None:
     assert completed is not None
     assert completed.next_item_index == 1002
     assert completed.ingestion_complete is True
+
+
+def test_sqlite_storage_tracks_batch_artifacts_and_export_status(tmp_path: Path) -> None:
+    storage = SQLiteStorage(path=tmp_path / "batch_artifacts.sqlite3")
+    storage.create_run(run_id="run_7", config=_config(), items=_items()[:1])
+    storage.register_batch(
+        run_id="run_7",
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="completed",
+        custom_ids=["row1:a1"],
+    )
+    storage.record_batch_artifacts(
+        run_id="run_7",
+        pointers=[
+            BatchArtifactPointer(
+                provider_batch_id="provider_1",
+                output_artifact_path="run_7/outputs/provider_1_output.jsonl",
+                error_artifact_path="run_7/outputs/provider_1_error.jsonl",
+            )
+        ],
+    )
+
+    inventory = storage.get_artifact_inventory(run_id="run_7")
+    assert inventory.output_artifact_paths == ["run_7/outputs/provider_1_output.jsonl"]
+    assert inventory.error_artifact_paths == ["run_7/outputs/provider_1_error.jsonl"]
+    assert inventory.exported_at is None
+
+    storage.mark_artifacts_exported(
+        run_id="run_7",
+        export_root=str((tmp_path / "exports" / "run_7").resolve()),
+    )
+    inventory = storage.get_artifact_inventory(run_id="run_7")
+    assert inventory.exported_at is not None
+    assert inventory.export_root == str((tmp_path / "exports" / "run_7").resolve())
+
+    cleared = storage.clear_batch_artifact_pointers(
+        run_id="run_7",
+        artifact_paths=[
+            "run_7/outputs/provider_1_output.jsonl",
+            "run_7/outputs/provider_1_error.jsonl",
+        ],
+    )
+    assert cleared == 1
+    inventory = storage.get_artifact_inventory(run_id="run_7")
+    assert inventory.output_artifact_paths == []
+    assert inventory.error_artifact_paths == []

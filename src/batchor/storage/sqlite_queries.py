@@ -28,6 +28,7 @@ from batchor.storage.sqlite_schema import (
     RUNS_TABLE,
 )
 from batchor.storage.state import (
+    RunArtifactInventory,
     IngestCheckpoint,
     MaterializedItem,
     PersistedItemRecord,
@@ -117,20 +118,42 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
 
     def _ensure_schema(self) -> None:
         with self.engine.begin() as conn:
-            columns = {
+            item_columns = {
                 str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(items)").fetchall()
             }
-            if "request_artifact_path" not in columns:
+            if "request_artifact_path" not in item_columns:
                 conn.exec_driver_sql(
                     "ALTER TABLE items ADD COLUMN request_artifact_path TEXT"
                 )
-            if "request_artifact_line" not in columns:
+            if "request_artifact_line" not in item_columns:
                 conn.exec_driver_sql(
                     "ALTER TABLE items ADD COLUMN request_artifact_line INTEGER"
                 )
-            if "request_sha256" not in columns:
+            if "request_sha256" not in item_columns:
                 conn.exec_driver_sql(
                     "ALTER TABLE items ADD COLUMN request_sha256 TEXT"
+                )
+            batch_columns = {
+                str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(batches)").fetchall()
+            }
+            if "output_artifact_path" not in batch_columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE batches ADD COLUMN output_artifact_path TEXT"
+                )
+            if "error_artifact_path" not in batch_columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE batches ADD COLUMN error_artifact_path TEXT"
+                )
+            run_columns = {
+                str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(runs)").fetchall()
+            }
+            if "artifacts_exported_at" not in run_columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE runs ADD COLUMN artifacts_exported_at TEXT"
+                )
+            if "artifact_export_root" not in run_columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE runs ADD COLUMN artifact_export_root TEXT"
                 )
 
     def _fetch_retry_state(self, conn: Connection, run_id: str) -> RetryBackoffState:
@@ -182,6 +205,65 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
                 source_fingerprint=str(row["source_fingerprint"]),
                 next_item_index=int(row["next_item_index"]),
                 ingestion_complete=bool(row["ingestion_complete"]),
+            )
+
+    def get_artifact_inventory(self, *, run_id: str) -> RunArtifactInventory:
+        with self.engine.begin() as conn:
+            request_paths = [
+                artifact_path
+                for artifact_path in (
+                    _nullable_str(value)
+                    for value in conn.execute(
+                        select(ITEMS_TABLE.c.request_artifact_path)
+                        .where(
+                            (ITEMS_TABLE.c.run_id == run_id)
+                            & ITEMS_TABLE.c.request_artifact_path.is_not(None)
+                        )
+                        .distinct()
+                        .order_by(ITEMS_TABLE.c.request_artifact_path)
+                    ).scalars()
+                )
+                if artifact_path is not None
+            ]
+            output_paths = [
+                artifact_path
+                for artifact_path in (
+                    _nullable_str(value)
+                    for value in conn.execute(
+                        select(BATCHES_TABLE.c.output_artifact_path)
+                        .where(
+                            (BATCHES_TABLE.c.run_id == run_id)
+                            & BATCHES_TABLE.c.output_artifact_path.is_not(None)
+                        )
+                        .distinct()
+                        .order_by(BATCHES_TABLE.c.output_artifact_path)
+                    ).scalars()
+                )
+                if artifact_path is not None
+            ]
+            error_paths = [
+                artifact_path
+                for artifact_path in (
+                    _nullable_str(value)
+                    for value in conn.execute(
+                        select(BATCHES_TABLE.c.error_artifact_path)
+                        .where(
+                            (BATCHES_TABLE.c.run_id == run_id)
+                            & BATCHES_TABLE.c.error_artifact_path.is_not(None)
+                        )
+                        .distinct()
+                        .order_by(BATCHES_TABLE.c.error_artifact_path)
+                    ).scalars()
+                )
+                if artifact_path is not None
+            ]
+            row = self._fetch_run_row(conn, run_id)
+            return RunArtifactInventory(
+                request_artifact_paths=request_paths,
+                output_artifact_paths=output_paths,
+                error_artifact_paths=error_paths,
+                exported_at=_decode_datetime(row["artifacts_exported_at"]),
+                export_root=_nullable_str(row["artifact_export_root"]),
             )
 
     def _summary_for_run(

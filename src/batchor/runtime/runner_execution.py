@@ -21,6 +21,7 @@ from batchor.runtime.tokens import (
 )
 from batchor.runtime.validation import parse_structured_response, parse_text_response
 from batchor.storage.state import (
+    BatchArtifactPointer,
     CompletedItemRecord,
     ItemFailureRecord,
     PreparedSubmission,
@@ -311,6 +312,33 @@ def _poll_once(self: BatchRunner, run_id: str, context: _RunContext) -> None:
             )
             self.state.clear_batch_retry_backoff(run_id=run_id)
         elif status in {"failed", "cancelled", "expired"}:
+            output_file_id = remote.get("output_file_id")
+            error_file_id = remote.get("error_file_id")
+            output_artifact_path, error_artifact_path = self._write_batch_result_artifacts(
+                run_id=run_id,
+                provider_batch_id=batch.provider_batch_id,
+                output_content=(
+                    context.provider.download_file_content(output_file_id)
+                    if isinstance(output_file_id, str)
+                    else None
+                ),
+                error_content=(
+                    context.provider.download_file_content(error_file_id)
+                    if isinstance(error_file_id, str)
+                    else None
+                ),
+            )
+            if output_artifact_path is not None or error_artifact_path is not None:
+                self.state.record_batch_artifacts(
+                    run_id=run_id,
+                    pointers=[
+                        BatchArtifactPointer(
+                            provider_batch_id=batch.provider_batch_id,
+                            output_artifact_path=output_artifact_path,
+                            error_artifact_path=error_artifact_path,
+                        )
+                    ],
+                )
             error = _batch_failure_error(remote)
             self.state.record_batch_retry_failure(
                 run_id=run_id,
@@ -344,6 +372,23 @@ def _consume_completed_batch(
         if error_file_id
         else ""
     )
+    output_artifact_path, error_artifact_path = self._write_batch_result_artifacts(
+        run_id=run_id,
+        provider_batch_id=provider_batch_id,
+        output_content=output_content if output_file_id is not None else None,
+        error_content=error_content if error_file_id is not None else None,
+    )
+    if output_artifact_path is not None or error_artifact_path is not None:
+        self.state.record_batch_artifacts(
+            run_id=run_id,
+            pointers=[
+                BatchArtifactPointer(
+                    provider_batch_id=provider_batch_id,
+                    output_artifact_path=output_artifact_path,
+                    error_artifact_path=error_artifact_path,
+                )
+            ],
+        )
     successes, errors, _raw_records = context.provider.parse_batch_output(
         output_content=output_content,
         error_content=error_content,

@@ -31,6 +31,7 @@ Current storage responsibilities include:
 - persisting item state and attempts
 - persisting submitted batch metadata
 - persisting request-artifact pointers for replayable submissions
+- persisting batch output/error artifact pointers for raw provider payload retention
 - persisting provider outputs/errors needed for rehydration
 - reconstructing structured results on reload
 
@@ -58,6 +59,8 @@ Once an item has a durable request artifact pointer, `batchor` may prune large i
 
 Once the whole run is terminal, users may explicitly call `Run.prune_artifacts()` or `BatchRunner.prune_artifacts(run_id)` to remove replayable request files and clear their storage pointers. This is a manual lifecycle step today; `batchor` does not auto-delete artifacts behind the user's back.
 
+Raw output/error artifacts follow a stricter rule: users must call `Run.export_artifacts(...)` first, and only then may they call `Run.prune_artifacts(include_raw_output_artifacts=True)`. This keeps raw provider payload retention explicit.
+
 ## Current Gaps
 
 - SQLite is the only durable backend implemented today
@@ -68,7 +71,7 @@ Once the whole run is terminal, users may explicitly call `Run.prune_artifacts()
 ## TBD
 
 - Postgres backend and migration story
-- automated retention windows and archive/export workflow beyond explicit terminal pruning
+- automated retention windows and archive/export workflow beyond explicit manual export + prune
 - explicit schema migration/versioning guidance
 - partial-result read APIs for non-terminal runs
 - resumable ingestion for non-file/custom sources

@@ -275,3 +275,13 @@ class ArtifactPruneResult:
     removed_artifact_paths: list[str]
     missing_artifact_paths: list[str]
     cleared_item_pointers: int
+    cleared_batch_pointers: int = 0
+
+
+@dataclass(frozen=True)
+class ArtifactExportResult:
+    run_id: str
+    destination_dir: str
+    manifest_path: str
+    results_path: str
+    exported_artifact_paths: list[str]
