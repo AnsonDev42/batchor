@@ -35,6 +35,8 @@ Expected:
 - pytest runs in parallel through the default project config
 - sdist and wheel both build successfully
 
+GitHub pull request CI runs this default smoke across Python `3.12` and `3.13`. The build step runs in a dedicated Python `3.13` job so packaging is still verified without duplicating build work across the full matrix.
+
 ## Level 2: Targeted Runtime Smoke
 
 Use this when touching provider/storage/runtime wiring:
@@ -61,7 +63,8 @@ Notes:
 
 - The default pytest configuration includes `-n auto` and the `85%` coverage gate.
 - `--no-cov` is only for supplemental targeted runs after the main smoke test already passed.
-- Postgres contract tests only run when `BATCHOR_TEST_POSTGRES_DSN` is set.
+- Postgres contract tests run in required GitHub Actions CI through an ephemeral PostgreSQL service.
+- Local Postgres contract tests still require `BATCHOR_TEST_POSTGRES_DSN` to be set.
 
 ## CLI Smoke
 

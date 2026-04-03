@@ -302,6 +302,14 @@ uv build
 
 The default pytest configuration enforces an `85%` coverage floor.
 
+GitHub Actions pull requests run:
+
+- `test (3.12)` and `test (3.13)`: `uv run ty check src` plus `uv run pytest -q`
+- `build (3.13)`: `uv build`
+- `postgres-contract`: `uv run pytest tests/unit/test_batchor_storage_contracts.py --no-cov -q` with an ephemeral PostgreSQL service
+
+The live OpenAI smoke remains manual-only and is not part of required CI.
+
 Manual live OpenAI smoke:
 
 ```bash
