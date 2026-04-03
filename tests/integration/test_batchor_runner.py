@@ -19,6 +19,7 @@ from batchor import (
     BatchJob,
     BatchRunner,
     ChunkPolicy,
+    CompositeItemSource,
     JsonlItemSource,
     ItemStatus,
     MemoryStateStore,
@@ -1357,6 +1358,99 @@ def test_file_backed_jsonl_job_matches_in_memory_results(tmp_path: Path) -> None
     ]
 
 
+def test_composite_item_source_namespaces_duplicate_ids_across_sources(
+    tmp_path: Path,
+) -> None:
+    first_path = tmp_path / "items-a.jsonl"
+    second_path = tmp_path / "items-b.jsonl"
+    first_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"id": "row1", "text": "alpha"}),
+                json.dumps({"id": "row2", "text": "beta"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    second_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"id": "row1", "text": "gamma"}),
+                json.dumps({"id": "row2", "text": "delta"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source = CompositeItemSource(
+        [
+            JsonlItemSource(
+                first_path,
+                item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+                payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+            ),
+            JsonlItemSource(
+                second_path,
+                item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+                payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+            ),
+        ]
+    )
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path / "composite-source",
+    )
+
+    run = runner.run_and_wait(
+        BatchJob(
+            items=source,
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        )
+    )
+
+    results = run.results()
+    item_records = runner.state.get_item_records(run_id=run.run_id)
+    first_namespace = results[0].item_id.split("__", maxsplit=1)[0]
+    second_namespace = results[2].item_id.split("__", maxsplit=1)[0]
+
+    assert [record.item_index for record in item_records] == [0, 1, 2, 3]
+    assert [result.item_id for result in results] == [
+        f"{first_namespace}__row1",
+        f"{first_namespace}__row2",
+        f"{second_namespace}__row1",
+        f"{second_namespace}__row2",
+    ]
+    assert first_namespace.startswith("src_")
+    assert second_namespace.startswith("src_")
+    assert first_namespace != second_namespace
+    assert [
+        result.metadata["batchor_lineage"]["source_primary_key"]
+        for result in results
+    ] == ["row1", "row2", "row1", "row2"]
+    assert [
+        result.metadata["batchor_lineage"]["source_ref"]
+        for result in results
+    ] == [
+        str(first_path.resolve()),
+        str(first_path.resolve()),
+        str(second_path.resolve()),
+        str(second_path.resolve()),
+    ]
+    assert [
+        result.output.label if result.output is not None else None
+        for result in results
+    ] == [result.item_id for result in results]
+
+
 def test_start_with_same_run_id_resumes_incomplete_jsonl_ingestion(tmp_path: Path) -> None:
     path = tmp_path / "items.jsonl"
     records = [
@@ -1423,3 +1517,119 @@ def test_start_with_same_run_id_resumes_incomplete_jsonl_ingestion(tmp_path: Pat
     assert len(resumed.results()) == 1002
     assert resumed.results()[0].item_id == "row0"
     assert resumed.results()[-1].item_id == "row1001"
+
+
+def test_start_with_same_run_id_resumes_incomplete_composite_ingestion(
+    tmp_path: Path,
+) -> None:
+    first_path = tmp_path / "items-a.jsonl"
+    second_path = tmp_path / "items-b.jsonl"
+    first_records = [
+        {"id": f"row{i}", "text": f"first-{i}"}
+        for i in range(999)
+    ]
+    second_records = [
+        {"id": f"row{i}", "text": f"second-{i}"}
+        for i in range(3)
+    ]
+    first_path.write_text(
+        "\n".join(json.dumps(record) for record in first_records) + "\n",
+        encoding="utf-8",
+    )
+    second_path.write_text(
+        "\n".join(json.dumps(record) for record in second_records) + "\n",
+        encoding="utf-8",
+    )
+
+    def build_source() -> CompositeItemSource[dict[str, str]]:
+        return CompositeItemSource(
+            [
+                JsonlItemSource(
+                    first_path,
+                    item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+                    payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+                ),
+                JsonlItemSource(
+                    second_path,
+                    item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+                    payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+                ),
+            ]
+        )
+
+    storage = SQLiteStorage(path=tmp_path / "resume_composite.sqlite3")
+    run_id = "resume_composite_run"
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+    )
+
+    def flaky_prompt_builder(item: BatchItem[dict[str, str]]) -> PromptParts:
+        if item.payload["text"] == "second-1":
+            raise RuntimeError("simulated composite ingest crash")
+        return PromptParts(prompt=item.payload["text"])
+
+    with pytest.raises(RuntimeError, match="simulated composite ingest crash"):
+        runner.start(
+            BatchJob(
+                items=build_source(),
+                build_prompt=flaky_prompt_builder,
+                structured_output=ClassificationResult,
+                provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+            ),
+            run_id=run_id,
+        )
+
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1000
+    assert checkpoint.checkpoint_payload == {
+        "source_index": 1,
+        "child_checkpoint": 1,
+    }
+    assert checkpoint.ingestion_complete is False
+
+    resumed = runner.start(
+        BatchJob(
+            items=build_source(),
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        ),
+        run_id=run_id,
+    )
+    resumed.wait(poll_interval=0)
+
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1002
+    assert checkpoint.checkpoint_payload == {
+        "source_index": 2,
+        "child_checkpoint": None,
+    }
+    assert checkpoint.ingestion_complete is True
+
+    item_records = storage.get_item_records(run_id=run_id)
+    last_three = item_records[-3:]
+    assert [record.item_index for record in last_three] == [999, 1000, 1001]
+    assert [
+        record.metadata["batchor_lineage"]["source_ref"]
+        for record in last_three
+    ] == [str(second_path.resolve())] * 3
+    assert [
+        record.metadata["batchor_lineage"]["source_primary_key"]
+        for record in last_three
+    ] == ["row0", "row1", "row2"]
+
+    results = resumed.results()
+    second_namespace = results[-1].item_id.split("__", maxsplit=1)[0]
+    assert [result.item_id for result in results[-3:]] == [
+        f"{second_namespace}__row0",
+        f"{second_namespace}__row1",
+        f"{second_namespace}__row2",
+    ]

@@ -38,6 +38,7 @@ Built-in implementations:
 - `PostgresStorage` as an opt-in durable control-plane backend
 - `MemoryStateStore`
 - `LocalArtifactStore`
+- `CompositeItemSource`
 - `CsvItemSource`
 - `JsonlItemSource`
 - `ParquetItemSource`
@@ -46,6 +47,7 @@ Important constraints:
 
 - the Python API is broader than the CLI
 - the CLI supports file-backed inputs only
+- users still own selecting and ordering input files or partitions
 - the built-in CLI uses SQLite durability only
 - structured-output rehydration requires an importable module-level Pydantic model
 - raw output artifacts are retained by default and must be exported before raw pruning
@@ -196,6 +198,50 @@ run = runner.start(
 
 If the source file and job config still match the persisted checkpoint, calling `start(job, run_id=...)` again resumes ingestion from the last durable source position instead of duplicating already-materialized items.
 
+To combine multiple deterministic sources into one logical run, wrap them explicitly in `CompositeItemSource`:
+
+```python
+from batchor import (
+    BatchJob,
+    BatchRunner,
+    CompositeItemSource,
+    CsvItemSource,
+    JsonlItemSource,
+    OpenAIProviderConfig,
+    PromptParts,
+)
+
+
+source = CompositeItemSource(
+    [
+        CsvItemSource(
+            "input/items-a.csv",
+            item_id_from_row=lambda row: row["id"],
+            payload_from_row=lambda row: {"text": row["text"]},
+        ),
+        JsonlItemSource(
+            "input/items-b.jsonl",
+            item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+            payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+        ),
+    ]
+)
+
+runner = BatchRunner()
+run = runner.start(
+    BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(model="gpt-4.1"),
+    ),
+    run_id="customer_export_20260403",
+)
+```
+
+`CompositeItemSource` keeps one logical ingest checkpoint for the run while auto-namespacing each child source's `item_id`, so duplicate row IDs across files can coexist.
+The original per-source row ID remains available under `metadata["batchor_lineage"]["source_primary_key"]`, and the composite namespace is recorded under `metadata["batchor_lineage"]["source_namespace"]`.
+Input ordering is part of resume compatibility.
+
 ### Parquet input sources
 
 ```python
@@ -221,7 +267,8 @@ run = runner.start(
 ```
 
 Parquet support is library-only today and follows the same durable checkpoint rule as CSV and JSONL: resume requires the same `run_id`, the same job config, and the same source identity/fingerprint.
-Custom deterministic sources can implement `CheckpointedItemSource`; arbitrary generators and live DB cursors are still out of scope unless they can provide a durable resume checkpoint.
+Custom deterministic sources can implement `CheckpointedItemSource`, and `CompositeItemSource` can wrap those adapters too.
+Arbitrary generators and live DB cursors are still out of scope unless they can provide a durable resume checkpoint.
 
 ### Run control and incremental terminal results
 
@@ -267,6 +314,21 @@ batchor start \
   --prompt-field text \
   --model gpt-4.1
 ```
+
+`--input` is repeatable. When you pass multiple files, the CLI composes them into one deterministic source in the order given:
+
+```bash
+batchor start \
+  --input input/items-a.csv \
+  --input input/items-b.jsonl \
+  --id-field id \
+  --prompt-field text \
+  --model gpt-4.1
+```
+
+For repeated `--input`, the CLI keeps one durable run and one logical source checkpoint.
+Result `item_id` values are auto-namespaced per input source so duplicate row IDs across files do not collide, while the original row ID remains under `metadata.batchor_lineage.source_primary_key`.
+Changing the `--input` order changes the logical source identity and breaks resume compatibility for the same `run_id`.
 
 Inspect and operate on the durable run:
 
@@ -314,7 +376,7 @@ Completed runs can:
 - prune replayable request artifacts
 - prune raw output/error artifacts only after export
 
-Built-in sources also populate reserved lineage under `metadata["batchor_lineage"]` so downstream joins can recover source references, source item indexes, and source primary keys without replacing user metadata.
+Built-in sources also populate reserved lineage under `metadata["batchor_lineage"]` so downstream joins can recover source references, source item indexes, source primary keys, and composite source namespaces without replacing user metadata.
 
 ## Retention and privacy
 

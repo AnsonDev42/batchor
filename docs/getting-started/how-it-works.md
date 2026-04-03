@@ -12,6 +12,8 @@ One logical unit of work. It has:
 - `payload`: your application data
 - `metadata`: optional JSON metadata carried through to results
 
+When a `CompositeItemSource` is used, `batchor` rewrites child-source `item_id` values into run-unique namespaced IDs and preserves the original per-source row ID in lineage metadata.
+
 ### `BatchJob`
 
 The full execution plan for a run. It bundles:
@@ -113,10 +115,12 @@ Resume safety depends on stable inputs:
 
 Built-in deterministic sources currently include:
 
+- `CompositeItemSource`
 - `CsvItemSource`
 - `JsonlItemSource`
 - `ParquetItemSource`
 
+`CompositeItemSource` keeps the runner contract narrow: the runner still sees one logical source, while callers remain responsible for selecting and ordering the child sources up front.
 Arbitrary iterables do not become durable automatically. Custom non-file sources need a stable identity and explicit checkpoint contract.
 
 ## Run control
@@ -162,7 +166,7 @@ The Python API is the main product surface. It supports:
 
 The CLI is intentionally narrower. It is designed for operator workflows around:
 
-- CSV and JSONL files
+- one or more explicit CSV and JSONL files
 - SQLite durability
 - JSON summaries and result export
 

@@ -269,3 +269,97 @@ def test_cli_structured_output_supports_importable_model(tmp_path: Path) -> None
     assert results.exit_code == 0
     payload = json.loads(output_path.read_text(encoding="utf-8").strip())
     assert payload["output"]["label"] == "ok"
+
+
+def test_cli_start_supports_multiple_inputs_with_duplicate_ids(tmp_path: Path) -> None:
+    csv_path = tmp_path / "items.csv"
+    jsonl_path = tmp_path / "items.jsonl"
+    db_path = tmp_path / "cli-multi.sqlite3"
+    output_path = tmp_path / "multi-results.jsonl"
+    csv_path.write_text("id,text\nrow1,hello\n", encoding="utf-8")
+    jsonl_path.write_text('{"id":"row1","text":"world"}\n', encoding="utf-8")
+    provider = _FakeCliProvider()
+    runner = CliRunner()
+    app = create_app(provider_factory=lambda _cfg: provider)
+
+    start = runner.invoke(
+        app,
+        [
+            "start",
+            "--input",
+            str(csv_path),
+            "--input",
+            str(jsonl_path),
+            "--id-field",
+            "id",
+            "--prompt-field",
+            "text",
+            "--model",
+            "gpt-4.1",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+    assert start.exit_code == 0
+    run_id = json.loads(start.stdout)["run_id"]
+
+    wait = runner.invoke(
+        app,
+        ["wait", "--run-id", run_id, "--db-path", str(db_path), "--poll-interval", "0"],
+    )
+    assert wait.exit_code == 0
+
+    results = runner.invoke(
+        app,
+        ["results", "--run-id", run_id, "--db-path", str(db_path), "--output", str(output_path)],
+    )
+    assert results.exit_code == 0
+    written = [
+        json.loads(line)
+        for line in output_path.read_text(encoding="utf-8").strip().splitlines()
+    ]
+    first_namespace = written[0]["item_id"].split("__", maxsplit=1)[0]
+    second_namespace = written[1]["item_id"].split("__", maxsplit=1)[0]
+
+    assert [entry["item_id"] for entry in written] == [
+        f"{first_namespace}__row1",
+        f"{second_namespace}__row1",
+    ]
+    assert first_namespace.startswith("src_")
+    assert second_namespace.startswith("src_")
+    assert first_namespace != second_namespace
+    assert [entry["metadata"]["batchor_lineage"]["source_primary_key"] for entry in written] == [
+        "row1",
+        "row1",
+    ]
+
+
+def test_cli_start_rejects_unsupported_input_suffix_when_repeated(tmp_path: Path) -> None:
+    csv_path = tmp_path / "items.csv"
+    txt_path = tmp_path / "items.txt"
+    csv_path.write_text("id,text\nrow1,hello\n", encoding="utf-8")
+    txt_path.write_text("row1 hello\n", encoding="utf-8")
+    provider = _FakeCliProvider()
+    runner = CliRunner()
+
+    result = runner.invoke(
+        create_app(provider_factory=lambda _cfg: provider),
+        [
+            "start",
+            "--input",
+            str(csv_path),
+            "--input",
+            str(txt_path),
+            "--id-field",
+            "id",
+            "--prompt-field",
+            "text",
+            "--model",
+            "gpt-4.1",
+            "--db-path",
+            str(tmp_path / "cli.sqlite3"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "input file must end with .csv or .jsonl" in result.stderr

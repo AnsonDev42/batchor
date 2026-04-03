@@ -9,6 +9,7 @@ This document describes the OpenAI-specific behavior inside `batchor`.
 ## Request construction
 
 The built-in provider converts each prepared item into one OpenAI Batch JSONL request row.
+The request `custom_id` is derived from the run's durable `item_id`, so multi-source runs must make those item IDs unique before request construction.
 
 Current endpoint support:
 
@@ -51,7 +52,9 @@ Important consequences:
 - shared request-artifact contents are cached within one refresh/submission cycle to avoid repeated rereads
 
 Before request artifacts exist, built-in deterministic sources can resume ingestion from a persisted source checkpoint when the caller re-enters `start(job, run_id=...)` with the same source identity and config.
-That currently includes CSV, JSONL, and Parquet. Custom non-file sources must implement a durable checkpoint contract explicitly; arbitrary iterables and live DB cursors are still `TBD`.
+That currently includes CSV, JSONL, Parquet, and `CompositeItemSource` for ordered composition of checkpointed sources.
+When `CompositeItemSource` is used, child-source row IDs are auto-namespaced into run-unique `item_id` values, while the original row ID is preserved in lineage metadata.
+Custom non-file sources must implement a durable checkpoint contract explicitly; arbitrary iterables and live DB cursors are still `TBD`.
 
 ## Raw output retention
 

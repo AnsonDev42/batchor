@@ -125,6 +125,14 @@ For deterministic built-in sources, storage persists a source checkpoint with:
 - ingestion completion flag
 
 The opaque checkpoint payload is source-owned. `batchor` persists it but does not attempt to interpret arbitrary custom-source resume tokens.
+`CompositeItemSource` keeps this storage contract unchanged by presenting one logical source to the runner:
+
+- `source_kind` is `composite`
+- `source_ref` is canonical JSON of the ordered child source identities
+- `source_fingerprint` is the hash of that ordered child identity list
+- `checkpoint_payload` tracks the active child source plus that child's opaque checkpoint
+
+There is still one ingest-checkpoint row per run, not one row per child source.
 
 This enables `start(job, run_id=...)` to resume ingestion rather than rematerializing already-ingested rows, as long as the source still matches the stored identity.
 
@@ -146,6 +154,7 @@ Fresh-process resume also requeues any `queued_local` items back to `pending` be
 Resume compatibility intentionally ignores non-persisted secret fields such as provider API keys.
 
 For deterministic-source resume, the caller must also reuse the same `run_id` and provide the same source identity/fingerprint.
+For composite sources, that includes the same ordered child identities; changing the child order or swapping one file changes the logical source identity.
 
 Once an item has a durable request artifact pointer, `batchor` prunes large inline request-building fields from the control-plane store and relies on the artifact for later retries.
 
@@ -210,8 +219,10 @@ Recommended keys are:
 - `partition_id`
 - `source_item_index`
 - `source_primary_key`
+- `source_namespace`
 
 Built-in deterministic sources populate what they know without replacing user metadata.
+When `CompositeItemSource` is used, the durable public `item_id` becomes the auto-namespaced run identifier, and the original child-source row ID is preserved in `source_primary_key`.
 
 ## Summary recomputation
 

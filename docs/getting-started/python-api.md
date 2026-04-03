@@ -135,7 +135,8 @@ Rehydration succeeds only if the runner can still resolve what the run needs:
 
 ## Deterministic sources
 
-Use `CsvItemSource` or `JsonlItemSource` when the input already exists on disk.
+Use `CsvItemSource`, `JsonlItemSource`, or `ParquetItemSource` when the input already exists on disk.
+Use `CompositeItemSource` when you have already selected and ordered multiple checkpointed sources and want them to behave like one logical run input.
 
 ```python
 from batchor import BatchJob, BatchRunner, JsonlItemSource, OpenAIProviderConfig, PromptParts
@@ -162,6 +163,7 @@ If the source file and job config still match the persisted checkpoint, rerunnin
 
 Built-in deterministic sources today are:
 
+- `CompositeItemSource`
 - `CsvItemSource`
 - `JsonlItemSource`
 - `ParquetItemSource`
@@ -190,7 +192,53 @@ run = runner.start(
 )
 ```
 
-For custom deterministic adapters, implement `CheckpointedItemSource`. Arbitrary iterables and live DB cursors are still outside the durable-resume contract unless they can provide a stable source identity plus opaque resume checkpoint.
+To combine multiple deterministic inputs into one logical run, wrap them explicitly:
+
+```python
+from batchor import (
+    BatchJob,
+    BatchRunner,
+    CompositeItemSource,
+    CsvItemSource,
+    JsonlItemSource,
+    OpenAIProviderConfig,
+    PromptParts,
+)
+
+
+source = CompositeItemSource(
+    [
+        CsvItemSource(
+            "input/items-a.csv",
+            item_id_from_row=lambda row: row["id"],
+            payload_from_row=lambda row: {"text": row["text"]},
+        ),
+        JsonlItemSource(
+            "input/items-b.jsonl",
+            item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+            payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+        ),
+    ]
+)
+
+runner = BatchRunner()
+run = runner.start(
+    BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(model="gpt-4.1"),
+    ),
+    run_id="customer_export_20260403",
+)
+```
+
+`CompositeItemSource` auto-namespaces each child source's `item_id`, so duplicate row IDs across files can coexist in one run.
+The original per-source row ID stays in `metadata["batchor_lineage"]["source_primary_key"]`, and the namespace used for the durable run `item_id` is stored in `metadata["batchor_lineage"]["source_namespace"]`.
+Changing the child source order changes the logical source identity for resume.
+
+For custom deterministic adapters, implement `CheckpointedItemSource`.
+`CompositeItemSource` can wrap those adapters too.
+Arbitrary iterables and live DB cursors are still outside the durable-resume contract unless they can provide a stable source identity plus opaque resume checkpoint.
 
 ## Run control
 
@@ -275,6 +323,7 @@ Built-in sources reserve `metadata["batchor_lineage"]` for lightweight join meta
 - `partition_id`
 - `source_item_index`
 - `source_primary_key`
+- `source_namespace`
 
 Runs can also opt out of raw output/error artifact retention while keeping durable request replay:
 
