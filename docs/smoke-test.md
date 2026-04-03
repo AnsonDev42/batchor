@@ -6,6 +6,7 @@ This guide defines the minimum validation bar for `batchor`.
 
 - Catch obvious regressions in the package API.
 - Verify durable run handling and SQLite persistence still work.
+- Verify artifact-store wiring still supports replay, export, and prune.
 - Verify OpenAI-specific batching logic through fake-provider integration tests.
 
 ## Prerequisites
@@ -40,16 +41,19 @@ Use this when touching provider/storage/runtime wiring:
 
 ```bash
 uv run pytest tests/unit/test_batchor_tokens.py tests/unit/test_batchor_sqlite_storage_flow.py tests/unit/test_batchor_validation.py --no-cov -q
+uv run pytest tests/unit/test_batchor_artifacts.py tests/unit/test_batchor_storage_contracts.py --no-cov -q
 uv run pytest tests/integration/test_batchor_runner.py --no-cov -q
 ```
 
 Expected:
 
 - durable `Run` lifecycle still works
+- subprocess crash + resume can recover `queued_local` work and replay persisted request artifacts
 - file-backed ingestion can resume from a persisted checkpoint when rerun with the same `run_id`
 - retry/resume from persisted request artifacts still works for SQLite-backed runs
 - raw output/error artifacts can be exported and require export before raw pruning
 - terminal runs, including `completed_with_failures`, can prune request artifacts without losing persisted results
+- shared storage-contract behavior remains aligned across SQLite and opt-in Postgres
 - OpenAI request splitting and enqueue-limit logic still behave as expected
 - structured-output parsing remains stable
 
@@ -57,6 +61,7 @@ Notes:
 
 - The default pytest configuration includes `-n auto` and the `85%` coverage gate.
 - `--no-cov` is only for supplemental targeted runs after the main smoke test already passed.
+- Postgres contract tests only run when `BATCHOR_TEST_POSTGRES_DSN` is set.
 
 ## CLI Smoke
 

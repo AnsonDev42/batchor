@@ -1,6 +1,6 @@
 # batchor
 
-`batchor` is a durable OpenAI Batch runner with typed Pydantic results, local SQLite persistence, and a small operator CLI for file-backed text jobs.
+`batchor` is a durable OpenAI Batch runner with typed Pydantic results, durable storage backends, replayable request artifacts, and a small operator CLI for file-backed text jobs.
 
 ## Status
 
@@ -16,7 +16,9 @@ The current built-in implementations are:
 
 - `OpenAIProviderConfig` + `OpenAIBatchProvider`
 - `SQLiteStorage`
+- `PostgresStorage`
 - `MemoryStateStore`
+- `LocalArtifactStore`
 - `CsvItemSource`
 - `JsonlItemSource`
 
@@ -135,6 +137,30 @@ run = runner.get_run("batchor_20260329T120000Z_ab12cd34")
 print(run.summary())
 ```
 
+### Shared artifact root
+
+```python
+from batchor import BatchRunner, LocalArtifactStore, SQLiteStorage
+
+
+runner = BatchRunner(
+    storage=SQLiteStorage(path="state.sqlite3"),
+    artifact_store=LocalArtifactStore("/mnt/batchor-artifacts"),
+)
+```
+
+### Postgres control-plane storage
+
+```python
+from batchor import BatchRunner, LocalArtifactStore, PostgresStorage
+
+
+runner = BatchRunner(
+    storage=PostgresStorage(dsn="postgresql+psycopg://localhost/batchor"),
+    artifact_store=LocalArtifactStore("/mnt/batchor-artifacts"),
+)
+```
+
 ### File-backed input sources
 
 ```python
@@ -188,34 +214,12 @@ batchor start \
 
 Start a run from CSV using a prompt template:
 
-<<<<<<< HEAD
 ```bash
 batchor start \
   --input input/items.csv \
   --id-field id \
   --prompt-template "Summarize: {text}" \
   --model gpt-4.1
-||||||| parent of d539c5d (Handle completed-with-failures terminal runs)
-## Raw Output Export And Retention
-
-For completed batches, `batchor` also persists raw provider output and error JSONL beside the run artifacts. Those raw files are treated as user-facing evidence, not just replay state.
-
-```python
-export = run.export_artifacts("exports")
-print(export.manifest_path)
-
-run.prune_artifacts(include_raw_output_artifacts=True)
-=======
-## Raw Output Export And Retention
-
-For terminal batches, `batchor` also persists raw provider output and error JSONL beside the run artifacts. Those raw files are treated as user-facing evidence, not just replay state.
-
-```python
-export = run.export_artifacts("exports")
-print(export.manifest_path)
-
-run.prune_artifacts(include_raw_output_artifacts=True)
->>>>>>> d539c5d (Handle completed-with-failures terminal runs)
 ```
 
 Start a structured-output run:
@@ -242,6 +246,17 @@ batchor prune-artifacts --run-id batchor_20260403T120000Z_ab12cd34
 
 The CLI prints JSON summaries by default.
 
+## Raw Output Export And Retention
+
+For terminal batches, `batchor` also persists raw provider output and error JSONL beside the run artifacts. Those raw files are treated as user-facing evidence, not just replay state.
+
+```python
+export = run.export_artifacts("exports")
+print(export.manifest_path)
+
+run.prune_artifacts(include_raw_output_artifacts=True)
+```
+
 ## Observability
 
 `BatchRunner` accepts an optional observer callback for coarse lifecycle telemetry:
@@ -258,6 +273,13 @@ runner = BatchRunner(observer=observer)
 ```
 
 Current events include run creation/resume, item ingestion, batch submission/polling/completion, item completion/failure, and artifact export/prune.
+
+## Storage Notes
+
+- SQLite remains the default durable backend.
+- `PostgresStorage` is available for shared control-plane state, but the CLI remains SQLite-only today.
+- Durable artifacts now go through an `ArtifactStore` seam. The built-in implementation is `LocalArtifactStore`, intended for local disk or a shared mounted volume.
+- Fresh-process resume requeues any locally claimed but not yet submitted items before continuing, so a process crash after request-artifact persistence does not strand work in `queued_local`.
 
 ## Durable artifacts
 
