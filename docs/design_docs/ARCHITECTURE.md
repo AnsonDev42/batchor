@@ -126,11 +126,13 @@ Owns streaming input adapters:
 
 - `ItemSource`
 - `CheckpointedItemSource`
+- `CompositeItemSource`
 - `CsvItemSource`
 - `JsonlItemSource`
 - `ParquetItemSource`
 
 The built-in file sources support durable resume through a source fingerprint plus an ingest checkpoint stored in the control plane.
+`CompositeItemSource` composes explicit checkpointed sources into one logical source without moving source discovery or partition ordering into the runner.
 
 ### `storage/`
 
@@ -167,7 +169,7 @@ The built-in implementation is `LocalArtifactStore`.
 
 Owns a deliberately narrow operator interface over the runtime:
 
-- CSV and JSONL input only
+- one or more explicit CSV and JSONL inputs only
 - SQLite only
 - JSON summaries
 - explicit status, wait, results, export, and prune commands

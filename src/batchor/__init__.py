@@ -50,6 +50,7 @@ from batchor.providers.registry import (
 from batchor.runtime.runner import BatchRunner, Run
 from batchor.runtime.validation import StructuredOutputError, default_schema_name, model_output_schema
 from batchor.sources.base import CheckpointedItemSource, ItemSource
+from batchor.sources.composite import CompositeItemSource
 from batchor.sources.files import CsvItemSource, JsonlItemSource, ParquetItemSource
 from batchor.storage.postgres import PostgresStorage
 from batchor.storage.registry import StorageRegistry, build_default_storage_registry
@@ -67,6 +68,7 @@ __all__ = [
     "BatchRunner",
     "CheckpointedItemSource",
     "ChunkPolicy",
+    "CompositeItemSource",
     "CsvItemSource",
     "ItemFailure",
     "ItemStatus",

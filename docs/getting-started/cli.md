@@ -17,7 +17,8 @@ It supports both text jobs and structured-output jobs. Structured output require
 `batchor start` is a thin layer over the Python runtime:
 
 - it loads `.env` for local convenience
-- it builds either `CsvItemSource` or `JsonlItemSource`
+- it builds one or more `CsvItemSource`/`JsonlItemSource` values
+- it wraps repeated `--input` values in `CompositeItemSource`
 - it creates a `BatchJob`
 - it starts or resumes a durable SQLite-backed run
 - it prints a JSON run summary
@@ -55,6 +56,26 @@ batchor start \
 Use `--prompt-template` when the prompt should be derived from several fields.
 
 Exactly one of `--prompt-field` or `--prompt-template` is required.
+
+## Start a run from multiple files
+
+`--input` is repeatable. When you pass more than one file, the CLI preserves the input order and composes those sources into one logical deterministic source:
+
+```bash
+batchor start \
+  --input input/items-a.csv \
+  --input input/items-b.jsonl \
+  --id-field id \
+  --prompt-field text \
+  --model gpt-4.1
+```
+
+Important behavior:
+
+- the CLI does not discover files for you; you choose the files and their order
+- the ordered input list becomes part of resume compatibility for the same `run_id`
+- result `item_id` values are auto-namespaced per input source, so duplicate row IDs across files do not collide
+- the original row ID remains in `metadata.batchor_lineage.source_primary_key`
 
 ## Start a structured-output run
 
@@ -126,4 +147,5 @@ Use the Python API instead when you need:
 - custom application integration
 - explicit artifact-store control
 - Postgres-backed control-plane storage
+- composition of custom checkpointed sources beyond CSV/JSONL file inputs
 - direct access to `Run.snapshot()` or other in-process orchestration hooks

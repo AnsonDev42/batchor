@@ -53,6 +53,7 @@ Expected:
 - MkDocs builds without missing pages or bad internal references
 - sdist and wheel both build successfully
 - current durable features remain covered, including deterministic source checkpoints, run control, incremental terminal-result APIs, and artifact-retention policy wiring
+- repeated `--input` CLI flows and `CompositeItemSource` resume semantics remain covered when those paths change
 
 GitHub pull request CI runs the main smoke across Python `3.12` and `3.13`, builds the docs site in a dedicated docs job, and runs packaging in a dedicated Python `3.13` build job so each validation path stays explicit.
 
@@ -73,6 +74,7 @@ Expected:
 - subprocess crash + resume can recover `queued_local` work and replay persisted request artifacts
 - replaying multiple items from the same persisted request artifact does not require rereading that artifact file for each item
 - deterministic source ingestion can resume from a persisted checkpoint when rerun with the same `run_id`
+- composite deterministic sources can namespace duplicate row IDs across explicit inputs and resume across source boundaries
 - Parquet source adapters can resume from opaque checkpoints and project only required columns
 - retry/resume from persisted request artifacts still works for SQLite-backed runs
 - transient batch-poll failures do not block unrelated pending submissions from being sent when capacity remains
@@ -115,7 +117,7 @@ Local example:
 
 ```bash
 echo "OPENAI_API_KEY=sk-..." > .env
-batchor start --input input/items.jsonl --id-field id --prompt-field text --model gpt-4.1
+batchor start --input input/items-a.jsonl --input input/items-b.jsonl --id-field id --prompt-field text --model gpt-4.1
 ```
 
 This is not part of default CI. Prefer fake-provider tests for automated coverage and run live CLI smoke manually when changing CLI/provider wiring.
@@ -133,7 +135,7 @@ uv run pytest tests/integration/test_batchor_live_openai.py --no-cov -q
 
 Behavior:
 
-- runs one single-item text job against the real OpenAI Batch API
+- runs a single-item text smoke and a two-CSV composition smoke against the real OpenAI Batch API
 - uses SQLite durability and the normal `BatchRunner` flow
 - defaults to `gpt-5-nano` unless `BATCHOR_LIVE_OPENAI_MODEL` is set
 - sends no reasoning field unless `BATCHOR_LIVE_OPENAI_REASONING_EFFORT` is set
@@ -143,7 +145,7 @@ Behavior:
 
 Cost controls:
 
-- one item only
+- three total items across both live tests
 - text output only
 - manual/local only
 - not part of default CI or release automation

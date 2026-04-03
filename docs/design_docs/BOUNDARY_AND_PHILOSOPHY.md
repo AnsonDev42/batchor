@@ -1,6 +1,6 @@
 # Boundary And Philosophy
 
-Status: current implementation direction as of 2026-03-30.
+Status: current implementation direction as of 2026-04-03.
 
 This document defines the concrete boundary between `batchor`, its durable storage, and the user's pipeline.
 
@@ -33,6 +33,7 @@ The library should stay narrow and reliable: accept work items, persist enough s
 ### What the user pipeline owns
 
 - discovering or partitioning source data
+- selecting and ordering explicit files or partitions before handing them to `batchor`
 - transforming domain rows into `BatchItem`s
 - business-specific decisions about what to run and when
 - applying terminal results back into application tables, files, or APIs
@@ -64,7 +65,8 @@ This means a fresh worker can resume a run from the same SQLite database plus si
 - SQLite-backed runs persist per-item request artifact path, line number, and request hash.
 - Once that pointer exists, `batchor` can prune large inline request-building fields from SQLite.
 - Built-in CSV and JSONL sources persist ingest checkpoints so `start(job, run_id=...)` can resume from the last durable source position before request-artifact replay takes over.
-- Built-in deterministic sources now include CSV, JSONL, and Parquet.
+- Built-in deterministic sources now include CSV, JSONL, Parquet, and `CompositeItemSource` for explicit ordered composition of checkpointed sources.
+- `batchor` still does not discover files or partitions on the caller's behalf; users choose the inputs and their order, and `batchor` treats that ordered list as one logical source identity.
 - `CheckpointedItemSource` is the extension seam for custom deterministic adapters; `batchor` persists opaque checkpoints but does not make arbitrary iterables durable by itself.
 - Once the run is terminal, `batchor` exposes explicit artifact pruning so users can reclaim replay storage without losing terminal results.
 - Raw output/error artifacts are retained until users explicitly export them, then prune them.

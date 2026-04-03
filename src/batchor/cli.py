@@ -25,6 +25,8 @@ from batchor.core.types import JSONObject
 from batchor.providers.base import BatchProvider
 from batchor.runtime.runner import BatchRunner
 from batchor.runtime.validation import default_schema_name
+from batchor.sources.base import CheckpointedItemSource
+from batchor.sources.composite import CompositeItemSource
 from batchor.sources.files import CsvItemSource, JsonlItemSource
 from batchor.storage.sqlite_store import SQLiteStorage
 
@@ -47,8 +49,8 @@ def _required_template_fields(template: str) -> list[str]:
     return fields
 
 
-def _row_field_map(row: Mapping[object, object]) -> dict[str, object]:
-    return {str(key): value for key, value in row.items()}
+def _row_field_map(row: Mapping[object, object]) -> JSONObject:
+    return cast(JSONObject, {str(key): value for key, value in row.items()})
 
 
 def _missing_fields(row: Mapping[str, object], fields: list[str]) -> list[str]:
@@ -216,7 +218,7 @@ def _source_for_input(
     *,
     input_path: Path,
     id_field: str,
-) -> CsvItemSource[dict[str, object]] | JsonlItemSource[JSONObject]:
+) -> CheckpointedItemSource[JSONObject]:
     suffix = input_path.suffix.lower()
     required_fields = [id_field]
     if suffix == ".csv":
@@ -239,6 +241,20 @@ def _source_for_input(
     raise ValueError("input file must end with .csv or .jsonl")
 
 
+def _source_for_inputs(
+    *,
+    input_paths: list[Path],
+    id_field: str,
+) -> CheckpointedItemSource[JSONObject]:
+    sources = [
+        _source_for_input(input_path=input_path, id_field=id_field)
+        for input_path in input_paths
+    ]
+    if len(sources) == 1:
+        return sources[0]
+    return CompositeItemSource(sources)
+
+
 def create_app(
     *,
     provider_factory: Callable[[Any], BatchProvider] | None = None,
@@ -252,7 +268,7 @@ def create_app(
 
     @cli.command("start")
     def start_command(
-        input_path: Path = typer.Option(..., "--input", exists=True, dir_okay=False, readable=True),
+        input_paths: list[Path] = typer.Option(..., "--input", exists=True, dir_okay=False, readable=True),
         id_field: str = typer.Option(..., "--id-field"),
         prompt_field: str | None = typer.Option(None, "--prompt-field"),
         prompt_template: str | None = typer.Option(None, "--prompt-template"),
@@ -270,7 +286,7 @@ def create_app(
         storage: SQLiteStorage | None = None
         try:
             load_dotenv(find_dotenv(usecwd=True), override=False)
-            source = _source_for_input(input_path=input_path, id_field=id_field)
+            source = _source_for_inputs(input_paths=input_paths, id_field=id_field)
             build_prompt = _build_prompt_factory(
                 prompt_field=prompt_field,
                 prompt_template=prompt_template,

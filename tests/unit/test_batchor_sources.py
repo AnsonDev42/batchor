@@ -1,12 +1,49 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from batchor.core.models import BatchItem
+from batchor.core.types import JSONValue
+from batchor.sources.base import (
+    CheckpointedBatchItem,
+    CheckpointedItemSource,
+    SourceIdentity,
+)
+from batchor.sources.composite import CompositeItemSource
 from batchor.sources.files import CsvItemSource, JsonlItemSource, ParquetItemSource
+
+
+class _StaticCheckpointedSource(CheckpointedItemSource[dict[str, str]]):
+    def __init__(self, *, name: str, items: list[BatchItem[dict[str, str]]]) -> None:
+        self.name = name
+        self.items = list(items)
+
+    def source_identity(self) -> SourceIdentity:
+        return SourceIdentity(
+            source_kind="static",
+            source_ref=self.name,
+            source_fingerprint=f"fingerprint-{self.name}",
+        )
+
+    def initial_checkpoint(self) -> JSONValue:
+        return 0
+
+    def iter_from_checkpoint(
+        self,
+        checkpoint: JSONValue,
+    ) -> Iterator[CheckpointedBatchItem[dict[str, str]]]:
+        if not isinstance(checkpoint, int):
+            raise TypeError("static checkpoint must be an int")
+        for index, item in enumerate(self.items[checkpoint:], start=checkpoint):
+            yield CheckpointedBatchItem(
+                next_checkpoint=index + 1,
+                item=item,
+            )
 
 
 def test_csv_item_source_maps_rows_to_batch_items(tmp_path: Path) -> None:
@@ -147,3 +184,114 @@ def test_parquet_item_source_resumes_from_checkpoint(tmp_path: Path) -> None:
         )
     )
     assert [item.item.item_id for item in resumed] == ["r2", "r3"]
+
+
+def test_composite_item_source_namespaces_item_ids_and_lineage() -> None:
+    source_a = _StaticCheckpointedSource(
+        name="a",
+        items=[
+            BatchItem(
+                item_id="row1",
+                payload={"text": "alpha"},
+                metadata={
+                    "source": "a",
+                    "batchor_lineage": {
+                        "source_ref": "input-a",
+                        "source_item_index": 0,
+                    },
+                },
+            ),
+        ],
+    )
+    source_b = _StaticCheckpointedSource(
+        name="b",
+        items=[
+            BatchItem(
+                item_id="row1",
+                payload={"text": "beta"},
+                metadata={
+                    "source": "b",
+                    "batchor_lineage": {
+                        "source_ref": "input-b",
+                        "source_item_index": 0,
+                    },
+                },
+            ),
+        ],
+    )
+
+    composite = CompositeItemSource([source_a, source_b])
+
+    items = list(composite)
+    assert len(items) == 2
+    assert items[0].item_id.endswith("__row1")
+    assert items[1].item_id.endswith("__row1")
+    assert items[0].item_id != items[1].item_id
+    assert items[0].metadata["source"] == "a"
+    assert items[1].metadata["source"] == "b"
+    assert items[0].metadata["batchor_lineage"]["source_primary_key"] == "row1"
+    assert items[1].metadata["batchor_lineage"]["source_primary_key"] == "row1"
+    assert items[0].metadata["batchor_lineage"]["source_namespace"].startswith("src_")
+    assert items[1].metadata["batchor_lineage"]["source_namespace"].startswith("src_")
+    assert items[0].metadata["batchor_lineage"]["source_ref"] == "input-a"
+    assert items[1].metadata["batchor_lineage"]["source_ref"] == "input-b"
+
+
+def test_composite_item_source_skips_empty_children_and_resumes_across_boundaries() -> None:
+    source_a = _StaticCheckpointedSource(
+        name="a",
+        items=[
+            BatchItem(item_id="a1", payload={"text": "alpha"}),
+            BatchItem(item_id="a2", payload={"text": "beta"}),
+        ],
+    )
+    source_b = _StaticCheckpointedSource(name="b", items=[])
+    source_c = _StaticCheckpointedSource(
+        name="c",
+        items=[BatchItem(item_id="c1", payload={"text": "gamma"})],
+    )
+
+    composite = CompositeItemSource([source_a, source_b, source_c])
+    checkpointed_items = list(composite.iter_from_checkpoint(composite.initial_checkpoint()))
+    first_namespace = checkpointed_items[0].item.item_id.split("__", maxsplit=1)[0]
+    third_namespace = checkpointed_items[2].item.item_id.split("__", maxsplit=1)[0]
+
+    assert [item.item.item_id for item in checkpointed_items] == [
+        f"{first_namespace}__a1",
+        f"{first_namespace}__a2",
+        f"{third_namespace}__c1",
+    ]
+    assert first_namespace.startswith("src_")
+    assert third_namespace.startswith("src_")
+    assert first_namespace != third_namespace
+    assert checkpointed_items[0].next_checkpoint == {
+        "source_index": 0,
+        "child_checkpoint": 1,
+    }
+    assert checkpointed_items[1].next_checkpoint == {
+        "source_index": 1,
+        "child_checkpoint": None,
+    }
+    resumed = list(composite.iter_from_checkpoint(checkpointed_items[1].next_checkpoint))
+    assert [item.item.item_id for item in resumed] == [f"{third_namespace}__c1"]
+
+
+def test_composite_item_source_exposes_stable_identity() -> None:
+    source_a = _StaticCheckpointedSource(
+        name="a",
+        items=[BatchItem(item_id="row1", payload={"text": "alpha"})],
+    )
+    source_b = _StaticCheckpointedSource(
+        name="b",
+        items=[BatchItem(item_id="row2", payload={"text": "beta"})],
+    )
+
+    left = CompositeItemSource([source_a, source_b]).source_identity()
+    right = CompositeItemSource([source_a, source_b]).source_identity()
+    reversed_identity = CompositeItemSource([source_b, source_a]).source_identity()
+
+    assert left.source_kind == "composite"
+    assert left.source_ref == right.source_ref
+    assert left.source_fingerprint == right.source_fingerprint
+    assert left.source_ref != reversed_identity.source_ref
+    assert left.source_fingerprint != reversed_identity.source_fingerprint
