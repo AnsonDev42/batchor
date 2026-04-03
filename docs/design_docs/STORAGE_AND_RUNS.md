@@ -16,6 +16,7 @@ The public handle exposes:
 - `snapshot()`
 - `summary()`
 - `results()`
+- `export_artifacts()`
 - `prune_artifacts()`
 
 `results()` and `prune_artifacts()` are intentionally terminal-only.
@@ -25,6 +26,7 @@ Today terminal means either `completed` or `completed_with_failures`.
 
 SQLite is the default durable backend.
 Postgres is also implemented for shared control-plane state when callers explicitly construct `PostgresStorage(...)`.
+The SQLite/OpenAI path is covered by the default smoke test. Postgres storage compatibility is validated in a dedicated storage-contract CI job and requires `BATCHOR_TEST_POSTGRES_DSN` for equivalent local coverage.
 
 Current storage responsibilities include:
 

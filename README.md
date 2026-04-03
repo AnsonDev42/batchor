@@ -16,7 +16,7 @@ The current built-in implementations are:
 
 - `OpenAIProviderConfig` + `OpenAIBatchProvider`
 - `SQLiteStorage`
-- `PostgresStorage`
+- `PostgresStorage` as an opt-in durable backend, with dedicated storage-contract CI
 - `MemoryStateStore`
 - `LocalArtifactStore`
 - `CsvItemSource`
@@ -297,6 +297,7 @@ Completed runs can:
 uv sync --all-groups
 uv run ty check src
 uv run pytest -q
+uv run mkdocs build --strict
 uv build
 ```
 
@@ -305,6 +306,7 @@ The default pytest configuration enforces an `85%` coverage floor.
 GitHub Actions pull requests run:
 
 - `test (3.12)` and `test (3.13)`: `uv run ty check src` plus `uv run pytest -q`
+- `docs`: `uv run mkdocs build --strict`
 - `build (3.13)`: `uv build`
 - `postgres-contract`: `uv run pytest tests/unit/test_batchor_storage_contracts.py --no-cov -q` with an ephemeral PostgreSQL service
 
@@ -324,7 +326,8 @@ The live smoke also requires an OpenAI account with Batch API access and availab
 
 ## Docs
 
-- [docs/README.md](docs/README.md)
+- Material for MkDocs site with API reference: `uv run mkdocs serve` locally, published through GitHub Pages
+- [docs/doc-map.md](docs/doc-map.md)
 - [docs/design_docs/ARCHITECTURE.md](docs/design_docs/ARCHITECTURE.md)
 - [docs/design_docs/OPENAI_BATCHING.md](docs/design_docs/OPENAI_BATCHING.md)
 - [docs/design_docs/STORAGE_AND_RUNS.md](docs/design_docs/STORAGE_AND_RUNS.md)
@@ -339,9 +342,10 @@ The live smoke also requires an OpenAI account with Batch API access and availab
 Today `batchor` is intentionally narrow:
 
 - one built-in provider: OpenAI Batch
-- one durable backend: SQLite
+- one default durable backend: SQLite
+- one opt-in durable backend: Postgres
 - one ephemeral backend: in-memory storage
 - structured output is Python API-first
-- CLI job creation is text-only and file-backed
+- CLI job creation is file-backed and supports both text and structured-output jobs
 
 Anything outside that scope should be treated as out of scope or `TBD`, not implied support.

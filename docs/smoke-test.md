@@ -24,6 +24,7 @@ If you are working from the monorepo, run commands from `batchor/`. If you are w
 ```bash
 uv run ty check src
 uv run pytest -q
+uv run mkdocs build --strict
 uv build
 ```
 
@@ -33,9 +34,10 @@ Expected:
 - type checks pass
 - coverage gate passes at `85%` or higher
 - pytest runs in parallel through the default project config
+- the docs site builds cleanly in strict mode
 - sdist and wheel both build successfully
 
-GitHub pull request CI runs this default smoke across Python `3.12` and `3.13`. The build step runs in a dedicated Python `3.13` job so packaging is still verified without duplicating build work across the full matrix.
+GitHub pull request CI runs the main smoke across Python `3.12` and `3.13`, builds the docs site in a dedicated docs job, and runs packaging in a dedicated Python `3.13` build job so each validation path stays explicit.
 
 ## Level 2: Targeted Runtime Smoke
 
