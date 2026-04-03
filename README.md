@@ -72,6 +72,61 @@ Durability is split on purpose:
 
 That split is what allows retries and fresh-process resume without keeping every request inline in the control-plane store.
 
+## Architecture
+
+```mermaid
+graph LR
+    User["User / CLI"]
+
+    subgraph runtime["runtime/"]
+        BatchRunner
+        Run["Run handle"]
+    end
+
+    subgraph providers["providers/"]
+        OpenAI["OpenAIBatchProvider"]
+    end
+
+    subgraph sources["sources/"]
+        Files["CSV / JSONL / Parquet"]
+    end
+
+    subgraph storage["storage/"]
+        SQLite["SQLiteStorage (default)"]
+        Postgres["PostgresStorage (opt-in)"]
+        Memory["MemoryStateStore (test)"]
+    end
+
+    subgraph artifacts["artifacts/"]
+        LocalFS["LocalArtifactStore"]
+    end
+
+    User -->|"start() / run_and_wait()"| BatchRunner
+    BatchRunner --> Run
+    BatchRunner --> OpenAI
+    BatchRunner --> SQLite
+    BatchRunner --> LocalFS
+    Files -->|"BatchItem stream"| BatchRunner
+```
+
+### Item lifecycle
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> PENDING : ingested from source
+    PENDING --> QUEUED_LOCAL : claimed for submission
+    QUEUED_LOCAL --> PENDING : released (cycle interrupted)
+    QUEUED_LOCAL --> SUBMITTED : batch submitted to provider
+    SUBMITTED --> COMPLETED : result parsed OK
+    SUBMITTED --> FAILED_RETRYABLE : error — retrying
+    SUBMITTED --> FAILED_PERMANENT : error — max attempts reached
+    FAILED_RETRYABLE --> PENDING : re-queued after backoff
+    QUEUED_LOCAL --> FAILED_PERMANENT : rejected pre-submission
+    COMPLETED --> [*]
+    FAILED_PERMANENT --> [*]
+```
+
 ## Install
 
 ```bash

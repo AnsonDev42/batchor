@@ -1,3 +1,19 @@
+"""BatchRunner — the durable orchestrator for creating and managing batch runs.
+
+The :class:`BatchRunner` is the main entry point for library users.  It wires
+together a :class:`~batchor.StateStore`, a provider registry, an artifact
+store, and the execution layer to provide a single object for:
+
+* Creating new runs (:meth:`BatchRunner.start`).
+* Resuming existing runs (:meth:`BatchRunner.get_run`).
+* Controlling runs (pause / resume / cancel).
+* Exporting and pruning artifacts.
+* Reading terminal results in a paginated, cursor-based manner.
+
+The returned :class:`~batchor.Run` handle is a thin wrapper around the run
+state that delegates actual work back to the runner.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -168,6 +184,18 @@ class BatchRunner:
         )
 
     def pause_run(self, run_id: str) -> Run:
+        """Suspend execution of an active run.
+
+        The run's control state is set to ``PAUSED``.  Subsequent calls to
+        :meth:`~batchor.Run.refresh` return immediately without polling or
+        submitting new items.
+
+        Args:
+            run_id: Identifier of the run to pause.
+
+        Returns:
+            A :class:`~batchor.Run` handle reflecting the paused state.
+        """
         self.state.set_run_control_state(
             run_id=run_id,
             control_state=RunControlState.PAUSED,
@@ -175,6 +203,19 @@ class BatchRunner:
         return self.get_run(run_id)
 
     def resume_run(self, run_id: str) -> Run:
+        """Resume a previously paused run.
+
+        Args:
+            run_id: Identifier of the run to resume.
+
+        Returns:
+            A :class:`~batchor.Run` handle with the control state reset to
+            ``RUNNING``.
+
+        Raises:
+            ValueError: If the run's control state is ``CANCEL_REQUESTED``
+                (a cancelling run cannot be resumed).
+        """
         control_state = self.state.get_run_control_state(run_id=run_id)
         if control_state is RunControlState.CANCEL_REQUESTED:
             raise ValueError(f"run {run_id} is cancelling and cannot be resumed")
@@ -185,6 +226,18 @@ class BatchRunner:
         return self.get_run(run_id)
 
     def cancel_run(self, run_id: str) -> Run:
+        """Request cancellation of an active run.
+
+        The control state is set to ``CANCEL_REQUESTED``.  On the next
+        refresh cycle the runner drains remaining in-flight batches and marks
+        all non-terminal items as cancelled.
+
+        Args:
+            run_id: Identifier of the run to cancel.
+
+        Returns:
+            A :class:`~batchor.Run` handle reflecting the cancellation request.
+        """
         self.state.set_run_control_state(
             run_id=run_id,
             control_state=RunControlState.CANCEL_REQUESTED,
@@ -198,6 +251,23 @@ class BatchRunner:
         after_sequence: int = 0,
         limit: int | None = None,
     ) -> TerminalResultsPage:
+        """Read a page of terminal item results for cursor-based streaming.
+
+        Args:
+            run_id: Identifier of the run to read results from.
+            after_sequence: Opaque cursor from the previous page's
+                ``next_after_sequence``.  Pass ``0`` to start from the
+                beginning.
+            limit: Maximum number of results to return.  ``None`` returns all
+                available results after the cursor.
+
+        Returns:
+            A :class:`~batchor.TerminalResultsPage` with items and an updated
+            cursor.
+
+        Raises:
+            ValueError: If ``after_sequence`` is negative.
+        """
         if after_sequence < 0:
             raise ValueError("after_sequence must be >= 0")
         records = self.state.get_terminal_item_records(
@@ -229,6 +299,26 @@ class BatchRunner:
         append: bool = True,
         limit: int | None = None,
     ) -> TerminalResultsExportResult:
+        """Export terminal item results to a JSONL file.
+
+        Each result is serialised as a single JSON object per line.  The file
+        can be extended incrementally by calling this method multiple times
+        with the cursor returned in the previous result.
+
+        Args:
+            run_id: Identifier of the run to export results from.
+            destination: Path to the output JSONL file.  Parent directories
+                are created automatically.
+            after_sequence: Cursor from a previous call.  Pass ``0`` to start
+                from the beginning.
+            append: When ``True`` (default), the file is opened in append
+                mode; when ``False`` the file is overwritten.
+            limit: Maximum number of results to export per call.
+
+        Returns:
+            A :class:`~batchor.TerminalResultsExportResult` with the file path,
+            export count, and updated cursor.
+        """
         page = self.read_terminal_results(
             run_id,
             after_sequence=after_sequence,

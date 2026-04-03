@@ -1,3 +1,10 @@
+"""Public re-export module for the SQLite storage backend.
+
+Import :class:`~batchor.SQLiteStorage` from here (or from the top-level
+:mod:`batchor` package) rather than from
+:mod:`batchor.storage.sqlite_store` directly.
+"""
+
 from pathlib import Path
 
 from batchor.storage.sqlite_schema import (

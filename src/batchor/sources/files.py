@@ -1,3 +1,17 @@
+"""File-backed item source implementations (CSV, JSONL, Parquet).
+
+Each source wraps a local file and streams :class:`~batchor.BatchItem` objects
+row by row.  All three implementations support durable resumption:
+
+* :class:`CsvItemSource` and :class:`JsonlItemSource` use a monotonic row
+  index as the checkpoint (via :class:`~batchor.sources.base.ResumableItemSource`).
+* :class:`ParquetItemSource` uses a ``(row_group_index, row_index_within_group)``
+  checkpoint to resume efficiently within large Parquet files.
+
+Every emitted item carries ``batchor_lineage`` metadata recording the source
+path, row index, and (where applicable) a primary key and partition ID.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -193,6 +207,20 @@ class JsonlItemSource(ResumableItemSource[PayloadT], Generic[PayloadT]):
 
 
 class ParquetItemSource(CheckpointedItemSource[PayloadT], Generic[PayloadT]):
+    """Stream :class:`~batchor.BatchItem` values from a Parquet file.
+
+    Uses ``pyarrow`` to read row groups lazily, checkpointing at the
+    ``(row_group_index, row_index_within_group)`` level to support efficient
+    resumption within large files.
+
+    Attributes:
+        path: Path to the Parquet file.
+        item_id_from_row: Callable that derives a unique item ID from a row.
+        payload_from_row: Callable that converts a row to the item payload.
+        metadata_from_row: Optional callable for per-item metadata.
+        columns: Optional list of column names to read (projection push-down).
+    """
+
     def __init__(
         self,
         path: str | Path,

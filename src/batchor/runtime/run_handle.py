@@ -1,3 +1,11 @@
+"""Durable :class:`Run` handle and supporting internal types.
+
+The :class:`Run` object is returned by :meth:`~batchor.BatchRunner.start` and
+:meth:`~batchor.BatchRunner.get_run`.  It encapsulates a run identifier and a
+back-reference to the :class:`~batchor.BatchRunner`, providing the public API
+for polling, waiting, controlling, and inspecting a single batch run.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -73,6 +81,7 @@ class Run:
 
     @property
     def control_state(self) -> RunControlState:
+        """Return the cached operator control state for the run."""
         return self._summary.control_state
 
     @property
@@ -159,14 +168,35 @@ class Run:
         return self._runner.export_artifacts(self.run_id, destination_dir=destination_dir)
 
     def pause(self) -> RunSummary:
+        """Suspend execution of this run.
+
+        Returns:
+            Updated :class:`~batchor.RunSummary` with control state
+            ``PAUSED``.
+        """
         self._summary = self._runner.pause_run(self.run_id).summary()
         return self._summary
 
     def resume(self) -> RunSummary:
+        """Resume this run after it has been paused.
+
+        Returns:
+            Updated :class:`~batchor.RunSummary` with control state
+            ``RUNNING``.
+
+        Raises:
+            ValueError: If the run is in ``CANCEL_REQUESTED`` state.
+        """
         self._summary = self._runner.resume_run(self.run_id).summary()
         return self._summary
 
     def cancel(self) -> RunSummary:
+        """Request cancellation of this run.
+
+        Returns:
+            Updated :class:`~batchor.RunSummary` with control state
+            ``CANCEL_REQUESTED``.
+        """
         self._summary = self._runner.cancel_run(self.run_id).summary()
         return self._summary
 
@@ -176,6 +206,18 @@ class Run:
         after_sequence: int = 0,
         limit: int | None = None,
     ) -> TerminalResultsPage:
+        """Read a page of terminal item results using cursor-based pagination.
+
+        Args:
+            after_sequence: Cursor from the previous page's
+                ``next_after_sequence``.  Pass ``0`` to start from the
+                beginning.
+            limit: Maximum number of results to return per call.
+
+        Returns:
+            A :class:`~batchor.TerminalResultsPage` with items and an updated
+            cursor.
+        """
         return self._runner.read_terminal_results(
             self.run_id,
             after_sequence=after_sequence,
@@ -190,6 +232,19 @@ class Run:
         append: bool = True,
         limit: int | None = None,
     ) -> TerminalResultsExportResult:
+        """Export terminal item results to a JSONL file.
+
+        Args:
+            destination: Path to the output JSONL file.
+            after_sequence: Cursor from a previous call.
+            append: When ``True`` (default), the file is opened in append
+                mode.
+            limit: Maximum number of results to export per call.
+
+        Returns:
+            A :class:`~batchor.TerminalResultsExportResult` with the file
+            path, export count, and updated cursor.
+        """
         return self._runner.export_terminal_results(
             self.run_id,
             destination=destination,

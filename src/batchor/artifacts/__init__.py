@@ -1,3 +1,5 @@
+"""Artifact storage abstractions for raw provider output files."""
+
 from batchor.artifacts.base import ArtifactStore
 from batchor.artifacts.local import LocalArtifactStore
 

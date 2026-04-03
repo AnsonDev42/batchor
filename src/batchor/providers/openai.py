@@ -1,3 +1,10 @@
+"""OpenAI Batch API provider implementation.
+
+Adapts batchor's generic batch model to the OpenAI Batch API.  Supports both
+the ``/v1/responses`` (default) and ``/v1/chat/completions`` endpoints, with
+optional structured JSON output via OpenAI's ``json_schema`` response format.
+"""
+
 from __future__ import annotations
 
 import json
@@ -203,6 +210,17 @@ class OpenAIBatchProvider(BatchProvider):
 
     @staticmethod
     def _normalize(obj: Any) -> BatchRemoteRecord:
+        """Normalise an OpenAI SDK response object to a plain dict.
+
+        Args:
+            obj: An OpenAI SDK response object or a plain dict.
+
+        Returns:
+            A :class:`~batchor.core.types.BatchRemoteRecord` dict.
+
+        Raises:
+            TypeError: If *obj* cannot be converted.
+        """
         if isinstance(obj, dict):
             return cast(BatchRemoteRecord, obj)
         if hasattr(obj, "model_dump"):

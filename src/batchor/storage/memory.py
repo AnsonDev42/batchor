@@ -1,3 +1,14 @@
+"""In-memory :class:`~batchor.StateStore` implementation.
+
+:class:`MemoryStateStore` stores all run state in Python dictionaries with no
+persistence.  It is useful for:
+
+* Unit tests that need a fast, zero-setup state store.
+* Single-process jobs where durability is not required.
+
+State is lost when the process exits.
+"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -79,6 +90,15 @@ class _StoredRun:
 
 
 class MemoryStateStore(StateStore):
+    """Ephemeral in-memory implementation of :class:`~batchor.StateStore`.
+
+    All state is held in plain Python dictionaries.  No persistence occurs;
+    data is lost when the store is garbage-collected or the process exits.
+
+    Thread safety: individual method calls are not locked.  Do not share a
+    single instance across threads without external synchronisation.
+    """
+
     TERMINAL_BATCH_STATUSES = {"completed", "failed", "cancelled", "expired"}
     TERMINAL_ITEM_STATUSES = {ItemStatus.COMPLETED, ItemStatus.FAILED_PERMANENT}
 

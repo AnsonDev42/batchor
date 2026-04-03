@@ -53,6 +53,44 @@ The durable handle returned by `start()` and `get_run()`. A `Run` gives you:
 
 Treat `Run` as the long-lived handle for operator workflows.
 
+## Architecture overview
+
+```mermaid
+graph LR
+    User["User / CLI"]
+
+    subgraph runtime["runtime/"]
+        direction TB
+        BatchRunner
+        Run["Run handle"]
+    end
+
+    subgraph providers["providers/"]
+        OpenAI["OpenAIBatchProvider"]
+    end
+
+    subgraph sources["sources/"]
+        Files["CSV / JSONL / Parquet"]
+    end
+
+    subgraph storage["storage/"]
+        SQLiteStorage
+        PostgresStorage
+        MemoryStateStore
+    end
+
+    subgraph artifacts["artifacts/"]
+        LocalArtifactStore
+    end
+
+    User -->|"start() / run_and_wait()"| BatchRunner
+    BatchRunner --> Run
+    BatchRunner --> OpenAI
+    BatchRunner --> SQLiteStorage
+    BatchRunner --> LocalArtifactStore
+    Files -->|item stream| BatchRunner
+```
+
 ## The execution lifecycle
 
 At a high level, `batchor` follows this loop:
@@ -122,6 +160,30 @@ Built-in deterministic sources currently include:
 
 `CompositeItemSource` keeps the runner contract narrow: the runner still sees one logical source, while callers remain responsible for selecting and ordering the child sources up front.
 Arbitrary iterables do not become durable automatically. Custom non-file sources need a stable identity and explicit checkpoint contract.
+
+## Item lifecycle
+
+Each item transitions through these statuses during a run:
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING : ingested from source
+
+    PENDING --> QUEUED_LOCAL : claimed for submission
+    QUEUED_LOCAL --> PENDING : released — cycle interrupted
+    QUEUED_LOCAL --> SUBMITTED : batch submitted to provider
+
+    SUBMITTED --> COMPLETED : batch completed, result parsed
+    SUBMITTED --> FAILED_RETRYABLE : error — attempts below max
+    SUBMITTED --> FAILED_PERMANENT : error — max attempts reached
+
+    FAILED_RETRYABLE --> PENDING : re-queued after backoff
+
+    QUEUED_LOCAL --> FAILED_PERMANENT : rejected pre-submission (token budget exceeded)
+
+    COMPLETED --> [*]
+    FAILED_PERMANENT --> [*]
+```
 
 ## Run control
 

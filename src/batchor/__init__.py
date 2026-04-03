@@ -1,3 +1,24 @@
+"""Batchor: durable OpenAI Batch runner with typed Pydantic results.
+
+This package provides a library-first API for running OpenAI Batch jobs durably,
+with SQLite-backed state, resumable item sources, replayable request artifacts,
+and structured Pydantic outputs.
+
+Typical usage::
+
+    import batchor
+
+    runner = batchor.BatchRunner()
+    job = batchor.BatchJob(
+        items=[batchor.BatchItem(item_id="1", payload="hello")],
+        build_prompt=lambda item: batchor.PromptParts(prompt=item.payload),
+        provider_config=batchor.OpenAIProviderConfig(model="gpt-4.1"),
+    )
+    run = runner.run_and_wait(job)
+    for result in run.results():
+        print(result.output_text)
+"""
+
 from batchor.artifacts import ArtifactStore, LocalArtifactStore
 from batchor.core.enums import (
     ItemStatus,

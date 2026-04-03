@@ -1,3 +1,16 @@
+"""Internal batch submission and polling logic for :class:`~batchor.BatchRunner`.
+
+These module-level functions are monkey-patched onto :class:`~batchor.BatchRunner`
+at class definition time so they can access ``self`` while living in a separate
+module (keeping the runner module size manageable).
+
+The two entry points consumed by the runner are:
+
+* :func:`_refresh_run` — perform one poll-then-submit cycle for a run.
+* :func:`_submit_pending_items` — claim pending items and submit them as
+  provider batches.
+"""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -37,6 +50,19 @@ if TYPE_CHECKING:
 
 
 def _refresh_run(self: BatchRunner, run_id: str, context: _RunContext) -> RunSummary:
+    """Perform one poll-and-submit cycle and return the updated run summary.
+
+    Respects the run's control state: paused runs return immediately, and
+    cancel-requested runs drain in-flight batches without submitting new ones.
+
+    Args:
+        self: The :class:`~batchor.BatchRunner` instance.
+        run_id: Identifier of the run to refresh.
+        context: Execution context carrying the provider and config.
+
+    Returns:
+        The updated :class:`~batchor.RunSummary` after the cycle.
+    """
     control_state = self.state.get_run_control_state(run_id=run_id)
     if control_state is RunControlState.PAUSED:
         return self.state.get_run_summary(run_id=run_id)
@@ -58,6 +84,15 @@ def _refresh_run(self: BatchRunner, run_id: str, context: _RunContext) -> RunSum
 
 
 def _cleanup_uploaded_input_file(context: _RunContext, file_id: str) -> None:
+    """Best-effort deletion of a previously uploaded input file.
+
+    Errors are silently swallowed — this is only called from error paths where
+    the batch creation itself failed.
+
+    Args:
+        context: Execution context providing the provider.
+        file_id: Provider-assigned file identifier to delete.
+    """
     try:
         context.provider.delete_input_file(file_id)
     except Exception:  # noqa: BLE001
@@ -65,6 +100,21 @@ def _cleanup_uploaded_input_file(context: _RunContext, file_id: str) -> None:
 
 
 def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) -> int:
+    """Claim pending items, build batch files, and submit them to the provider.
+
+    Respects token budgets, chunk limits, and backoff state.  Items that
+    exceed the per-batch token ceiling are immediately marked as permanently
+    failed.  Items that cannot be submitted in this cycle are released back to
+    pending.
+
+    Args:
+        self: The :class:`~batchor.BatchRunner` instance.
+        run_id: Identifier of the run.
+        context: Execution context carrying the provider and config.
+
+    Returns:
+        The number of items successfully submitted in this cycle.
+    """
     config = context.config
     if self.state.get_run_control_state(run_id=run_id) is not RunControlState.RUNNING:
         return 0
@@ -281,17 +331,46 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
 
 
 def _submission_claim_limit(config: Any) -> int:
+    """Return the number of items to claim per submission cycle.
+
+    Set to ``4 × max_requests`` (capped at 8 192) so there is enough
+    backlog to fill multiple chunks without over-claiming.
+
+    Args:
+        config: A persisted run config with a ``chunk_policy``.
+
+    Returns:
+        Maximum items to claim in one submission cycle.
+    """
     max_requests = int(config.chunk_policy.max_requests)
     return max(1, min(max_requests * 4, 8_192))
 
 
 def _inflight_budget(provider_config: Any) -> int | None:
+    """Return the effective inflight token budget for OpenAI configs.
+
+    Args:
+        provider_config: Provider config to inspect.
+
+    Returns:
+        Inflight token budget, or ``None`` for non-OpenAI providers or when
+        the limit is disabled.
+    """
     if not isinstance(provider_config, OpenAIProviderConfig):
         return None
     return effective_inflight_token_budget(provider_config.enqueue_limits)
 
 
 def _batch_token_limit(provider_config: Any) -> int | None:
+    """Return the per-batch token ceiling for OpenAI configs.
+
+    Args:
+        provider_config: Provider config to inspect.
+
+    Returns:
+        Per-batch token ceiling, or ``None`` for non-OpenAI providers or when
+        the limit is disabled.
+    """
     if not isinstance(provider_config, OpenAIProviderConfig):
         return None
     return resolve_openai_batch_token_limit(provider_config.enqueue_limits)
@@ -332,6 +411,17 @@ def _oversized_request_failure(
 
 
 def _poll_once(self: BatchRunner, run_id: str, context: _RunContext) -> None:
+    """Poll all active batches for the run and process any that have finished.
+
+    Completed batches are consumed immediately (output downloaded, items
+    resolved).  Failed / cancelled / expired batches are reset to pending with
+    a backoff delay.  Transient poll errors are logged as events and skipped.
+
+    Args:
+        self: The :class:`~batchor.BatchRunner` instance.
+        run_id: Identifier of the run.
+        context: Execution context carrying the provider and config.
+    """
     batches = self.state.get_active_batches(run_id=run_id)
     if not batches:
         return
@@ -464,6 +554,22 @@ def _download_batch_file_contents(
     output_file_id: object,
     error_file_id: object,
 ) -> tuple[str | None, str | None]:
+    """Download the output and/or error file contents for a batch.
+
+    When both files are available they are fetched concurrently via a
+    ``ThreadPoolExecutor``.
+
+    Args:
+        context: Execution context providing the provider.
+        output_file_id: Provider file ID for the success output JSONL, or a
+            non-string value when unavailable.
+        error_file_id: Provider file ID for the error output JSONL, or a
+            non-string value when unavailable.
+
+    Returns:
+        A 2-tuple ``(output_content, error_content)`` where each element is
+        the downloaded text or ``None`` if the file was unavailable.
+    """
     output_id = output_file_id if isinstance(output_file_id, str) else None
     error_id = error_file_id if isinstance(error_file_id, str) else None
     if output_id is None and error_id is None:
@@ -633,6 +739,17 @@ def _item_failure(
     raw_error: JSONValue | JSONObject,
     retryable: bool,
 ) -> ItemFailure:
+    """Construct an :class:`~batchor.ItemFailure` from named components.
+
+    Args:
+        error_class: Short machine-readable error category.
+        message: Human-readable description.
+        raw_error: Raw error payload for debugging.
+        retryable: Whether this failure counts towards the retry budget.
+
+    Returns:
+        A new :class:`~batchor.ItemFailure` instance.
+    """
     return ItemFailure(
         error_class=error_class,
         message=message,
@@ -642,6 +759,17 @@ def _item_failure(
 
 
 def _batch_failure_error(remote: BatchRemoteRecord) -> ItemFailure:
+    """Build an :class:`~batchor.ItemFailure` for a non-completed provider batch.
+
+    Classifies enqueued-token-limit errors specially; all other failures are
+    bucketed under ``batch_terminal_{status}``.
+
+    Args:
+        remote: The provider batch record for a failed/cancelled/expired batch.
+
+    Returns:
+        A retryable :class:`~batchor.ItemFailure` describing the batch failure.
+    """
     errors = remote.get("errors")
     error_class = (
         "enqueue_token_limit"

@@ -1,3 +1,16 @@
+"""Typer-based CLI for running batchor jobs from CSV or JSONL files.
+
+Provides the ``batchor`` command with sub-commands for:
+
+* Starting or resuming a batch run (``run``).
+* Polling an existing run (``status``).
+* Exporting artifacts and results (``export``).
+* Pruning retained artifacts (``prune``).
+
+The CLI is primarily aimed at one-off operator workflows.  For production
+automation, prefer the Python library API.
+"""
+
 from __future__ import annotations
 
 import importlib
