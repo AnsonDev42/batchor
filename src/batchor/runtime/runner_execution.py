@@ -5,6 +5,7 @@ from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
+from batchor.core.enums import RunControlState
 from batchor.core.models import ItemFailure
 from batchor.core.models import OpenAIProviderConfig
 from batchor.core.models import RunSummary
@@ -36,7 +37,22 @@ if TYPE_CHECKING:
 
 
 def _refresh_run(self: BatchRunner, run_id: str, context: _RunContext) -> RunSummary:
+    control_state = self.state.get_run_control_state(run_id=run_id)
+    if control_state is RunControlState.PAUSED:
+        return self.state.get_run_summary(run_id=run_id)
     _poll_once(self, run_id, context)
+    if control_state is RunControlState.CANCEL_REQUESTED:
+        if not self.state.get_active_batches(run_id=run_id):
+            self.state.mark_nonterminal_items_cancelled(
+                run_id=run_id,
+                error=_item_failure(
+                    error_class="run_cancelled",
+                    message="run was cancelled before item submission completed",
+                    raw_error={"run_id": run_id},
+                    retryable=False,
+                ),
+            )
+        return self.state.get_run_summary(run_id=run_id)
     _submit_pending_items(self, run_id, context)
     return self.state.get_run_summary(run_id=run_id)
 
@@ -50,6 +66,8 @@ def _cleanup_uploaded_input_file(context: _RunContext, file_id: str) -> None:
 
 def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) -> int:
     config = context.config
+    if self.state.get_run_control_state(run_id=run_id) is not RunControlState.RUNNING:
+        return 0
     if self.state.get_batch_retry_backoff_remaining_sec(run_id=run_id) > 0:
         return 0
     claim_limit = _submission_claim_limit(config)
@@ -157,6 +175,8 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
     )
 
     for chunk_index, chunk in enumerate(chunks, start=1):
+        if self.state.get_run_control_state(run_id=run_id) is not RunControlState.RUNNING:
+            break
         chunk_tokens = sum(int(row["submission_tokens"]) for row in chunk)
         if inflight_budget is not None and chunk_tokens > max(inflight_budget - active_tokens, 0):
             break
@@ -184,6 +204,8 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
                 for line_number, row in enumerate(chunk, start=1)
             ],
         )
+        if self.state.get_run_control_state(run_id=run_id) is not RunControlState.RUNNING:
+            break
         with ExitStack() as stack:
             request_file = stack.enter_context(
                 self.artifact_store.stage_local_copy(request_relative_path.as_posix())
@@ -400,6 +422,7 @@ def _poll_once(self: BatchRunner, run_id: str, context: _RunContext) -> None:
                 provider_batch_id=batch.provider_batch_id,
                 output_content=output_content,
                 error_content=error_content,
+                persist_raw_output_artifacts=context.config.artifact_policy.persist_raw_output_artifacts,
             )
             if output_artifact_path is not None or error_artifact_path is not None:
                 self.state.record_batch_artifacts(
@@ -476,6 +499,7 @@ def _consume_completed_batch(
         provider_batch_id=provider_batch_id,
         output_content=output_content,
         error_content=error_content,
+        persist_raw_output_artifacts=context.config.artifact_policy.persist_raw_output_artifacts,
     )
     if output_artifact_path is not None or error_artifact_path is not None:
         self.state.record_batch_artifacts(

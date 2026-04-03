@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from batchor.sources.files import CsvItemSource, JsonlItemSource
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from batchor.sources.files import CsvItemSource, JsonlItemSource, ParquetItemSource
 
 
 def test_csv_item_source_maps_rows_to_batch_items(tmp_path: Path) -> None:
@@ -20,7 +23,8 @@ def test_csv_item_source_maps_rows_to_batch_items(tmp_path: Path) -> None:
     items = list(source)
     assert [item.item_id for item in items] == ["r1", "r2"]
     assert items[0].payload == {"text": "alpha"}
-    assert items[1].metadata == {"source": "b"}
+    assert items[1].metadata["source"] == "b"
+    assert items[1].metadata["batchor_lineage"]["source_item_index"] == 1
 
 
 def test_jsonl_item_source_maps_rows_to_batch_items(tmp_path: Path) -> None:
@@ -44,7 +48,8 @@ def test_jsonl_item_source_maps_rows_to_batch_items(tmp_path: Path) -> None:
     items = list(source)
     assert [item.item_id for item in items] == ["r1", "r2"]
     assert items[0].payload == {"text": "alpha"}
-    assert items[1].metadata == {"source": "b"}
+    assert items[1].metadata["source"] == "b"
+    assert items[1].metadata["batchor_lineage"]["source_item_index"] == 1
 
 
 def test_jsonl_item_source_can_resume_from_item_index(tmp_path: Path) -> None:
@@ -84,3 +89,61 @@ def test_csv_item_source_exposes_stable_source_identity(tmp_path: Path) -> None:
     assert identity.source_kind == "csv"
     assert identity.source_ref == str(path.resolve())
     assert identity.source_fingerprint
+
+
+def test_parquet_item_source_projects_columns_and_emits_lineage(tmp_path: Path) -> None:
+    path = tmp_path / "items.parquet"
+    table = pa.table(
+        {
+            "id": ["r1", "r2"],
+            "text": ["alpha", "beta"],
+            "source": ["a", "b"],
+            "unused": [1, 2],
+        }
+    )
+    pq.write_table(table, path)
+
+    source = ParquetItemSource(
+        path,
+        item_id_from_row=lambda row: str(row["id"]),
+        payload_from_row=lambda row: {"text": row["text"]},
+        metadata_from_row=lambda row: {"source": str(row["source"])},
+        columns=["id", "text", "source"],
+    )
+
+    items = list(source)
+    assert [item.item_id for item in items] == ["r1", "r2"]
+    assert items[0].payload == {"text": "alpha"}
+    assert items[1].metadata["source"] == "b"
+    assert items[1].metadata["batchor_lineage"]["partition_id"] == "0"
+
+
+def test_parquet_item_source_resumes_from_checkpoint(tmp_path: Path) -> None:
+    path = tmp_path / "items.parquet"
+    table = pa.table(
+        {
+            "id": ["r1", "r2", "r3"],
+            "text": ["alpha", "beta", "gamma"],
+        }
+    )
+    pq.write_table(table, path, row_group_size=1)
+
+    source = ParquetItemSource(
+        path,
+        item_id_from_row=lambda row: str(row["id"]),
+        payload_from_row=lambda row: {"text": row["text"]},
+        columns=["id", "text"],
+    )
+
+    initial = list(source.iter_from_checkpoint(source.initial_checkpoint()))
+    assert [item.item.item_id for item in initial] == ["r1", "r2", "r3"]
+
+    resumed = list(
+        source.iter_from_checkpoint(
+            {
+                "row_group_index": 1,
+                "row_index_within_group": 0,
+            }
+        )
+    )
+    assert [item.item.item_id for item in resumed] == ["r2", "r3"]

@@ -15,3 +15,9 @@ class ModelResolutionError(RuntimeError):
         )
         self.module_name = module_name
         self.qualname = qualname
+
+
+class RunPausedError(RuntimeError):
+    def __init__(self, run_id: str) -> None:
+        super().__init__(f"run {run_id} is paused")
+        self.run_id = run_id

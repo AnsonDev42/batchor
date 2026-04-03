@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from batchor.core.enums import ItemStatus, RunLifecycleStatus
+from batchor.core.enums import ItemStatus, RunControlState, RunLifecycleStatus
 from batchor.core.models import ItemFailure, RunSummary
 from batchor.core.types import JSONObject, JSONValue
 from batchor.runtime.retry import compute_backoff_delay
@@ -43,6 +43,8 @@ class _StoredItem:
     active_batch_id: str | None = None
     active_custom_id: str | None = None
     active_submission_tokens: int = 0
+    terminal_result_sequence: int | None = None
+    terminalized_at: datetime | None = None
     output_text: str | None = None
     output_json: JSONValue | None = None
     raw_response: JSONObject | None = None
@@ -66,6 +68,7 @@ class _StoredRun:
     run_id: str
     config: PersistedRunConfig
     status: RunLifecycleStatus = RunLifecycleStatus.RUNNING
+    control_state: RunControlState = RunControlState.RUNNING
     item_ids: list[str] = field(default_factory=list)
     items: dict[str, _StoredItem] = field(default_factory=dict)
     batches: dict[str, _StoredBatch] = field(default_factory=dict)
@@ -144,6 +147,7 @@ class MemoryStateStore(StateStore):
         *,
         run_id: str,
         next_item_index: int,
+        checkpoint_payload: JSONValue | None = None,
         ingestion_complete: bool,
     ) -> None:
         run = self._get_run(run_id)
@@ -155,11 +159,25 @@ class MemoryStateStore(StateStore):
             source_ref=checkpoint.source_ref,
             source_fingerprint=checkpoint.source_fingerprint,
             next_item_index=next_item_index,
+            checkpoint_payload=checkpoint_payload,
             ingestion_complete=ingestion_complete,
         )
 
     def get_run_config(self, *, run_id: str) -> PersistedRunConfig:
         return self._get_run(run_id).config
+
+    def get_run_control_state(self, *, run_id: str) -> RunControlState:
+        return self._get_run(run_id).control_state
+
+    def set_run_control_state(
+        self,
+        *,
+        run_id: str,
+        control_state: RunControlState,
+    ) -> None:
+        run = self._get_run(run_id)
+        run.control_state = control_state
+        self._refresh_run_status(run)
 
     def claim_items_for_submission(
         self,
@@ -434,6 +452,8 @@ class MemoryStateStore(StateStore):
         for completion in completions:
             item = self._item_for_custom_id(run, completion.custom_id)
             item.status = ItemStatus.COMPLETED
+            item.terminal_result_sequence = self._next_terminal_sequence(run)
+            item.terminalized_at = self._now()
             item.output_text = completion.output_text
             item.output_json = completion.output_json
             item.raw_response = completion.raw_response
@@ -461,6 +481,9 @@ class MemoryStateStore(StateStore):
                 max_attempts=max_attempts,
                 count_attempt=failure.count_attempt,
             )
+            if item.status in self.TERMINAL_ITEM_STATUSES:
+                item.terminal_result_sequence = self._next_terminal_sequence(run)
+                item.terminalized_at = self._now()
             item.error = failure.error
             item.active_batch_id = None
             item.active_custom_id = None
@@ -485,6 +508,9 @@ class MemoryStateStore(StateStore):
                 max_attempts=max_attempts,
                 count_attempt=failure.count_attempt,
             )
+            if item.status in self.TERMINAL_ITEM_STATUSES:
+                item.terminal_result_sequence = self._next_terminal_sequence(run)
+                item.terminalized_at = self._now()
             item.error = failure.error
             item.active_batch_id = None
             item.active_custom_id = None
@@ -571,6 +597,7 @@ class MemoryStateStore(StateStore):
         return RunSummary(
             run_id=run_id,
             status=run.status,
+            control_state=run.control_state,
             total_items=len(run.item_ids),
             completed_items=status_counts.get(ItemStatus.COMPLETED, 0),
             failed_items=status_counts.get(ItemStatus.FAILED_PERMANENT, 0),
@@ -588,6 +615,7 @@ class MemoryStateStore(StateStore):
                 status=item.status,
                 attempt_count=item.attempt_count,
                 metadata=dict(item.metadata),
+                terminal_result_sequence=item.terminal_result_sequence,
                 output_text=item.output_text,
                 output_json=item.output_json,
                 raw_response=item.raw_response,
@@ -595,6 +623,66 @@ class MemoryStateStore(StateStore):
             )
             for item in sorted(run.items.values(), key=lambda entry: entry.item_index)
         ]
+
+    def get_terminal_item_records(
+        self,
+        *,
+        run_id: str,
+        after_sequence: int,
+        limit: int | None = None,
+    ) -> list[PersistedItemRecord]:
+        run = self._get_run(run_id)
+        records = [
+            PersistedItemRecord(
+                item_id=item.item_id,
+                item_index=item.item_index,
+                status=item.status,
+                attempt_count=item.attempt_count,
+                metadata=dict(item.metadata),
+                terminal_result_sequence=item.terminal_result_sequence,
+                output_text=item.output_text,
+                output_json=item.output_json,
+                raw_response=item.raw_response,
+                error=item.error,
+            )
+            for item in sorted(
+                run.items.values(),
+                key=lambda entry: (
+                    entry.terminal_result_sequence if entry.terminal_result_sequence is not None else -1
+                ),
+            )
+            if item.terminal_result_sequence is not None
+            and item.terminal_result_sequence > after_sequence
+        ]
+        if limit is not None:
+            return records[:limit]
+        return records
+
+    def mark_nonterminal_items_cancelled(
+        self,
+        *,
+        run_id: str,
+        error: ItemFailure,
+    ) -> int:
+        run = self._get_run(run_id)
+        cancelled = 0
+        for item in run.items.values():
+            if item.status not in {
+                ItemStatus.PENDING,
+                ItemStatus.QUEUED_LOCAL,
+                ItemStatus.FAILED_RETRYABLE,
+            }:
+                continue
+            item.status = ItemStatus.FAILED_PERMANENT
+            item.error = error
+            item.active_batch_id = None
+            item.active_custom_id = None
+            item.active_submission_tokens = 0
+            item.terminal_result_sequence = self._next_terminal_sequence(run)
+            item.terminalized_at = self._now()
+            cancelled += 1
+        self._refresh_run_status(run)
+        return cancelled
 
     def _get_run(self, run_id: str) -> _StoredRun:
         if run_id not in self._runs:
@@ -630,6 +718,18 @@ class MemoryStateStore(StateStore):
             )
         else:
             run.status = RunLifecycleStatus.RUNNING
+
+    @staticmethod
+    def _next_terminal_sequence(run: _StoredRun) -> int:
+        current = max(
+            (
+                item.terminal_result_sequence
+                for item in run.items.values()
+                if item.terminal_result_sequence is not None
+            ),
+            default=0,
+        )
+        return current + 1
 
     @staticmethod
     def _failed_status(

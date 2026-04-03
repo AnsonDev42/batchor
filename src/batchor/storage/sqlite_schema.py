@@ -2,7 +2,7 @@ from sqlalchemy import Column, Float, Index, Integer, MetaData, String, Table, T
 
 
 METADATA = MetaData()
-SQLITE_SCHEMA_VERSION = 2
+SQLITE_SCHEMA_VERSION = 3
 
 STORAGE_METADATA_TABLE = Table(
     "storage_metadata",
@@ -16,11 +16,13 @@ RUNS_TABLE = Table(
     METADATA,
     Column("run_id", String, primary_key=True),
     Column("status", String, nullable=False),
+    Column("control_state", String, nullable=False),
     Column("created_at", String, nullable=False),
     Column("provider_config_json", Text, nullable=False),
     Column("chunk_policy_json", Text, nullable=False),
     Column("retry_policy_json", Text, nullable=False),
     Column("batch_metadata_json", Text, nullable=False),
+    Column("artifact_policy_json", Text, nullable=False),
     Column("schema_name", String, nullable=True),
     Column("structured_output_module", String, nullable=True),
     Column("structured_output_qualname", String, nullable=True),
@@ -46,6 +48,8 @@ ITEMS_TABLE = Table(
     Column("active_batch_id", String, nullable=True),
     Column("active_custom_id", String, nullable=True),
     Column("active_submission_tokens", Integer, nullable=False),
+    Column("terminal_result_sequence", Integer, nullable=True),
+    Column("terminalized_at", String, nullable=True),
     Column("output_text", Text, nullable=True),
     Column("output_json", Text, nullable=True),
     Column("raw_response_json", Text, nullable=True),
@@ -55,6 +59,7 @@ Index("ix_items_run_status_item_index", ITEMS_TABLE.c.run_id, ITEMS_TABLE.c.stat
 Index("ix_items_run_active_custom_id", ITEMS_TABLE.c.run_id, ITEMS_TABLE.c.active_custom_id)
 Index("ix_items_run_active_batch_status", ITEMS_TABLE.c.run_id, ITEMS_TABLE.c.active_batch_id, ITEMS_TABLE.c.status)
 Index("ix_items_run_request_artifact_path", ITEMS_TABLE.c.run_id, ITEMS_TABLE.c.request_artifact_path)
+Index("ix_items_run_terminal_result_sequence", ITEMS_TABLE.c.run_id, ITEMS_TABLE.c.terminal_result_sequence)
 
 BATCHES_TABLE = Table(
     "batches",
@@ -92,5 +97,6 @@ RUN_INGEST_STATE_TABLE = Table(
     Column("source_ref", Text, nullable=False),
     Column("source_fingerprint", String, nullable=False),
     Column("next_item_index", Integer, nullable=False),
+    Column("checkpoint_payload_json", Text, nullable=True),
     Column("ingestion_complete", Integer, nullable=False),
 )

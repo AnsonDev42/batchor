@@ -5,8 +5,9 @@ from typing import Callable, Protocol
 
 from sqlalchemy.engine import Connection, Engine, RowMapping
 
-from batchor.core.enums import ItemStatus
+from batchor.core.enums import ItemStatus, RunControlState
 from batchor.core.models import ItemFailure, RunSummary
+from batchor.core.types import JSONValue
 from batchor.providers.registry import ProviderRegistry
 from batchor.storage.state import (
     BatchArtifactPointer,
@@ -81,7 +82,17 @@ class SQLiteStorageProtocol(Protocol):
         *,
         run_id: str,
         next_item_index: int,
+        checkpoint_payload: JSONValue | None = None,
         ingestion_complete: bool,
+    ) -> None: ...
+
+    def get_run_control_state(self, *, run_id: str) -> RunControlState: ...
+
+    def set_run_control_state(
+        self,
+        *,
+        run_id: str,
+        control_state: RunControlState,
     ) -> None: ...
 
     def get_request_artifact_paths(self, *, run_id: str) -> list[str]: ...

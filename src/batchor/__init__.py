@@ -5,11 +5,13 @@ from batchor.core.enums import (
     OpenAIModel,
     OpenAIReasoningEffort,
     ProviderKind,
+    RunControlState,
     RunLifecycleStatus,
     StorageKind,
 )
-from batchor.core.exceptions import ModelResolutionError, RunNotFinishedError
+from batchor.core.exceptions import ModelResolutionError, RunNotFinishedError, RunPausedError
 from batchor.core.models import (
+    ArtifactPolicy,
     ArtifactExportResult,
     ArtifactPruneResult,
     BatchItem,
@@ -26,6 +28,8 @@ from batchor.core.models import (
     RunSnapshot,
     RunSummary,
     StructuredItemResult,
+    TerminalResultsExportResult,
+    TerminalResultsPage,
     TextItemResult,
 )
 from batchor.providers.base import (
@@ -40,8 +44,8 @@ from batchor.providers.registry import (
 )
 from batchor.runtime.runner import BatchRunner, Run
 from batchor.runtime.validation import StructuredOutputError, default_schema_name, model_output_schema
-from batchor.sources.base import ItemSource
-from batchor.sources.files import CsvItemSource, JsonlItemSource
+from batchor.sources.base import CheckpointedItemSource, ItemSource
+from batchor.sources.files import CsvItemSource, JsonlItemSource, ParquetItemSource
 from batchor.storage.postgres import PostgresStorage
 from batchor.storage.registry import StorageRegistry, build_default_storage_registry
 from batchor.storage.sqlite import SQLiteStorage
@@ -49,12 +53,14 @@ from batchor.storage.state import MemoryStateStore, StateStore
 
 __all__ = [
     "ArtifactStore",
+    "ArtifactPolicy",
     "BatchProvider",
     "ArtifactPruneResult",
     "ArtifactExportResult",
     "BatchItem",
     "BatchJob",
     "BatchRunner",
+    "CheckpointedItemSource",
     "ChunkPolicy",
     "CsvItemSource",
     "ItemFailure",
@@ -72,6 +78,7 @@ __all__ = [
     "OpenAIProviderConfig",
     "OpenAIReasoningEffort",
     "OpenAIReasoningLevel",
+    "ParquetItemSource",
     "ProviderConfig",
     "ProviderKind",
     "ProviderRegistry",
@@ -79,9 +86,11 @@ __all__ = [
     "PostgresStorage",
     "RetryPolicy",
     "Run",
+    "RunControlState",
     "RunEvent",
     "RunLifecycleStatus",
     "RunNotFinishedError",
+    "RunPausedError",
     "RunSnapshot",
     "RunSummary",
     "SQLiteStorage",
@@ -91,6 +100,8 @@ __all__ = [
     "StructuredItemResult",
     "StructuredOutputError",
     "StructuredOutputSchema",
+    "TerminalResultsExportResult",
+    "TerminalResultsPage",
     "TextItemResult",
     "build_default_provider_registry",
     "build_default_storage_registry",

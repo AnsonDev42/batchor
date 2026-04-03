@@ -12,12 +12,18 @@ The public handle exposes:
 
 - `run_id`
 - cached `status`
+- cached `control_state`
 - `is_finished`
 - `refresh()`
 - `wait()`
 - `summary()`
 - `snapshot()`
+- `pause()`
+- `resume()`
+- `cancel()`
 - `results()`
+- `read_terminal_results()`
+- `export_terminal_results()`
 - `export_artifacts()`
 - `prune_artifacts()`
 
@@ -28,6 +34,7 @@ Important semantics:
 - `wait()` repeatedly refreshes until the run is terminal
 - `results()` and artifact lifecycle operations are terminal-only
 - terminal currently means either `completed` or `completed_with_failures`
+- `read_terminal_results()` and `export_terminal_results()` are incremental APIs for already-terminal items and are safe to call before the whole run finishes
 
 ## Control plane and payload plane
 
@@ -36,9 +43,11 @@ Important semantics:
 The control plane is the state store:
 
 - run config
+- run control state
 - item rows and attempts
 - active batch rows
 - parsed outputs and failure records
+- terminal result sequence metadata
 - artifact pointers
 - ingest checkpoints
 
@@ -65,14 +74,19 @@ The SQLite/OpenAI path is covered by the default smoke test. Postgres storage co
 Current storage responsibilities include:
 
 - persisting public run config
+- persisting run control state
+- persisting deterministic-source ingest checkpoints when available
 - persisting item state and attempts
-- persisting file-source ingest checkpoints when available
+- persisting terminal result sequence metadata for incremental reads
 - persisting submitted batch metadata
 - persisting request-artifact pointers for replayable submissions
 - persisting batch output/error artifact pointers for raw provider payload retention
 - persisting provider outputs/errors needed for rehydration
 - reconstructing structured results on reload
 - persisting storage metadata such as schema version
+
+Durable artifacts now flow through the `ArtifactStore` contract. The built-in implementation is `LocalArtifactStore`, which stores replayable request JSONL and optional raw output/error files on local disk or a shared mounted volume.
+New local directories/files are created with owner-only permissions where the platform supports them.
 
 For provider configs that contain secrets, durable storage persists only the public provider config. Secret material such as the API key must come from in-memory config or the environment when a rehydrated run needs to talk to the provider again.
 
@@ -99,6 +113,23 @@ Important operational rule:
 
 Postgres stores the control plane, not the large request/output files themselves.
 
+## File-source checkpoints
+
+For deterministic built-in sources, storage persists a source checkpoint with:
+
+- source kind
+- source path/reference
+- source fingerprint
+- next durable item index
+- opaque checkpoint payload
+- ingestion completion flag
+
+The opaque checkpoint payload is source-owned. `batchor` persists it but does not attempt to interpret arbitrary custom-source resume tokens.
+
+This enables `start(job, run_id=...)` to resume ingestion rather than rematerializing already-ingested rows, as long as the source still matches the stored identity.
+
+Non-checkpointable iterables do not yet support the same mid-ingest crash recovery behavior.
+
 ## Rehydration rules
 
 `runner.get_run(run_id)` must work from a fresh runner when it points at the same durable storage.
@@ -114,19 +145,9 @@ Fresh-process resume also requeues any `queued_local` items back to `pending` be
 
 Resume compatibility intentionally ignores non-persisted secret fields such as provider API keys.
 
-## File-source checkpoints
+For deterministic-source resume, the caller must also reuse the same `run_id` and provide the same source identity/fingerprint.
 
-For the built-in CSV and JSONL sources, storage persists a source checkpoint with:
-
-- source kind
-- source path/reference
-- source fingerprint
-- next durable item index
-- ingestion completion flag
-
-This enables `start(job, run_id=...)` to resume ingestion rather than rematerializing already-ingested rows, as long as the source still matches the stored identity.
-
-Non-file iterables do not yet support the same mid-ingest crash recovery behavior.
+Once an item has a durable request artifact pointer, `batchor` prunes large inline request-building fields from the control-plane store and relies on the artifact for later retries.
 
 ## Artifact lifecycle
 
@@ -139,10 +160,58 @@ Once the whole run is terminal:
 
 Raw output/error artifacts follow a stricter rule:
 
-- users must call `Run.export_artifacts(...)` first
+- when raw retention is enabled, users must call `Run.export_artifacts(...)` first
 - only then may they call `Run.prune_artifacts(include_raw_output_artifacts=True)`
 
 That rule keeps destructive cleanup of raw provider evidence explicit.
+
+## Run control semantics
+
+Run lifecycle status and control state are separate:
+
+- lifecycle status answers whether the run is still active or terminal
+- control state answers whether local execution should keep ingesting/submitting/polling
+
+Current control states are:
+
+- `running`
+- `paused`
+- `cancel_requested`
+
+Semantics:
+
+- `pause` stops new ingestion, new item claiming/submission, and provider polling
+- `resume` restarts those local activities from persisted state
+- `cancel` stops new ingestion/submission, keeps polling active provider batches, and then permanently fails remaining local non-terminal items with `error_class="run_cancelled"`
+
+`wait()` fails fast on paused runs instead of sleeping indefinitely.
+Provider-side remote cancellation is still `TBD`.
+
+## Incremental terminal results
+
+Storage assigns a monotonic `terminal_result_sequence` the first time an item reaches a terminal item state.
+Incremental readers/exporters page on that sequence rather than `item_index`, so late completion of lower-index items does not break downstream consumption.
+
+The public incremental APIs are:
+
+- `Run.read_terminal_results(after_sequence=..., limit=...)`
+- `BatchRunner.read_terminal_results(run_id, after_sequence=..., limit=...)`
+- `Run.export_terminal_results(destination, after_sequence=..., append=True)`
+
+The returned/exported cursor is `next_after_sequence`.
+This API is library-first today; the CLI does not expose it yet.
+
+## Lineage conventions
+
+`BatchItem.metadata` remains user-owned, but `batchor` reserves `metadata["batchor_lineage"]` as an object when built-in sources or callers want to persist lightweight join metadata.
+Recommended keys are:
+
+- `source_ref`
+- `partition_id`
+- `source_item_index`
+- `source_primary_key`
+
+Built-in deterministic sources populate what they know without replacing user metadata.
 
 ## Summary recomputation
 
@@ -150,15 +219,16 @@ Storage mutations do not force a full run-summary recomputation after every writ
 
 ## Current gaps
 
-- file-source ingestion is synchronous during `start()`
-- only the built-in CSV and JSONL sources support ingest checkpoints
+- deterministic-source ingestion is synchronous during `start()` and only a small set of built-in source adapters implement crash-safe mid-ingest resume today
 - the only built-in artifact backend today is `LocalArtifactStore`
-- non-file item iterables do not support mid-ingest crash recovery
-- there is no partial-result API for non-terminal runs
+- arbitrary non-checkpointable iterables do not support mid-ingest crash recovery
+- there is no partial-result API for non-terminal provider state
+- provider-side remote cancellation is not implemented
+- the CLI does not expose run control or incremental terminal-result APIs yet
 
 ## TBD
 
 - SQLite/Postgres migration story
 - automated retention windows and archive/export workflow beyond explicit manual export + prune
-- partial-result read APIs for non-terminal runs
-- resumable ingestion for non-file/custom sources
+- partial-result read APIs for non-terminal provider state
+- resumable ingestion for additional deterministic non-file/custom sources beyond the built-in set

@@ -62,7 +62,7 @@ Owns domain types and public configuration models:
 - `RunSnapshot`
 - provider and storage enums
 - provider config types such as `OpenAIProviderConfig`
-- retry, chunk, and artifact result models
+- retry, chunk, artifact, and terminal-result models
 
 `core/` should stay mostly declarative. It describes what a run is, not how the runtime executes it.
 
@@ -91,11 +91,22 @@ Owns execution behavior:
 
 - `BatchRunner`
 - `Run`
-- submission and poll loop
-- token estimation and chunking
-- retry classification/backoff
-- structured-output parsing
-- export and prune orchestration
+- Typer CLI entrypoint for operator workflows
+- persisted run control state with `pause`, `resume`, and drain-style `cancel`
+- optional observer callback for provider lifecycle events
+- token estimation and request chunking
+- bounded pending-item claim windows before submission
+- durable request-artifact replay for retry/resume
+- per-refresh request-artifact file caching during replay
+- artifact-store staging/export/delete orchestration
+- incremental terminal-result paging/export for already-terminal items
+- resumable deterministic-source checkpoints
+- fresh-process recovery of `queued_local` items back to pending submission
+- bounded concurrent provider polling and file download handling
+- explicit terminal-run artifact pruning
+- explicit raw-artifact export before raw-artifact pruning
+- retry helpers
+- response validation and structured-output parsing
 
 This is where the durable lifecycle lives. It bridges the domain models, providers, storage, and artifact store.
 
@@ -104,8 +115,10 @@ This is where the durable lifecycle lives. It bridges the domain models, provide
 Owns streaming input adapters:
 
 - `ItemSource`
+- `CheckpointedItemSource`
 - `CsvItemSource`
 - `JsonlItemSource`
+- `ParquetItemSource`
 
 The built-in file sources support durable resume through a source fingerprint plus an ingest checkpoint stored in the control plane.
 
@@ -122,10 +135,12 @@ Owns the durable and ephemeral state backends:
 The storage layer persists:
 
 - run config
+- run control state
 - item state and attempts
 - active batch metadata
 - ingest checkpoints
 - parsed terminal outputs
+- terminal result sequence metadata
 - pointers to durable artifacts
 
 ### `artifacts/`
@@ -181,27 +196,31 @@ That split gives `batchor`:
 14. A terminal run may be either `completed` or `completed_with_failures`; both statuses allow artifact export/prune and final result access.
 15. Provider secrets may exist in in-memory config objects, but durable storage persists public provider config only.
 16. CLI `.env` loading is a CLI-only convenience and not part of library runtime behavior.
+17. Run lifecycle status and run control state are separate; pause/cancel do not redefine terminal lifecycle semantics.
+18. Incremental terminal-result reads are sequence-based and only return items that have already reached a terminal item state.
+19. Built-in deterministic-source resume currently covers CSV, JSONL, and Parquet; arbitrary iterables still do not become durable by magic.
+20. `BatchItem.metadata["batchor_lineage"]` is reserved for lightweight source/join metadata when provided by built-in adapters or callers.
 
 ## Extension seams
 
 The code is shaped for future providers and backends, but within explicit boundaries:
 
-- provider config serialization flows through the provider registry
-- storage creation flows through the storage registry
-- runtime code talks to provider/store contracts rather than direct OpenAI/SQLite branches
-- request replay is provider-agnostic at the runner/store boundary
-- file-backed resume uses source-specific checkpoints
-- artifact persistence is abstracted behind `ArtifactStore`
+- provider config serialization goes through the provider registry
+- storage creation goes through the storage registry
+- runtime code works in terms of provider/store contracts instead of direct OpenAI/SQLite branches
+- durable request replay is provider-agnostic at the runner/store boundary and materializes through the artifact-store contract
+- deterministic-source resume uses source-specific checkpoints and currently supports the built-in CSV, JSONL, and Parquet sources
+- provider observability hooks are callback-based and currently emit coarse lifecycle events from the runner
 
 ## Current gaps
 
 - the only built-in provider is OpenAI Batch
 - the only built-in artifact backend is local filesystem storage
-- non-file iterables do not support mid-ingest crash recovery
+- arbitrary non-checkpointable iterables do not support mid-ingest crash recovery
 - the CLI does not expose the full Python API surface
 
 ## TBD
 
 - multi-provider capability matrix doc
 - remote/object-store artifact backend
-- resumable mid-ingest file sourcing for non-built-in sources
+- provider-side remote cancellation

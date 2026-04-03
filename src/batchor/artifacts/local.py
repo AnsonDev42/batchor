@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
+import os
 from pathlib import Path
 import shutil
 
@@ -22,11 +23,14 @@ class LocalArtifactStore(ArtifactStore):
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self._restrict_permissions(self.root, is_dir=True)
 
     def write_text(self, key: str, content: str, *, encoding: str = "utf-8") -> None:
         path = self.resolve_path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
+        self._restrict_permissions(path.parent, is_dir=True)
         path.write_text(content, encoding=encoding)
+        self._restrict_permissions(path, is_dir=False)
 
     def read_text(self, key: str, *, encoding: str = "utf-8") -> str:
         return self.resolve_path(key).read_text(encoding=encoding)
@@ -74,3 +78,11 @@ class LocalArtifactStore(ArtifactStore):
                 directory.rmdir()
             except OSError:
                 continue
+
+    @staticmethod
+    def _restrict_permissions(path: Path, *, is_dir: bool) -> None:
+        mode = 0o700 if is_dir else 0o600
+        try:
+            os.chmod(path, mode)
+        except OSError:
+            return

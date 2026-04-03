@@ -8,14 +8,16 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from batchor.core.enums import RunLifecycleStatus
-from batchor.core.exceptions import RunNotFinishedError
+from batchor.core.enums import RunControlState, RunLifecycleStatus
+from batchor.core.exceptions import RunNotFinishedError, RunPausedError
 from batchor.core.models import (
     ArtifactExportResult,
     ArtifactPruneResult,
     BatchResultItem,
     RunSnapshot,
     RunSummary,
+    TerminalResultsExportResult,
+    TerminalResultsPage,
 )
 from batchor.core.types import JSONObject
 from batchor.providers.base import BatchProvider, StructuredOutputSchema
@@ -70,6 +72,10 @@ class Run:
         return self._summary.status
 
     @property
+    def control_state(self) -> RunControlState:
+        return self._summary.control_state
+
+    @property
     def is_finished(self) -> bool:
         """Return whether the run is in a terminal lifecycle state."""
         return self.status in (RunLifecycleStatus.COMPLETED, RunLifecycleStatus.COMPLETED_WITH_FAILURES)
@@ -91,6 +97,8 @@ class Run:
             self.refresh()
             if self.is_finished:
                 return self
+            if self.control_state is RunControlState.PAUSED:
+                raise RunPausedError(self.run_id)
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(f"timed out waiting for run {self.run_id}")
             sleep_for = (
@@ -117,6 +125,7 @@ class Run:
         return RunSnapshot(
             run_id=self._summary.run_id,
             status=self._summary.status,
+            control_state=self._summary.control_state,
             total_items=self._summary.total_items,
             completed_items=self._summary.completed_items,
             failed_items=self._summary.failed_items,
@@ -148,3 +157,43 @@ class Run:
         """Export retained artifacts for this terminal run."""
         self._summary = self._runner.state.get_run_summary(run_id=self.run_id)
         return self._runner.export_artifacts(self.run_id, destination_dir=destination_dir)
+
+    def pause(self) -> RunSummary:
+        self._summary = self._runner.pause_run(self.run_id).summary()
+        return self._summary
+
+    def resume(self) -> RunSummary:
+        self._summary = self._runner.resume_run(self.run_id).summary()
+        return self._summary
+
+    def cancel(self) -> RunSummary:
+        self._summary = self._runner.cancel_run(self.run_id).summary()
+        return self._summary
+
+    def read_terminal_results(
+        self,
+        *,
+        after_sequence: int = 0,
+        limit: int | None = None,
+    ) -> TerminalResultsPage:
+        return self._runner.read_terminal_results(
+            self.run_id,
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+
+    def export_terminal_results(
+        self,
+        destination: str,
+        *,
+        after_sequence: int = 0,
+        append: bool = True,
+        limit: int | None = None,
+    ) -> TerminalResultsExportResult:
+        return self._runner.export_terminal_results(
+            self.run_id,
+            destination=destination,
+            after_sequence=after_sequence,
+            append=append,
+            limit=limit,
+        )

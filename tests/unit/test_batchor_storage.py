@@ -19,4 +19,4 @@ def test_sqlite_storage_explicit_path_overrides_name(tmp_path: Path) -> None:
 
 def test_sqlite_storage_exposes_schema_version(tmp_path: Path) -> None:
     storage = SQLiteStorage(path=tmp_path / "versioned.sqlite3")
-    assert storage.schema_version == 2
+    assert storage.schema_version == 3

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from batchor import (
+    ArtifactPolicy,
     BatchItem,
     BatchJob,
     BatchRunner,
@@ -25,9 +26,11 @@ from batchor import (
     OpenAIProviderConfig,
     PromptParts,
     RetryPolicy,
+    RunControlState,
     RunEvent,
     RunLifecycleStatus,
     RunNotFinishedError,
+    RunPausedError,
     SQLiteStorage,
 )
 from batchor.providers.openai import OpenAIBatchProvider
@@ -215,6 +218,36 @@ class _TransientPollFailureBatchProvider(_FakeBatchProvider):
             self._poll_failures[batch_id] = remaining - 1
             raise ConnectionError("connection reset by peer")
         return super().get_batch(batch_id)
+
+
+class _ControlledBatchProvider(_FakeBatchProvider):
+    def __init__(
+        self,
+        *,
+        record_factory: Callable[[str], dict[str, object] | None],
+    ) -> None:
+        super().__init__(record_factory=record_factory)
+        self.released_batches: set[str] = set()
+        self.polled_batches: list[str] = []
+
+    def release_batch(self, batch_id: str) -> None:
+        self.released_batches.add(batch_id)
+
+    def get_batch(self, batch_id: str) -> dict[str, object]:
+        self.polled_batches.append(batch_id)
+        if batch_id in self.released_batches:
+            return {
+                "id": batch_id,
+                "status": "completed",
+                "output_file_id": f"output_{batch_id}",
+                "error_file_id": None,
+            }
+        return {
+            "id": batch_id,
+            "status": "submitted",
+            "output_file_id": None,
+            "error_file_id": None,
+        }
 
 
 def test_sqlite_subprocess_resume_retries_from_persisted_request_artifact(
@@ -477,6 +510,185 @@ def test_transient_poll_failures_do_not_block_new_submissions(tmp_path: Path) ->
     summary = run.summary()
     assert summary.completed_items == 3
     assert summary.status_counts[ItemStatus.SUBMITTED] == 2
+
+
+def test_pause_blocks_polling_and_wait_raises_paused_error(tmp_path: Path) -> None:
+    provider = _ControlledBatchProvider(
+        record_factory=lambda custom_id: _success_record(f"text:{custom_id}")
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path,
+    )
+    run = runner.start(
+        BatchJob(
+            items=[
+                BatchItem(item_id="row1", payload="a"),
+                BatchItem(item_id="row2", payload="b"),
+                BatchItem(item_id="row3", payload="c"),
+            ],
+            build_prompt=lambda item: PromptParts(prompt=item.payload),
+            provider_config=OpenAIProviderConfig(
+                api_key="k",
+                model="gpt-4.1",
+                enqueue_limits=OpenAIEnqueueLimitConfig(
+                    enqueued_token_limit=1,
+                    target_ratio=1.0,
+                    max_batch_enqueued_tokens=1,
+                ),
+            ),
+            chunk_policy=ChunkPolicy(max_requests=1, max_file_bytes=1024),
+        )
+    )
+
+    paused = run.pause()
+    assert paused.control_state is RunControlState.PAUSED
+    assert provider.created_batches == ["batch_0"]
+    run.refresh()
+    assert provider.polled_batches == []
+    with pytest.raises(RunPausedError):
+        run.wait(timeout=0.1, poll_interval=0)
+
+    provider.release_batch("batch_0")
+    resumed = run.resume()
+    assert resumed.control_state is RunControlState.RUNNING
+    run.refresh()
+    assert provider.polled_batches == ["batch_0"]
+    assert provider.created_batches == ["batch_0", "batch_1"]
+
+
+def test_cancel_drains_active_batch_and_marks_remaining_items_cancelled(tmp_path: Path) -> None:
+    provider = _ControlledBatchProvider(
+        record_factory=lambda custom_id: _success_record(f"text:{custom_id}")
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path,
+    )
+    run = runner.start(
+        BatchJob(
+            items=[
+                BatchItem(item_id="row1", payload="a"),
+                BatchItem(item_id="row2", payload="b"),
+                BatchItem(item_id="row3", payload="c"),
+            ],
+            build_prompt=lambda item: PromptParts(prompt=item.payload),
+            provider_config=OpenAIProviderConfig(
+                api_key="k",
+                model="gpt-4.1",
+                enqueue_limits=OpenAIEnqueueLimitConfig(
+                    enqueued_token_limit=1,
+                    target_ratio=1.0,
+                    max_batch_enqueued_tokens=1,
+                ),
+            ),
+            chunk_policy=ChunkPolicy(max_requests=1, max_file_bytes=1024),
+        )
+    )
+
+    cancelled = run.cancel()
+    assert cancelled.control_state is RunControlState.CANCEL_REQUESTED
+    provider.release_batch("batch_0")
+    run.refresh()
+
+    assert run.status is RunLifecycleStatus.COMPLETED_WITH_FAILURES
+    results = run.results()
+    assert results[0].status is ItemStatus.COMPLETED
+    assert results[1].status is ItemStatus.FAILED_PERMANENT
+    assert results[1].error is not None
+    assert results[1].error.error_class == "run_cancelled"
+    assert results[2].status is ItemStatus.FAILED_PERMANENT
+
+
+def test_read_terminal_results_and_export_terminal_results_use_sequence_cursor(
+    tmp_path: Path,
+) -> None:
+    provider = _ControlledBatchProvider(
+        record_factory=lambda custom_id: _success_record(f"text:{custom_id}")
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path,
+    )
+    run = runner.start(
+        BatchJob(
+            items=[
+                BatchItem(item_id="row1", payload="a"),
+                BatchItem(item_id="row2", payload="b"),
+            ],
+            build_prompt=lambda item: PromptParts(prompt=item.payload),
+            provider_config=OpenAIProviderConfig(
+                api_key="k",
+                model="gpt-4.1",
+                enqueue_limits=OpenAIEnqueueLimitConfig(
+                    enqueued_token_limit=1,
+                    target_ratio=1.0,
+                    max_batch_enqueued_tokens=1,
+                ),
+            ),
+            chunk_policy=ChunkPolicy(max_requests=1, max_file_bytes=1024),
+        )
+    )
+
+    initial_page = run.read_terminal_results()
+    assert initial_page.items == []
+    assert initial_page.next_after_sequence == 0
+
+    provider.release_batch("batch_0")
+    run.refresh()
+    first_page = run.read_terminal_results()
+    assert [result.item_id for result in first_page.items] == ["row1"]
+    assert first_page.next_after_sequence == 1
+
+    export_path = tmp_path / "terminal-results.jsonl"
+    export = run.export_terminal_results(str(export_path), append=False)
+    assert export.exported_count == 1
+    assert export.next_after_sequence == 1
+
+    provider.release_batch("batch_1")
+    run.refresh()
+    second_page = run.read_terminal_results(after_sequence=first_page.next_after_sequence)
+    assert [result.item_id for result in second_page.items] == ["row2"]
+    assert second_page.next_after_sequence == 2
+    followup = run.export_terminal_results(
+        str(export_path),
+        after_sequence=first_page.next_after_sequence,
+        append=True,
+    )
+    assert followup.exported_count == 1
+    lines = export_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert [json.loads(line)["item_id"] for line in lines] == ["row1", "row2"]
+
+
+def test_disabling_raw_output_artifacts_keeps_results_but_skips_output_files(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    storage = SQLiteStorage(path=tmp_path / "artifact_policy.sqlite3")
+    runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+    )
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+            artifact_policy=ArtifactPolicy(persist_raw_output_artifacts=False),
+        )
+    )
+
+    inventory = storage.get_artifact_inventory(run_id=run.run_id)
+    assert inventory.request_artifact_paths != []
+    assert inventory.output_artifact_paths == []
+    assert run.results()[0].output is not None
 
 
 def test_structured_run_handle_returns_model_instances(tmp_path: Path) -> None:

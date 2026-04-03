@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
-from batchor.core.enums import ItemStatus
-from batchor.core.models import ChunkPolicy, ItemFailure, RetryPolicy, RunSummary
+from batchor.core.enums import ItemStatus, RunControlState
+from batchor.core.models import ArtifactPolicy, ChunkPolicy, ItemFailure, RetryPolicy, RunSummary
 from batchor.core.types import JSONObject, JSONValue
 from batchor.providers.base import ProviderConfig
 
@@ -16,6 +16,7 @@ class PersistedRunConfig:
     chunk_policy: ChunkPolicy
     retry_policy: RetryPolicy
     batch_metadata: dict[str, str]
+    artifact_policy: ArtifactPolicy = field(default_factory=ArtifactPolicy)
     schema_name: str | None = None
     structured_output_module: str | None = None
     structured_output_qualname: str | None = None
@@ -43,6 +44,7 @@ class IngestCheckpoint:
     source_ref: str
     source_fingerprint: str
     next_item_index: int = 0
+    checkpoint_payload: JSONValue | None = None
     ingestion_complete: bool = False
 
 
@@ -136,6 +138,7 @@ class PersistedItemRecord:
     status: ItemStatus
     attempt_count: int
     metadata: JSONObject
+    terminal_result_sequence: int | None = None
     output_text: str | None = None
     output_json: JSONValue | None = None
     raw_response: JSONObject | None = None
@@ -180,11 +183,23 @@ class StateStore(ABC):
         *,
         run_id: str,
         next_item_index: int,
+        checkpoint_payload: JSONValue | None = None,
         ingestion_complete: bool,
     ) -> None: ...
 
     @abstractmethod
     def get_run_config(self, *, run_id: str) -> PersistedRunConfig: ...
+
+    @abstractmethod
+    def get_run_control_state(self, *, run_id: str) -> RunControlState: ...
+
+    @abstractmethod
+    def set_run_control_state(
+        self,
+        *,
+        run_id: str,
+        control_state: RunControlState,
+    ) -> None: ...
 
     @abstractmethod
     def claim_items_for_submission(
@@ -348,3 +363,20 @@ class StateStore(ABC):
 
     @abstractmethod
     def get_item_records(self, *, run_id: str) -> list[PersistedItemRecord]: ...
+
+    @abstractmethod
+    def get_terminal_item_records(
+        self,
+        *,
+        run_id: str,
+        after_sequence: int,
+        limit: int | None = None,
+    ) -> list[PersistedItemRecord]: ...
+
+    @abstractmethod
+    def mark_nonterminal_items_cancelled(
+        self,
+        *,
+        run_id: str,
+        error: ItemFailure,
+    ) -> int: ...

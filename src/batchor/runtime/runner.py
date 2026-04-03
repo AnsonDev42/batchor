@@ -12,7 +12,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from batchor.artifacts import ArtifactStore, LocalArtifactStore
-from batchor.core.enums import ProviderKind, RunLifecycleStatus
+from batchor.core.enums import ProviderKind, RunControlState, RunLifecycleStatus
 from batchor.core.exceptions import ModelResolutionError, RunNotFinishedError
 from batchor.core.models import (
     ArtifactExportResult,
@@ -22,6 +22,8 @@ from batchor.core.models import (
     PromptParts,
     RunEvent,
     StructuredItemResult,
+    TerminalResultsExportResult,
+    TerminalResultsPage,
     TextItemResult,
 )
 from batchor.core.types import BatchRequestLine, JSONObject, JSONValue
@@ -33,7 +35,7 @@ from batchor.providers.registry import (
 from batchor.runtime.run_handle import Run, _PreparedItem, _RunContext, generate_run_id
 from batchor.runtime.runner_execution import _refresh_run, _submit_pending_items
 from batchor.runtime.validation import model_output_schema
-from batchor.sources.base import ResumableItemSource
+from batchor.sources.base import CheckpointedItemSource
 from batchor.storage.registry import StorageRegistry, build_default_storage_registry
 from batchor.storage.state import (
     ClaimedItem,
@@ -113,7 +115,7 @@ class BatchRunner:
                 run_id=resolved_run_id,
                 provider_kind=job.provider_config.provider_kind,
             )
-            source = self._resumable_source(job)
+            source = self._checkpointed_source(job)
             if source is not None:
                 identity = source.source_identity()
                 self.state.set_ingest_checkpoint(
@@ -122,6 +124,7 @@ class BatchRunner:
                         source_kind=identity.source_kind,
                         source_ref=identity.source_ref,
                         source_fingerprint=identity.source_fingerprint,
+                        checkpoint_payload=source.initial_checkpoint(),
                     ),
                 )
             self._ingest_job_items(
@@ -129,6 +132,7 @@ class BatchRunner:
                 job=job,
                 context=context,
                 start_index=0,
+                checkpoint_payload=source.initial_checkpoint() if source is not None else None,
             )
         return Run(
             runner=self,
@@ -161,6 +165,86 @@ class BatchRunner:
             run_id=run_id,
             context=context,
             summary=self.state.get_run_summary(run_id=run_id),
+        )
+
+    def pause_run(self, run_id: str) -> Run:
+        self.state.set_run_control_state(
+            run_id=run_id,
+            control_state=RunControlState.PAUSED,
+        )
+        return self.get_run(run_id)
+
+    def resume_run(self, run_id: str) -> Run:
+        control_state = self.state.get_run_control_state(run_id=run_id)
+        if control_state is RunControlState.CANCEL_REQUESTED:
+            raise ValueError(f"run {run_id} is cancelling and cannot be resumed")
+        self.state.set_run_control_state(
+            run_id=run_id,
+            control_state=RunControlState.RUNNING,
+        )
+        return self.get_run(run_id)
+
+    def cancel_run(self, run_id: str) -> Run:
+        self.state.set_run_control_state(
+            run_id=run_id,
+            control_state=RunControlState.CANCEL_REQUESTED,
+        )
+        return self.get_run(run_id)
+
+    def read_terminal_results(
+        self,
+        run_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int | None = None,
+    ) -> TerminalResultsPage:
+        if after_sequence < 0:
+            raise ValueError("after_sequence must be >= 0")
+        records = self.state.get_terminal_item_records(
+            run_id=run_id,
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+        context = self._contexts.get(run_id)
+        if context is None:
+            config = self.state.get_run_config(run_id=run_id)
+            output_model = self._resolve_output_model(config)
+            context = self._context_for_config(config=config, output_model=output_model)
+            self._contexts[run_id] = context
+        next_after_sequence = after_sequence
+        if records and records[-1].terminal_result_sequence is not None:
+            next_after_sequence = records[-1].terminal_result_sequence
+        return TerminalResultsPage(
+            run_id=run_id,
+            items=[self._result_from_record(record, context) for record in records],
+            next_after_sequence=next_after_sequence,
+        )
+
+    def export_terminal_results(
+        self,
+        run_id: str,
+        *,
+        destination: str | Path,
+        after_sequence: int = 0,
+        append: bool = True,
+        limit: int | None = None,
+    ) -> TerminalResultsExportResult:
+        page = self.read_terminal_results(
+            run_id,
+            after_sequence=after_sequence,
+            limit=limit,
+        )
+        destination_path = Path(destination).expanduser().resolve()
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        mode = "a" if append else "w"
+        with destination_path.open(mode, encoding="utf-8") as handle:
+            for result in page.items:
+                handle.write(json.dumps(self._serialize_result(result), ensure_ascii=False) + "\n")
+        return TerminalResultsExportResult(
+            run_id=run_id,
+            destination_path=str(destination_path),
+            exported_count=len(page.items),
+            next_after_sequence=page.next_after_sequence,
         )
 
     def export_artifacts(
@@ -326,6 +410,7 @@ class BatchRunner:
             chunk_policy=job.chunk_policy,
             retry_policy=job.retry_policy,
             batch_metadata=dict(job.batch_metadata),
+            artifact_policy=job.artifact_policy,
             schema_name=job.schema_name,
             structured_output_module=structured_output_module,
             structured_output_qualname=structured_output_qualname,
@@ -343,16 +428,24 @@ class BatchRunner:
         if not self._configs_match_for_resume(stored_config, config):
             raise ValueError(f"existing run config does not match supplied job: {run_id}")
         self.state.requeue_local_items(run_id=run_id)
+        control_state = self.state.get_run_control_state(run_id=run_id)
+        if control_state is RunControlState.CANCEL_REQUESTED:
+            return
         checkpoint = self.state.get_ingest_checkpoint(run_id=run_id)
         if checkpoint is not None and not checkpoint.ingestion_complete:
-            source = self._require_resumable_source(job, run_id=run_id)
+            source = self._require_checkpointed_source(job, run_id=run_id)
             self._validate_checkpoint_source(run_id=run_id, source=source, checkpoint=checkpoint)
+            if control_state is RunControlState.PAUSED:
+                return
             self._ingest_job_items(
                 run_id=run_id,
                 job=job,
                 context=context,
                 start_index=checkpoint.next_item_index,
+                checkpoint_payload=checkpoint.checkpoint_payload,
             )
+            return
+        if control_state is RunControlState.PAUSED:
             return
         self._submit_pending_items(run_id, context)
 
@@ -363,10 +456,17 @@ class BatchRunner:
         job: BatchJob[Any, BaseModel],
         context: _RunContext,
         start_index: int,
+        checkpoint_payload: JSONValue | None,
     ) -> None:
         next_item_index = start_index
-        checkpointed = self._resumable_source(job) is not None
-        for item_chunk in self._materialize_item_chunks(job, start_index=start_index):
+        next_checkpoint_payload = checkpoint_payload
+        checkpointed = self._checkpointed_source(job) is not None
+        ingestion_complete = True
+        for item_chunk, next_item_index, next_checkpoint_payload in self._materialize_item_chunks(
+            job,
+            start_index=start_index,
+            checkpoint_payload=checkpoint_payload,
+        ):
             self.state.append_items(run_id=run_id, items=item_chunk)
             self._emit_event(
                 "items_ingested",
@@ -377,19 +477,27 @@ class BatchRunner:
                     "last_item_index": item_chunk[-1].item_index,
                 },
             )
-            next_item_index = item_chunk[-1].item_index + 1
             if checkpointed:
                 self.state.update_ingest_checkpoint(
                     run_id=run_id,
                     next_item_index=next_item_index,
+                    checkpoint_payload=next_checkpoint_payload,
                     ingestion_complete=False,
                 )
+            control_state = self.state.get_run_control_state(run_id=run_id)
+            if control_state is RunControlState.CANCEL_REQUESTED:
+                break
             self._submit_pending_items(run_id, context)
+            control_state = self.state.get_run_control_state(run_id=run_id)
+            if control_state is not RunControlState.RUNNING:
+                ingestion_complete = control_state is RunControlState.CANCEL_REQUESTED
+                break
         if checkpointed:
             self.state.update_ingest_checkpoint(
                 run_id=run_id,
                 next_item_index=next_item_index,
-                ingestion_complete=True,
+                checkpoint_payload=next_checkpoint_payload,
+                ingestion_complete=ingestion_complete,
             )
 
     def _materialize_item_chunks(
@@ -397,67 +505,93 @@ class BatchRunner:
         job: BatchJob[Any, BaseModel],
         *,
         start_index: int = 0,
+        checkpoint_payload: JSONValue | None = None,
         chunk_size: int = 1000,
-    ) -> Iterator[list[MaterializedItem]]:
+    ) -> Iterator[tuple[list[MaterializedItem], int, JSONValue | None]]:
         if chunk_size <= 0:
             raise ValueError("chunk_size must be > 0")
         current_chunk: list[MaterializedItem] = []
         seen_ids: set[str] = set()
-        source = self._resumable_source(job)
+        source = self._checkpointed_source(job)
+        current_index = start_index
+        next_checkpoint = checkpoint_payload
         if source is not None:
-            item_stream = (
-                (indexed_item.item_index, indexed_item.item)
-                for indexed_item in source.iter_from(start_index)
+            source_checkpoint = (
+                checkpoint_payload
+                if checkpoint_payload is not None
+                else source.initial_checkpoint()
             )
+            for source_item in source.iter_from_checkpoint(source_checkpoint):
+                item_index = current_index
+                item = source_item.item
+                next_checkpoint = source_item.next_checkpoint
+                if item.item_id in seen_ids:
+                    raise ValueError(f"duplicate item_id: {item.item_id}")
+                seen_ids.add(item.item_id)
+                prompt_parts = self._normalize_prompt_parts(job.build_prompt(item))
+                current_chunk.append(
+                    MaterializedItem(
+                        item_id=item.item_id,
+                        item_index=item_index,
+                        payload=self._json_value(item.payload, label=f"payload for {item.item_id}"),
+                        metadata=self._json_object(item.metadata, label=f"metadata for {item.item_id}"),
+                        prompt=prompt_parts.prompt,
+                        system_prompt=prompt_parts.system_prompt,
+                    )
+                )
+                current_index = item_index + 1
+                if len(current_chunk) >= chunk_size:
+                    yield current_chunk, current_index, next_checkpoint
+                    current_chunk = []
         else:
             if start_index != 0:
                 raise ValueError("non-resumable item sources cannot start from a checkpoint")
-            item_stream = enumerate(job.items)
-        for item_index, item in item_stream:
-            if item.item_id in seen_ids:
-                raise ValueError(f"duplicate item_id: {item.item_id}")
-            seen_ids.add(item.item_id)
-            prompt_parts = self._normalize_prompt_parts(job.build_prompt(item))
-            current_chunk.append(
-                MaterializedItem(
-                    item_id=item.item_id,
-                    item_index=item_index,
-                    payload=self._json_value(item.payload, label=f"payload for {item.item_id}"),
-                    metadata=self._json_object(item.metadata, label=f"metadata for {item.item_id}"),
-                    prompt=prompt_parts.prompt,
-                    system_prompt=prompt_parts.system_prompt,
+            for item_index, item in enumerate(job.items, start=start_index):
+                if item.item_id in seen_ids:
+                    raise ValueError(f"duplicate item_id: {item.item_id}")
+                seen_ids.add(item.item_id)
+                prompt_parts = self._normalize_prompt_parts(job.build_prompt(item))
+                current_chunk.append(
+                    MaterializedItem(
+                        item_id=item.item_id,
+                        item_index=item_index,
+                        payload=self._json_value(item.payload, label=f"payload for {item.item_id}"),
+                        metadata=self._json_object(item.metadata, label=f"metadata for {item.item_id}"),
+                        prompt=prompt_parts.prompt,
+                        system_prompt=prompt_parts.system_prompt,
+                    )
                 )
-            )
-            if len(current_chunk) >= chunk_size:
-                yield current_chunk
-                current_chunk = []
+                current_index = item_index + 1
+                if len(current_chunk) >= chunk_size:
+                    yield current_chunk, current_index, next_checkpoint
+                    current_chunk = []
         if current_chunk:
-            yield current_chunk
+            yield current_chunk, current_index, next_checkpoint
 
     @staticmethod
-    def _resumable_source(
+    def _checkpointed_source(
         job: BatchJob[Any, BaseModel],
-    ) -> ResumableItemSource[Any] | None:
-        if isinstance(job.items, ResumableItemSource):
-            return cast(ResumableItemSource[Any], job.items)
+    ) -> CheckpointedItemSource[Any] | None:
+        if isinstance(job.items, CheckpointedItemSource):
+            return cast(CheckpointedItemSource[Any], job.items)
         return None
 
-    def _require_resumable_source(
+    def _require_checkpointed_source(
         self,
         job: BatchJob[Any, BaseModel],
         *,
         run_id: str,
-    ) -> ResumableItemSource[Any]:
-        source = self._resumable_source(job)
+    ) -> CheckpointedItemSource[Any]:
+        source = self._checkpointed_source(job)
         if source is None:
-            raise ValueError(f"run requires a resumable item source for restart: {run_id}")
+            raise ValueError(f"run requires a checkpointed item source for restart: {run_id}")
         return source
 
     @staticmethod
     def _validate_checkpoint_source(
         *,
         run_id: str,
-        source: ResumableItemSource[Any],
+        source: CheckpointedItemSource[Any],
         checkpoint: IngestCheckpoint,
     ) -> None:
         identity = source.source_identity()
@@ -519,6 +653,7 @@ class BatchRunner:
             stored_config.chunk_policy != supplied_config.chunk_policy
             or stored_config.retry_policy != supplied_config.retry_policy
             or stored_config.batch_metadata != supplied_config.batch_metadata
+            or stored_config.artifact_policy != supplied_config.artifact_policy
             or stored_config.schema_name != supplied_config.schema_name
             or stored_config.structured_output_module
             != supplied_config.structured_output_module
@@ -684,7 +819,10 @@ class BatchRunner:
         provider_batch_id: str,
         output_content: str | None,
         error_content: str | None,
+        persist_raw_output_artifacts: bool,
     ) -> tuple[str | None, str | None]:
+        if not persist_raw_output_artifacts:
+            return None, None
         output_artifact_path = None
         if output_content is not None:
             output_artifact_path = (
@@ -749,6 +887,9 @@ class BatchRunner:
         normalized = self._json_value(value, label=label)
         if not isinstance(normalized, dict):
             raise TypeError(f"{label} must be a JSON object")
+        lineage = normalized.get("batchor_lineage")
+        if lineage is not None and not isinstance(lineage, dict):
+            raise TypeError(f"{label} batchor_lineage must be a JSON object when provided")
         return normalized
 
     def _artifact_full_path(self, artifact_path: str) -> Path:

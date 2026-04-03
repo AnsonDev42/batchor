@@ -11,6 +11,7 @@ from batchor.core.enums import (
     OpenAIModel,
     OpenAIReasoningEffort,
     ProviderKind,
+    RunControlState,
     RunLifecycleStatus,
 )
 from batchor.core.types import JSONObject, JSONValue
@@ -46,6 +47,25 @@ PromptBuilder: TypeAlias = Callable[[BatchItem[PayloadT]], PromptParts | str]
 BatchItems: TypeAlias = "Iterable[BatchItem[PayloadT]] | ItemSource[PayloadT]"
 OpenAIModelName: TypeAlias = OpenAIModel | str
 OpenAIReasoningLevel: TypeAlias = OpenAIReasoningEffort | str
+
+
+@dataclass(frozen=True)
+class ArtifactPolicy:
+    persist_raw_output_artifacts: bool = True
+
+    def to_payload(self) -> JSONObject:
+        return {
+            "persist_raw_output_artifacts": self.persist_raw_output_artifacts,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: JSONObject) -> "ArtifactPolicy":
+        persist_raw_output_artifacts = payload.get("persist_raw_output_artifacts", True)
+        if not isinstance(persist_raw_output_artifacts, bool):
+            raise TypeError("persist_raw_output_artifacts must be a bool")
+        return cls(
+            persist_raw_output_artifacts=persist_raw_output_artifacts,
+        )
 
 
 @dataclass(frozen=True)
@@ -242,6 +262,7 @@ class BatchJob(Generic[PayloadT, ModelT]):
     chunk_policy: ChunkPolicy = field(default_factory=ChunkPolicy)
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     batch_metadata: dict[str, str] = field(default_factory=dict)
+    artifact_policy: ArtifactPolicy = field(default_factory=ArtifactPolicy)
 
 
 @dataclass(frozen=True)
@@ -290,6 +311,7 @@ class RunSummary:
 
     run_id: str
     status: RunLifecycleStatus
+    control_state: RunControlState
     total_items: int
     completed_items: int
     failed_items: int
@@ -314,6 +336,7 @@ class RunSnapshot:
 
     run_id: str
     status: RunLifecycleStatus
+    control_state: RunControlState
     total_items: int
     completed_items: int
     failed_items: int
@@ -343,3 +366,18 @@ class ArtifactExportResult:
     manifest_path: str
     results_path: str
     exported_artifact_paths: list[str]
+
+
+@dataclass(frozen=True)
+class TerminalResultsPage:
+    run_id: str
+    items: list[BatchResultItem]
+    next_after_sequence: int
+
+
+@dataclass(frozen=True)
+class TerminalResultsExportResult:
+    run_id: str
+    destination_path: str
+    exported_count: int
+    next_after_sequence: int

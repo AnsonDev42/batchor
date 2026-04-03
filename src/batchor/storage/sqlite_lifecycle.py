@@ -4,7 +4,8 @@ from dataclasses import asdict
 
 from sqlalchemy import and_, bindparam, select, update
 
-from batchor.core.enums import ItemStatus, RunLifecycleStatus
+from batchor.core.enums import ItemStatus, RunControlState, RunLifecycleStatus
+from batchor.core.types import JSONValue
 from batchor.storage.sqlite_codec import (
     _decode_object,
     _encode_datetime,
@@ -47,6 +48,7 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                     {
                         "run_id": run_id,
                         "status": RunLifecycleStatus.RUNNING,
+                        "control_state": RunControlState.RUNNING,
                         "created_at": _encode_datetime(self._now()),
                         "provider_config_json": _encode_json(
                             self.provider_registry.dump_config(
@@ -57,6 +59,7 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                         "chunk_policy_json": _encode_json(asdict(config.chunk_policy)),
                         "retry_policy_json": _encode_json(asdict(config.retry_policy)),
                         "batch_metadata_json": _encode_json(config.batch_metadata),
+                        "artifact_policy_json": _encode_json(config.artifact_policy.to_payload()),
                         "schema_name": config.schema_name,
                         "structured_output_module": config.structured_output_module,
                         "structured_output_qualname": config.structured_output_qualname,
@@ -106,6 +109,9 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                         "source_ref": checkpoint.source_ref,
                         "source_fingerprint": checkpoint.source_fingerprint,
                         "next_item_index": checkpoint.next_item_index,
+                        "checkpoint_payload_json": _encode_json(checkpoint.checkpoint_payload)
+                        if checkpoint.checkpoint_payload is not None
+                        else None,
                         "ingestion_complete": 1 if checkpoint.ingestion_complete else 0,
                     }
                 ],
@@ -116,6 +122,7 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
         *,
         run_id: str,
         next_item_index: int,
+        checkpoint_payload: JSONValue | None = None,
         ingestion_complete: bool,
     ) -> None:
         with self.engine.begin() as conn:
@@ -124,6 +131,9 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                 .where(RUN_INGEST_STATE_TABLE.c.run_id == run_id)
                 .values(
                     next_item_index=next_item_index,
+                    checkpoint_payload_json=_encode_json(checkpoint_payload)
+                    if checkpoint_payload is not None
+                    else None,
                     ingestion_complete=1 if ingestion_complete else 0,
                 )
             )
@@ -132,6 +142,19 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
         with self.engine.begin() as conn:
             row = self._fetch_run_row(conn, run_id)
             return self._run_config_from_row(row)
+
+    def set_run_control_state(
+        self,
+        *,
+        run_id: str,
+        control_state: RunControlState,
+    ) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(
+                update(RUNS_TABLE)
+                .where(RUNS_TABLE.c.run_id == run_id)
+                .values(control_state=control_state)
+            )
 
     def claim_items_for_submission(
         self,

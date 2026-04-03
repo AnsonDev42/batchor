@@ -133,7 +133,7 @@ Rehydration succeeds only if the runner can still resolve what the run needs:
 - importable structured-output model classes
 - usable credentials when a refresh needs to talk to the provider
 
-## File-backed sources
+## Deterministic sources
 
 Use `CsvItemSource` or `JsonlItemSource` when the input already exists on disk.
 
@@ -158,7 +158,77 @@ run = runner.start(
 )
 ```
 
-If the source file and job config still match the persisted checkpoint, rerunning `start(job, run_id=...)` resumes from the last durable source position instead of duplicating already-materialized items.
+If the source file and job config still match the persisted checkpoint, rerunning `start(job, run_id=...)` resumes from the last durable source position instead of duplicating previously materialized items.
+
+Built-in deterministic sources today are:
+
+- `CsvItemSource`
+- `JsonlItemSource`
+- `ParquetItemSource`
+
+`ParquetItemSource` supports column projection so large datasets can expose only the columns needed for `item_id`, payload, and metadata extraction:
+
+```python
+from batchor import BatchJob, BatchRunner, OpenAIProviderConfig, ParquetItemSource, PromptParts
+
+
+source = ParquetItemSource(
+    "input/items.parquet",
+    item_id_from_row=lambda row: str(row["id"]),
+    payload_from_row=lambda row: {"text": str(row["text"])},
+    columns=["id", "text"],
+)
+
+runner = BatchRunner()
+run = runner.start(
+    BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(model="gpt-4.1"),
+    ),
+    run_id="customer_export_20260403",
+)
+```
+
+For custom deterministic adapters, implement `CheckpointedItemSource`. Arbitrary iterables and live DB cursors are still outside the durable-resume contract unless they can provide a stable source identity plus opaque resume checkpoint.
+
+## Run control
+
+```python
+from batchor import BatchRunner, RunControlState, SQLiteStorage
+
+
+runner = BatchRunner(storage=SQLiteStorage(name="default"))
+run = runner.get_run("batchor_20260403T120000Z_ab12cd34")
+
+run.pause()
+assert run.summary().control_state is RunControlState.PAUSED
+
+run.resume()
+run.cancel()
+```
+
+`cancel()` is drain-style in v1: `batchor` stops new ingestion and submission, keeps polling already-submitted provider batches, then permanently fails remaining local non-terminal items with `run_cancelled`.
+Provider-side remote batch cancellation is still `TBD`.
+
+## Incremental terminal results
+
+```python
+page = run.read_terminal_results(after_sequence=0, limit=100)
+
+for item in page.items:
+    print(item.item_id, item.status)
+
+export = run.export_terminal_results(
+    "exports/partial-results.jsonl",
+    after_sequence=0,
+    append=False,
+    limit=100,
+)
+print(export.next_after_sequence)
+```
+
+Incremental reads and exports only return items that are already in a terminal item state. `Run.results()` remains the full terminal-run API.
 
 ## Choosing storage
 
@@ -181,7 +251,7 @@ runner = BatchRunner(
 )
 ```
 
-## Artifacts, export, and prune
+## Artifacts, export, prune, and retention
 
 `batchor` stores request artifacts for replay and raw output artifacts for audit/export.
 
@@ -198,6 +268,27 @@ Rules:
 - artifact export/prune is terminal-only
 - request artifacts can be pruned directly after terminal completion
 - raw output/error artifacts require `export_artifacts(...)` before they can be pruned
+
+Built-in sources reserve `metadata["batchor_lineage"]` for lightweight join metadata such as:
+
+- `source_ref`
+- `partition_id`
+- `source_item_index`
+- `source_primary_key`
+
+Runs can also opt out of raw output/error artifact retention while keeping durable request replay:
+
+```python
+from batchor import ArtifactPolicy, BatchJob
+
+
+job = BatchJob(
+    ...,
+    artifact_policy=ArtifactPolicy(persist_raw_output_artifacts=False),
+)
+```
+
+This policy is library-first in the current release; the CLI still uses the default raw-artifact retention behavior.
 
 ## Which API should you read next?
 

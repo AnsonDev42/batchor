@@ -28,6 +28,7 @@ The library should stay narrow and reliable: accept work items, persist enough s
 - explicit terminal cleanup of replay artifacts
 - result parsing, validation, and run rehydration
 - lightweight lineage metadata needed to join results back to user systems
+- deterministic mid-ingest resume for sources that provide a stable identity and durable checkpoint
 
 ### What the user pipeline owns
 
@@ -63,7 +64,10 @@ This means a fresh worker can resume a run from the same SQLite database plus si
 - SQLite-backed runs persist per-item request artifact path, line number, and request hash.
 - Once that pointer exists, `batchor` can prune large inline request-building fields from SQLite.
 - Built-in CSV and JSONL sources persist ingest checkpoints so `start(job, run_id=...)` can resume from the last durable source position before request-artifact replay takes over.
+- Built-in deterministic sources now include CSV, JSONL, and Parquet.
+- `CheckpointedItemSource` is the extension seam for custom deterministic adapters; `batchor` persists opaque checkpoints but does not make arbitrary iterables durable by itself.
 - Once the run is terminal, `batchor` exposes explicit artifact pruning so users can reclaim replay storage without losing terminal results.
 - Raw output/error artifacts are retained until users explicitly export them, then prune them.
+- Runs may opt out of raw output/error artifact persistence through `ArtifactPolicy`, while request artifacts remain mandatory replay state.
 - Artifact storage is local filesystem only today.
-- Mid-ingest crash recovery before the first request artifact exists is implemented for the built-in CSV and JSONL sources only. Other item iterables are still `TBD`.
+- Mid-ingest crash recovery before the first request artifact exists is implemented only for deterministic checkpointable sources. Other item iterables are still `TBD`.

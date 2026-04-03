@@ -18,9 +18,17 @@
 
     Runs are persisted through a control-plane store and can be rehydrated across fresh processes.
 
+-   **Deterministic source checkpoints**
+
+    Built-in CSV, JSONL, and Parquet sources can resume mid-ingest when the same `run_id`, source identity, and job config are reused.
+
 -   **Typed structured results**
 
     Python API users can pass a Pydantic v2 model and receive parsed typed outputs instead of manually validating JSON strings.
+
+-   **Operator controls without orchestration scope creep**
+
+    Library callers can `pause`, `resume`, `cancel`, and read terminal results incrementally without turning `batchor` into a full workflow engine.
 
 -   **Replayable request artifacts**
 
@@ -49,7 +57,9 @@ If that is the mental model you were missing from the generated docs, go straigh
 - Durable storage: SQLite by default, Postgres as an opt-in control-plane backend
 - Ephemeral storage: in-memory state store
 - Artifact backend: local filesystem via `LocalArtifactStore`
-- File-backed sources: CSV and JSONL
+- Deterministic built-in sources: CSV, JSONL, and Parquet
+- Python-first control plane: `pause`, `resume`, `cancel`, incremental terminal-result reads/exports
+- Narrow CLI: CSV/JSONL operator workflows only
 
 ## Reading order
 

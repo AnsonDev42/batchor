@@ -17,7 +17,19 @@ Most users only need a small subset of the package:
 - `Run`: refresh, wait, inspect, export, and prune
 - `OpenAIProviderConfig`: built-in provider config
 - `SQLiteStorage` and `PostgresStorage`: durable control-plane backends
-- `CsvItemSource` and `JsonlItemSource`: file-backed item streaming
+- `CsvItemSource`, `JsonlItemSource`, and `ParquetItemSource`: deterministic item streaming
+
+Recent additions worth checking in the generated reference:
+
+- `ArtifactPolicy`
+- `RunControlState`
+- `Run.pause()`, `Run.resume()`, `Run.cancel()`
+- `Run.read_terminal_results(...)`
+- `Run.export_terminal_results(...)`
+- `CheckpointedItemSource`
+- `ParquetItemSource`
+
+These APIs are currently library-first. The CLI still focuses on CSV/JSONL operator workflows and does not yet expose pause/resume/cancel or incremental terminal-result commands.
 
 ## Public package
 
@@ -48,7 +60,12 @@ This is the built-in provider implementation. Most consumers only need `OpenAIPr
 
 ## Sources
 
-These sources stream items from CSV or JSONL and support durable resume through source fingerprints and checkpoints.
+These sources support durable resume through source fingerprints and checkpoints.
+
+::: batchor.sources.base
+    options:
+      show_root_heading: true
+      heading_level: 2
 
 ::: batchor.sources.files
     options:

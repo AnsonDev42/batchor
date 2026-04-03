@@ -18,6 +18,12 @@ class RunLifecycleStatus(StrEnum):
     COMPLETED_WITH_FAILURES = "completed_with_failures"
 
 
+class RunControlState(StrEnum):
+    RUNNING = "running"
+    PAUSED = "paused"
+    CANCEL_REQUESTED = "cancel_requested"
+
+
 class ProviderKind(StrEnum):
     OPENAI = "openai"
 

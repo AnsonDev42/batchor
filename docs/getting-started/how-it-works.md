@@ -21,6 +21,7 @@ The full execution plan for a run. It bundles:
 - provider config such as `OpenAIProviderConfig`
 - optional `structured_output` Pydantic model
 - chunking and retry policy
+- optional raw-artifact retention policy
 - optional batch metadata
 
 `BatchJob` is declarative. It does not perform work by itself.
@@ -43,6 +44,8 @@ The durable handle returned by `start()` and `get_run()`. A `Run` gives you:
 
 - current summary state
 - explicit refresh/wait control
+- optional `pause`, `resume`, and drain-style `cancel`
+- incremental reads/exports for already-terminal item results
 - terminal results
 - artifact export and prune operations
 
@@ -53,13 +56,14 @@ Treat `Run` as the long-lived handle for operator workflows.
 At a high level, `batchor` follows this loop:
 
 1. Materialize input items into durable state.
-2. Claim a bounded set of pending items for submission.
-3. Build OpenAI request rows or replay them from stored request artifacts.
-4. Persist request JSONL as an artifact before upload.
-5. Upload the request file and create a provider batch.
-6. Poll active provider batches.
-7. Download output and error files when batches finish.
-8. Parse text or structured responses into durable terminal item results.
+2. Persist source checkpoints when the input adapter supports deterministic resume.
+3. Claim a bounded set of pending items for submission.
+4. Build OpenAI request rows or replay them from stored request artifacts.
+5. Persist request JSONL as an artifact before upload.
+6. Upload the request file and create a provider batch.
+7. Poll active provider batches.
+8. Download output and error files when batches finish.
+9. Parse text or structured responses into durable terminal item results.
 
 Two design choices matter here:
 
@@ -89,6 +93,7 @@ The artifact store keeps:
 - downloaded raw error JSONL
 
 This split is why `batchor` can remain durable without stuffing large request files directly into SQLite or Postgres rows.
+Runs may also disable raw output/error artifact retention through `ArtifactPolicy`, while still keeping request artifacts for replay durability.
 
 ## Resume behavior
 
@@ -97,7 +102,7 @@ Resume happens at multiple layers:
 - `runner.get_run(run_id)` rehydrates an existing durable run
 - `start(job, run_id=...)` resumes the same run instead of creating a new one
 - fresh-process recovery requeues local-but-not-submitted items back to `pending`
-- built-in file sources can resume ingestion from a checkpoint when the source fingerprint still matches
+- built-in deterministic sources can resume ingestion from a checkpoint when the source fingerprint still matches
 
 Resume safety depends on stable inputs:
 
@@ -105,6 +110,35 @@ Resume safety depends on stable inputs:
 - keep the same storage backend
 - keep the same artifact root when artifacts are needed for replay
 - keep structured output models importable at module scope
+
+Built-in deterministic sources currently include:
+
+- `CsvItemSource`
+- `JsonlItemSource`
+- `ParquetItemSource`
+
+Arbitrary iterables do not become durable automatically. Custom non-file sources need a stable identity and explicit checkpoint contract.
+
+## Run control
+
+Run lifecycle status and run control state are separate.
+
+- lifecycle status answers whether the run is active or terminal
+- control state answers whether local execution should keep ingesting, submitting, and polling
+
+Current control states are:
+
+- `running`
+- `paused`
+- `cancel_requested`
+
+In v1:
+
+- `pause()` stops new ingestion, submission, and provider polling
+- `resume()` restarts local execution from persisted state
+- `cancel()` stops new ingestion/submission, drains already-submitted batches, and then permanently fails remaining local non-terminal items
+
+Provider-side remote cancellation is still not implemented.
 
 ## Structured outputs
 
@@ -121,15 +155,18 @@ If parsing fails, the item records a structured-output failure instead of silent
 The Python API is the main product surface. It supports:
 
 - in-memory, SQLite, and Postgres control-plane storage
-- custom item iterables and built-in file sources
+- custom item iterables and built-in deterministic file sources
 - custom artifact roots
 - direct access to `Run`
+- run control and incremental terminal-result APIs
 
 The CLI is intentionally narrower. It is designed for operator workflows around:
 
 - CSV and JSONL files
 - SQLite durability
 - JSON summaries and result export
+
+The CLI does not yet expose pause/resume/cancel or incremental terminal-result commands.
 
 If you need custom providers, custom sources, or tighter application integration, use the Python API.
 

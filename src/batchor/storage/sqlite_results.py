@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from sqlalchemy import and_, bindparam, func, select, update
 
+from batchor.core.enums import ItemStatus
 from batchor.core.models import ItemFailure, RunSummary
 from batchor.runtime.retry import compute_backoff_delay
 from batchor.storage.sqlite_codec import (
@@ -42,6 +43,8 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
             )
             .values(
                 status=self.TERMINAL_ITEM_STATUS_COMPLETED,
+                terminal_result_sequence=bindparam("b_terminal_result_sequence"),
+                terminalized_at=bindparam("b_terminalized_at"),
                 output_text=bindparam("b_output_text"),
                 output_json=bindparam("b_output_json"),
                 raw_response_json=bindparam("b_raw_response_json"),
@@ -52,19 +55,23 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
             )
         )
         with self.engine.begin() as conn:
+            next_sequence = self._next_terminal_sequence(conn, run_id)
+            terminalized_at = _encode_datetime(self._now())
             conn.execute(
                 statement,
                 [
                     {
                         "b_run_id": run_id,
                         "b_custom_id": completion.custom_id,
+                        "b_terminal_result_sequence": next_sequence + index,
+                        "b_terminalized_at": terminalized_at,
                         "b_output_text": completion.output_text,
                         "b_output_json": _encode_json(completion.output_json)
                         if completion.output_json is not None
                         else None,
                         "b_raw_response_json": _encode_json(completion.raw_response),
                     }
-                    for completion in completions
+                    for index, completion in enumerate(completions)
                 ],
             )
 
@@ -79,6 +86,8 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
             return
         with self.engine.begin() as conn:
             custom_ids = [failure.custom_id for failure in failures]
+            next_sequence = self._next_terminal_sequence(conn, run_id)
+            terminalized_at = _encode_datetime(self._now())
             rows = conn.execute(
                 select(
                     ITEMS_TABLE.c.item_id,
@@ -99,21 +108,30 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                 for row in rows
             }
             payloads: list[dict[str, object | None]] = []
-            for failure in failures:
+            for index, failure in enumerate(failures):
                 current = attempts_by_custom_id[failure.custom_id]
                 attempt_count = int(current["attempt_count"])
                 if failure.count_attempt:
                     attempt_count += 1
+                status = _failed_status(
+                    attempt_count=attempt_count,
+                    error=failure.error,
+                    max_attempts=max_attempts,
+                    count_attempt=failure.count_attempt,
+                )
                 payloads.append(
                     {
                         "b_run_id": run_id,
                         "b_item_id": str(current["item_id"]),
                         "b_attempt_count": attempt_count,
-                        "b_status": _failed_status(
-                            attempt_count=attempt_count,
-                            error=failure.error,
-                            max_attempts=max_attempts,
-                            count_attempt=failure.count_attempt,
+                        "b_status": status,
+                        "b_terminal_result_sequence": (
+                            next_sequence + index
+                            if status in self.TERMINAL_ITEM_STATUSES
+                            else None
+                        ),
+                        "b_terminalized_at": (
+                            terminalized_at if status in self.TERMINAL_ITEM_STATUSES else None
                         ),
                         "b_error_json": _encode_json(serialize_item_failure(failure.error)),
                     }
@@ -129,6 +147,8 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                 .values(
                     attempt_count=bindparam("b_attempt_count"),
                     status=bindparam("b_status"),
+                    terminal_result_sequence=bindparam("b_terminal_result_sequence"),
+                    terminalized_at=bindparam("b_terminalized_at"),
                     error_json=bindparam("b_error_json"),
                     active_batch_id=None,
                     active_custom_id=None,
@@ -148,6 +168,8 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
             return
         with self.engine.begin() as conn:
             item_ids = [failure.item_id for failure in failures]
+            next_sequence = self._next_terminal_sequence(conn, run_id)
+            terminalized_at = _encode_datetime(self._now())
             rows = conn.execute(
                 select(
                     ITEMS_TABLE.c.item_id,
@@ -164,20 +186,29 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                 for row in rows
             }
             payloads: list[dict[str, object | None]] = []
-            for failure in failures:
+            for index, failure in enumerate(failures):
                 attempt_count = attempts_by_item_id[failure.item_id]
                 if failure.count_attempt:
                     attempt_count += 1
+                status = _failed_status(
+                    attempt_count=attempt_count,
+                    error=failure.error,
+                    max_attempts=max_attempts,
+                    count_attempt=failure.count_attempt,
+                )
                 payloads.append(
                     {
                         "b_run_id": run_id,
                         "b_item_id": failure.item_id,
                         "b_attempt_count": attempt_count,
-                        "b_status": _failed_status(
-                            attempt_count=attempt_count,
-                            error=failure.error,
-                            max_attempts=max_attempts,
-                            count_attempt=failure.count_attempt,
+                        "b_status": status,
+                        "b_terminal_result_sequence": (
+                            next_sequence + index
+                            if status in self.TERMINAL_ITEM_STATUSES
+                            else None
+                        ),
+                        "b_terminalized_at": (
+                            terminalized_at if status in self.TERMINAL_ITEM_STATUSES else None
                         ),
                         "b_error_json": _encode_json(serialize_item_failure(failure.error)),
                     }
@@ -193,6 +224,8 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                 .values(
                     attempt_count=bindparam("b_attempt_count"),
                     status=bindparam("b_status"),
+                    terminal_result_sequence=bindparam("b_terminal_result_sequence"),
+                    terminalized_at=bindparam("b_terminalized_at"),
                     error_json=bindparam("b_error_json"),
                     active_batch_id=None,
                     active_custom_id=None,
@@ -315,3 +348,71 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
     def get_item_records(self, *, run_id: str) -> list[PersistedItemRecord]:
         with self.engine.begin() as conn:
             return self._item_records_for_run(conn, run_id)
+
+    def mark_nonterminal_items_cancelled(
+        self,
+        *,
+        run_id: str,
+        error: ItemFailure,
+    ) -> int:
+        with self.engine.begin() as conn:
+            rows = list(
+                conn.execute(
+                    select(ITEMS_TABLE.c.item_id).where(
+                        and_(
+                            ITEMS_TABLE.c.run_id == run_id,
+                            ITEMS_TABLE.c.status.in_(
+                                (
+                                    self.ACTIVE_ITEM_STATUS_PENDING,
+                                    ItemStatus.QUEUED_LOCAL,
+                                    ItemStatus.FAILED_RETRYABLE,
+                                )
+                            ),
+                        )
+                    )
+                ).mappings()
+            )
+            if not rows:
+                return 0
+            next_sequence = self._next_terminal_sequence(conn, run_id)
+            terminalized_at = _encode_datetime(self._now())
+            statement = (
+                update(ITEMS_TABLE)
+                .where(
+                    and_(
+                        ITEMS_TABLE.c.run_id == bindparam("b_run_id"),
+                        ITEMS_TABLE.c.item_id == bindparam("b_item_id"),
+                    )
+                )
+                .values(
+                    status=ItemStatus.FAILED_PERMANENT,
+                    error_json=bindparam("b_error_json"),
+                    terminal_result_sequence=bindparam("b_terminal_result_sequence"),
+                    terminalized_at=bindparam("b_terminalized_at"),
+                    active_batch_id=None,
+                    active_custom_id=None,
+                    active_submission_tokens=0,
+                )
+            )
+            conn.execute(
+                statement,
+                [
+                    {
+                        "b_run_id": run_id,
+                        "b_item_id": str(row["item_id"]),
+                        "b_error_json": _encode_json(serialize_item_failure(error)),
+                        "b_terminal_result_sequence": next_sequence + index,
+                        "b_terminalized_at": terminalized_at,
+                    }
+                    for index, row in enumerate(rows)
+                ],
+            )
+            return len(rows)
+
+    def _next_terminal_sequence(self, conn, run_id: str) -> int:  # noqa: ANN001
+        current = conn.execute(
+            select(func.coalesce(func.max(ITEMS_TABLE.c.terminal_result_sequence), 0)).where(
+                ITEMS_TABLE.c.run_id == run_id
+            )
+        ).scalar_one()
+        return int(current) + 1

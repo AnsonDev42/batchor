@@ -7,6 +7,8 @@ It is designed for operator workflows around:
 - file-backed inputs only
 - CSV and JSONL only
 - SQLite-backed durable runs only
+- no pause/resume/cancel commands yet
+- no incremental terminal-result export commands yet
 
 It supports both text jobs and structured-output jobs. Structured output requires an importable module-level Pydantic model class.
 

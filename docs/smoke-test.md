@@ -52,6 +52,7 @@ Expected:
 - coverage gate passes at `85%` or higher
 - MkDocs builds without missing pages or bad internal references
 - sdist and wheel both build successfully
+- current durable features remain covered, including deterministic source checkpoints, run control, incremental terminal-result APIs, and artifact-retention policy wiring
 
 GitHub pull request CI runs the main smoke across Python `3.12` and `3.13`, builds the docs site in a dedicated docs job, and runs packaging in a dedicated Python `3.13` build job so each validation path stays explicit.
 
@@ -71,10 +72,15 @@ Expected:
 - durable `Run` lifecycle still works
 - subprocess crash + resume can recover `queued_local` work and replay persisted request artifacts
 - replaying multiple items from the same persisted request artifact does not require rereading that artifact file for each item
-- file-backed ingestion can resume from a persisted checkpoint when rerun with the same `run_id`
+- deterministic source ingestion can resume from a persisted checkpoint when rerun with the same `run_id`
+- Parquet source adapters can resume from opaque checkpoints and project only required columns
 - retry/resume from persisted request artifacts still works for SQLite-backed runs
 - transient batch-poll failures do not block unrelated pending submissions from being sent when capacity remains
+- paused runs stop polling/submission until resumed
+- cancelled runs drain already-submitted work and mark remaining local items as `run_cancelled`
+- incremental terminal-result reads/exports remain sequence-based and idempotent across repeated calls
 - raw output/error artifacts can be exported and require export before raw pruning
+- raw output/error artifact persistence can be disabled without breaking parsed terminal results or request-artifact replay
 - terminal runs, including `completed_with_failures`, can prune request artifacts without losing persisted results
 - shared storage-contract behavior remains aligned across SQLite and opt-in Postgres
 - OpenAI request splitting and enqueue-limit logic still behave as expected

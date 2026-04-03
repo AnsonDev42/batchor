@@ -40,6 +40,9 @@ Prepared request rows are written to durable JSONL artifacts before upload. The 
 
 That enables retry and fresh-process resume to replay the exact prepared request body without rebuilding the prompt from the original item payload or source file.
 
+The runner now owns request JSONL serialization and stages a local copy from the artifact store for provider upload. The provider contract builds request rows and uploads local files, but it no longer owns durable request-file writes.
+Once those request-artifact pointers exist, the control-plane store can aggressively shed large inline prompt/request-building fields and rely on the artifact for retry/resume replay.
+
 Important consequences:
 
 - the runner owns durable request-file writes
@@ -47,11 +50,12 @@ Important consequences:
 - retries can survive failures that happen after artifact persistence but before durable batch registration
 - shared request-artifact contents are cached within one refresh/submission cycle to avoid repeated rereads
 
-Before request artifacts exist, built-in CSV and JSONL sources can resume ingestion from a persisted source checkpoint when the caller re-enters `start(job, run_id=...)` with the same file and config.
+Before request artifacts exist, built-in deterministic sources can resume ingestion from a persisted source checkpoint when the caller re-enters `start(job, run_id=...)` with the same source identity and config.
+That currently includes CSV, JSONL, and Parquet. Custom non-file sources must implement a durable checkpoint contract explicitly; arbitrary iterables and live DB cursors are still `TBD`.
 
 ## Raw output retention
 
-When OpenAI output or error files are downloaded, `batchor` persists them as raw artifacts.
+When OpenAI output or error files are downloaded, `batchor` persists them as raw artifacts unless the run opts out through `ArtifactPolicy(persist_raw_output_artifacts=False)`.
 
 These files are meant to support:
 
@@ -67,6 +71,7 @@ Terminal runs may end as either:
 - `completed_with_failures`
 
 Both are considered exportable and prunable terminal outcomes.
+When raw retention is enabled, those files are only prunable after `Run.export_artifacts(...)` has been called.
 
 ## Response parsing
 
@@ -152,6 +157,16 @@ Cleanup behavior:
 - if upload succeeds but batch creation fails, `batchor` makes a best-effort attempt to delete the uploaded OpenAI input file
 - if a process dies after local artifact persistence but before durable batch registration, fresh-process resume requeues those items and resubmits from persisted request artifacts
 
+## Run control
+
+Run control is local control-plane state, not a separate OpenAI provider feature:
+
+- `pause` stops new ingestion, new submission, and provider polling
+- `resume` restarts those local activities
+- `cancel` stops new ingestion/submission, continues polling already-submitted batches, and then marks any remaining local non-terminal items as `run_cancelled`
+
+Provider-side remote batch cancellation is not implemented in v1.
+
 ## Current limits
 
 - only the built-in OpenAI Batch provider path is implemented
@@ -163,4 +178,5 @@ Cleanup behavior:
 - exact behavior doc for provider-specific retry classification
 - multi-endpoint OpenAI capability matrix
 - remote/object-store artifact backend
+- provider-side remote cancellation
 - richer metrics/export integrations beyond the current callback-based observability hooks

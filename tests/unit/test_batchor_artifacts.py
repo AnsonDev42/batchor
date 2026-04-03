@@ -26,6 +26,17 @@ def test_local_artifact_store_write_stage_export_and_delete(tmp_path: Path) -> N
     assert (tmp_path / "artifacts" / "run_1" / "requests").exists() is False
 
 
+def test_local_artifact_store_restricts_permissions(tmp_path: Path) -> None:
+    store = LocalArtifactStore(tmp_path / "artifacts")
+    store.write_text("run_1/requests/file.jsonl", '{"hello":"world"}\n')
+
+    root_mode = store.root.stat().st_mode & 0o777
+    file_mode = (store.root / "run_1" / "requests" / "file.jsonl").stat().st_mode & 0o777
+
+    assert root_mode == 0o700
+    assert file_mode == 0o600
+
+
 @pytest.mark.parametrize(
     "key",
     [
