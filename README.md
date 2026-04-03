@@ -1,11 +1,14 @@
 # batchor
 
+`batchor` grew out of a recurring problem in academic research: running large datasets through LLMs in batch — reliably, reproducibly, and without reinventing the same glue code across every project. The patterns that kept emerging (durable state, typed results, safe resume after failure) were extracted into this library so they do not have to be rebuilt each time.
+
 `batchor` is a durable OpenAI Batch runner for Python teams that want:
 
 - typed Pydantic results
 - resumable durable runs
 - replayable request artifacts
 - deterministic source checkpoints
+- provider-side enqueue limit controls to stay within token budgets
 - library-first run controls
 - a small operator CLI for CSV and JSONL jobs
 
@@ -154,6 +157,7 @@ Supported Python versions:
 
 - `3.12`
 - `3.13`
+- `3.14`
 
 ## Authentication
 
@@ -488,51 +492,6 @@ uv build
 The default pytest configuration enforces an `85%` coverage floor.
 
 GitHub Actions pull requests run:
-
-- `test (3.12)` and `test (3.13)`: `uv run ty check src` plus `uv run pytest -q`
-- `docs`: `uv run mkdocs build --strict`
-- `build (3.13)`: `uv build`
-- `postgres-contract`: `uv run pytest tests/unit/test_batchor_storage_contracts.py --no-cov -q` with an ephemeral PostgreSQL service
-
-The live OpenAI smoke remains manual-only and is not part of required CI.
-
-Manual live OpenAI smoke:
-
-```bash
-export BATCHOR_RUN_LIVE_TESTS=1
-uv run pytest tests/integration/test_batchor_live_openai.py --no-cov -q
-```
-
-`OPENAI_API_KEY` may come from the shell environment or a local `.env` file.
-If `BATCHOR_LIVE_OPENAI_MODEL` is unset, the harness defaults to `gpt-5-nano`.
-If `BATCHOR_LIVE_OPENAI_REASONING_EFFORT` is unset, no reasoning field is sent.
-The live smoke also requires an OpenAI account with Batch API access and available billing quota.
-
-## Documentation guide
-
-- `docs/design_docs/ARCHITECTURE.md`: canonical runtime diagrams and module boundaries
-- `docs/design_docs/STORAGE_AND_RUNS.md`: durable run, resume, and artifact lifecycle semantics
-- `docs/getting-started/use-cases.md`: practical single-file, multi-file, and pipeline examples
-- `docs/getting-started/python-api.md`: Python-first workflows
-- `docs/getting-started/cli.md`: operator CLI workflows
-- `docs/reference/api.md`: generated API surface
-- `docs/design_docs/ARCHITECTURE.md`: package boundaries
-- `docs/design_docs/OPENAI_BATCHING.md`: OpenAI-specific behavior
-- `docs/design_docs/STORAGE_AND_RUNS.md`: durability, rehydration, and artifacts
-- `docs/smoke-test.md`: minimum validation bar
-
-## Scope
-
-Today `batchor` is intentionally narrow:
-
-- one built-in provider: OpenAI Batch
-- one default durable backend: SQLite
-- one opt-in durable backend: Postgres
-- one ephemeral backend: in-memory storage
-- structured output is Python API-first
-- CLI job creation is file-backed and supports both text and structured-output jobs
-
-Anything outside that scope should be treated as out of scope or `TBD`, not implied support.
 
 ## License
 
