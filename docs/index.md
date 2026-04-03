@@ -5,6 +5,7 @@
 `batchor` is a durable OpenAI Batch runner for Python teams that want typed results, resumable runs, replayable artifacts, and a narrow operator CLI.
 
 [Get Started](getting-started/installation.md){ .md-button .md-button--primary }
+[Use Cases](getting-started/use-cases.md){ .md-button }
 [Architecture](design_docs/ARCHITECTURE.md){ .md-button }
 [Read The API](reference/api.md){ .md-button }
 
@@ -66,6 +67,7 @@ If that is the mental model you were missing from the generated docs, start with
 ## Reading order
 
 - Start with [Installation](getting-started/installation.md) if you are evaluating the package.
+- Read [Use Cases](getting-started/use-cases.md) for concrete single-file, multi-file, and pipeline-style examples.
 - Read [Architecture](design_docs/ARCHITECTURE.md) for the runtime model and canonical diagrams.
 - Read [Storage & Runs](design_docs/STORAGE_AND_RUNS.md) for durable-run, resume, and artifact semantics.
 - Use [Python API](getting-started/python-api.md) or [CLI Usage](getting-started/cli.md) for concrete workflows.

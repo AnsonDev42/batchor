@@ -7,6 +7,7 @@ This page explains what each document is for so readers do not have to guess whi
 | Doc | Purpose |
 | --- | --- |
 | `index.md` | Landing page and reading order. |
+| `getting-started/use-cases.md` | Practical end-to-end examples for common `batchor` workflows. |
 | `getting-started/python-api.md` | End-to-end Python usage patterns. |
 | `getting-started/cli.md` | Operator CLI behavior and examples. |
 | `reference/api.md` | Public symbols and generated API reference. |
@@ -30,13 +31,6 @@ This page explains what each document is for so readers do not have to guess whi
 | `policies/support.md` | Published support policy for the latest released `0.x` minor. |
 | `policies/versioning.md` | Versioning expectations for the Python API and CLI. |
 | `policies/contributing.md` | Contribution guidance. |
-
-## Planning docs
-
-| Doc | Purpose |
-| --- | --- |
-| `plans/README.md` | Index of forward-looking implementation plans for future agents. |
-| `plans/DURABLE_EXECUTION_BOUNDARY.md` | Proposed boundary between `batchor`, SQLite, and user pipelines for durable retry/resume. |
 
 ## Recent implementation areas
 

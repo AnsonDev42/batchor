@@ -1,6 +1,7 @@
 # batchor Plans
 
-This folder holds forward-looking plans that are not implemented yet, but should guide future agents and implementation work.
+This folder holds forward-looking plans that are not implemented yet, but should
+guide future agents and implementation work.
 
 ## Plan Map
 

@@ -13,6 +13,9 @@ Most applications follow this shape:
 5. Inspect `Run.summary()` while in flight.
 6. Call terminal `Run.results()` when the run finishes.
 
+If you want copy-pasteable end-to-end examples first, start with
+[Use Cases](use-cases.md) and then come back here for the broader API surface.
+
 ## Minimal text job
 
 ```python
@@ -342,6 +345,7 @@ This policy is library-first in the current release; the CLI still uses the defa
 
 ## Which API should you read next?
 
+- Read [Use Cases](use-cases.md) for practical single-file, multi-file, and pipeline patterns.
 - Read [Architecture](../design_docs/ARCHITECTURE.md) if you want the canonical runtime diagrams.
 - Read [API Reference](../reference/api.md) for exact signatures.
 - Read [Storage & Runs](../design_docs/STORAGE_AND_RUNS.md) if you are operating durable runs at scale.

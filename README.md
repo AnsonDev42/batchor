@@ -512,6 +512,7 @@ The live smoke also requires an OpenAI account with Batch API access and availab
 
 - `docs/design_docs/ARCHITECTURE.md`: canonical runtime diagrams and module boundaries
 - `docs/design_docs/STORAGE_AND_RUNS.md`: durable run, resume, and artifact lifecycle semantics
+- `docs/getting-started/use-cases.md`: practical single-file, multi-file, and pipeline examples
 - `docs/getting-started/python-api.md`: Python-first workflows
 - `docs/getting-started/cli.md`: operator CLI workflows
 - `docs/reference/api.md`: generated API surface
