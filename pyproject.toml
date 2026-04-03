@@ -7,13 +7,36 @@ name = "batchor"
 version = "0.1.0"
 description = "Structured-first OpenAI Batch runner with typed Pydantic results."
 readme = "README.md"
-requires-python = ">=3.13,<3.14"
+license = { file = "LICENSE" }
+requires-python = ">=3.12,<4"
 dependencies = [
     "openai>=2.7.1",
     "pydantic>=2.12.0,<3",
     "sqlalchemy>=2.0.43,<3",
     "tiktoken>=0.12.0",
+    "typer>=0.16.0,<1",
+    "python-dotenv>=1.0.1,<2",
 ]
+keywords = ["openai", "batch", "sqlite", "cli", "pydantic"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Documentation = "https://github.com/yaowenshen/batchor#readme"
+Repository = "https://github.com/yaowenshen/batchor"
+Issues = "https://github.com/yaowenshen/batchor/issues"
+
+[project.scripts]
+batchor = "batchor.cli:app"
 
 [dependency-groups]
 dev = [
@@ -32,6 +55,7 @@ pythonpath = ["src"]
 markers = [
     "unit: fast isolated tests",
     "integration: fake-provider and multi-component tests",
+    "live: manual live-provider smoke tests that require OpenAI credentials",
 ]
 
 [tool.ty.environment]

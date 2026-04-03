@@ -30,6 +30,10 @@ class ProviderConfig(ABC):
     def to_payload(self) -> JSONObject:
         """Serialize provider-specific config to JSON for durable storage."""
 
+    def to_public_payload(self) -> JSONObject:
+        """Serialize provider config without secret material for durable storage."""
+        return self.to_payload()
+
 
 class BatchProvider(ABC):
     @abstractmethod
@@ -50,6 +54,9 @@ class BatchProvider(ABC):
 
     @abstractmethod
     def upload_input_file(self, input_path: str | Path) -> str: ...
+
+    @abstractmethod
+    def delete_input_file(self, file_id: str) -> None: ...
 
     @abstractmethod
     def create_batch(

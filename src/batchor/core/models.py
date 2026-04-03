@@ -5,7 +5,14 @@ from typing import TYPE_CHECKING, Callable, Generic, TypeAlias, TypeVar
 
 from pydantic import BaseModel
 
-from batchor.core.enums import ItemStatus, OpenAIEndpoint, ProviderKind, RunLifecycleStatus
+from batchor.core.enums import (
+    ItemStatus,
+    OpenAIEndpoint,
+    OpenAIModel,
+    OpenAIReasoningEffort,
+    ProviderKind,
+    RunLifecycleStatus,
+)
 from batchor.core.types import JSONObject, JSONValue
 from batchor.providers.base import ProviderConfig
 
@@ -33,6 +40,8 @@ class PromptParts:
 
 PromptBuilder: TypeAlias = Callable[[BatchItem[PayloadT]], PromptParts | str]
 BatchItems: TypeAlias = "Iterable[BatchItem[PayloadT]] | ItemSource[PayloadT]"
+OpenAIModelName: TypeAlias = OpenAIModel | str
+OpenAIReasoningLevel: TypeAlias = OpenAIReasoningEffort | str
 
 
 @dataclass(frozen=True)
@@ -103,12 +112,13 @@ class OpenAIEnqueueLimitConfig:
 
 @dataclass(frozen=True)
 class OpenAIProviderConfig(ProviderConfig):
-    api_key: str
-    model: str
+    model: OpenAIModelName
+    api_key: str = ""
     endpoint: OpenAIEndpoint = OpenAIEndpoint.RESPONSES
     completion_window: str = "24h"
     request_timeout_sec: int = 30
     poll_interval_sec: float = 1.0
+    reasoning_effort: OpenAIReasoningLevel | None = None
     enqueue_limits: OpenAIEnqueueLimitConfig = field(
         default_factory=OpenAIEnqueueLimitConfig
     )
@@ -131,17 +141,24 @@ class OpenAIProviderConfig(ProviderConfig):
             "completion_window": self.completion_window,
             "request_timeout_sec": self.request_timeout_sec,
             "poll_interval_sec": self.poll_interval_sec,
+            "reasoning_effort": self.reasoning_effort,
             "enqueue_limits": self.enqueue_limits.to_payload(),
         }
 
+    def to_public_payload(self) -> JSONObject:
+        payload = self.to_payload()
+        payload.pop("api_key", None)
+        return payload
+
     @classmethod
     def from_payload(cls, payload: JSONObject) -> OpenAIProviderConfig:
-        api_key = payload.get("api_key")
+        api_key = payload.get("api_key", "")
         model = payload.get("model")
         endpoint = payload.get("endpoint", OpenAIEndpoint.RESPONSES.value)
         completion_window = payload.get("completion_window", "24h")
         request_timeout_sec = payload.get("request_timeout_sec", 30)
         poll_interval_sec = payload.get("poll_interval_sec", 1.0)
+        reasoning_effort = payload.get("reasoning_effort")
         enqueue_limits = payload.get("enqueue_limits", {})
         if not isinstance(api_key, str):
             raise TypeError("api_key must be a string")
@@ -155,6 +172,8 @@ class OpenAIProviderConfig(ProviderConfig):
             raise TypeError("request_timeout_sec must be an int")
         if not isinstance(poll_interval_sec, int | float):
             raise TypeError("poll_interval_sec must be numeric")
+        if reasoning_effort is not None and not isinstance(reasoning_effort, str):
+            raise TypeError("reasoning_effort must be a string when provided")
         if not isinstance(enqueue_limits, dict):
             raise TypeError("enqueue_limits must be a JSON object")
         return cls(
@@ -164,6 +183,7 @@ class OpenAIProviderConfig(ProviderConfig):
             completion_window=completion_window,
             request_timeout_sec=request_timeout_sec,
             poll_interval_sec=float(poll_interval_sec),
+            reasoning_effort=reasoning_effort,
             enqueue_limits=OpenAIEnqueueLimitConfig.from_payload(enqueue_limits),
         )
 
@@ -254,6 +274,14 @@ class RunSummary:
     status_counts: dict[ItemStatus, int]
     active_batches: int
     backoff_remaining_sec: float
+
+
+@dataclass(frozen=True)
+class RunEvent:
+    event_type: str
+    run_id: str
+    provider_kind: ProviderKind | None = None
+    data: JSONObject = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

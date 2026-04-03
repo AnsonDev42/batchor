@@ -12,7 +12,7 @@ from batchor.providers.registry import ProviderRegistry, build_default_provider_
 from batchor.storage.sqlite_lifecycle import SQLiteLifecycleMixin
 from batchor.storage.sqlite_queries import SQLiteQueryMixin
 from batchor.storage.sqlite_results import SQLiteResultsMixin
-from batchor.storage.sqlite_schema import METADATA
+from batchor.storage.sqlite_schema import METADATA, SQLITE_SCHEMA_VERSION, STORAGE_METADATA_TABLE
 from batchor.storage.state import StateStore
 
 
@@ -54,6 +54,16 @@ class SQLiteStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin, 
     @property
     def artifact_root(self) -> Path:
         return self.path.parent / f"{self.path.stem}_artifacts"
+
+    @property
+    def schema_version(self) -> int:
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                STORAGE_METADATA_TABLE.select().where(STORAGE_METADATA_TABLE.c.key == "schema_version")
+            ).mappings().first()
+            if row is None:
+                return SQLITE_SCHEMA_VERSION
+            return int(row["value"])
 
     def __del__(self) -> None:
         try:

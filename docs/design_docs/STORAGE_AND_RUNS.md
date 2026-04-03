@@ -26,7 +26,7 @@ SQLite is the default durable backend.
 
 Current storage responsibilities include:
 
-- persisting run config
+- persisting public run config
 - persisting file-source ingest checkpoints when available
 - persisting item state and attempts
 - persisting submitted batch metadata
@@ -34,8 +34,13 @@ Current storage responsibilities include:
 - persisting batch output/error artifact pointers for raw provider payload retention
 - persisting provider outputs/errors needed for rehydration
 - reconstructing structured results on reload
+- persisting SQLite storage metadata such as schema version
 
 For SQLite-backed runs, replayable request JSONL artifacts are stored durably beside the database under a sibling `*_artifacts/` directory. SQLite remains the control-plane ledger and stores item-to-artifact pointers rather than treating the database itself as the long-term request file store.
+
+For provider configs that contain secrets, SQLite stores the public provider config only. Runtime credential lookup must come from the explicit in-memory config or ambient environment when a rehydrated run needs to talk to the provider again.
+
+`SQLiteStorage.schema_version` exposes the effective schema version after startup checks. Current migration behavior is additive at startup; see `docs/design_docs/STORAGE_MIGRATIONS.md` for guidance and limits.
 
 In-memory storage exists for tests and short-lived local runs.
 
@@ -54,6 +59,7 @@ For the built-in CSV and JSONL sources, storage now also persists a source check
 - file-backed ingestion resume expects the caller to reuse the same `run_id` and provide the same source file contents
 - structured output rehydration requires importable model classes
 - if a model class cannot be resolved, `batchor` raises a clear model-resolution error
+- resume compatibility ignores non-persisted secret fields such as provider API keys
 
 Once an item has a durable request artifact pointer, `batchor` may prune large inline request-building fields from SQLite and rely on the artifact for later retries.
 
@@ -72,6 +78,5 @@ Raw output/error artifacts follow a stricter rule: users must call `Run.export_a
 
 - Postgres backend and migration story
 - automated retention windows and archive/export workflow beyond explicit manual export + prune
-- explicit schema migration/versioning guidance
 - partial-result read APIs for non-terminal runs
 - resumable ingestion for non-file/custom sources

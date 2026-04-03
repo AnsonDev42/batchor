@@ -74,3 +74,37 @@ def test_parse_structured_response_rejects_validation_error() -> None:
 
 def test_parse_text_response_returns_plain_text() -> None:
     assert parse_text_response(_responses_record("plain text")) == "plain text"
+
+
+def test_parse_text_response_joins_multiple_response_blocks() -> None:
+    record = {
+        "response": {
+            "body": {
+                "output": [
+                    {"content": [{"type": "output_text", "text": "hello"}]},
+                    {"content": [{"type": "output_text", "text": "world"}]},
+                ]
+            }
+        }
+    }
+    assert parse_text_response(record) == "hello\nworld"
+
+
+def test_parse_text_response_supports_chat_content_lists() -> None:
+    record = {
+        "response": {
+            "body": {
+                "choices": [
+                    {
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": "alpha"},
+                                {"type": "text", "text": {"value": "beta"}},
+                            ]
+                        }
+                    }
+                ]
+            }
+        }
+    }
+    assert parse_text_response(record) == "alpha\nbeta"

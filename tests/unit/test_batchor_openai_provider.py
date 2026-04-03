@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from pydantic import BaseModel
 
-from batchor.core.enums import OpenAIEndpoint
+from batchor.core.enums import OpenAIEndpoint, OpenAIModel, OpenAIReasoningEffort
 from batchor.core.models import OpenAIProviderConfig, PromptParts
-from batchor.providers.openai import OpenAIBatchProvider
+from batchor.providers.openai import OpenAIBatchProvider, resolve_openai_api_key
 from batchor.providers.base import StructuredOutputSchema
 from batchor.runtime.validation import model_output_schema
 
@@ -19,6 +20,7 @@ class _ClassificationResult(BaseModel):
 class _FakeFiles:
     def __init__(self) -> None:
         self.created: list[tuple[str, bytes]] = []
+        self.deleted: list[str] = []
         text_content = type("TextContent", (), {"text": "hello"})()
 
         class _ByteContent:
@@ -36,6 +38,9 @@ class _FakeFiles:
 
     def content(self, file_id: str):  # noqa: ANN001
         return self.contents[file_id]
+
+    def delete(self, file_id: str):  # noqa: ANN001
+        self.deleted.append(file_id)
 
 
 class _FakeBatches:
@@ -89,6 +94,22 @@ def test_build_request_line_for_chat_completions_with_system_prompt() -> None:
     assert line["body"]["response_format"]["json_schema"]["name"] == "classification_result"
 
 
+def test_build_request_line_for_responses_can_include_reasoning_effort() -> None:
+    provider = OpenAIBatchProvider(
+        OpenAIProviderConfig(
+            api_key="k",
+            model=OpenAIModel.GPT_5_NANO,
+            reasoning_effort=OpenAIReasoningEffort.MINIMAL,
+        ),
+        client=_FakeClient(),
+    )
+    line = provider.build_request_line(
+        custom_id="abc",
+        prompt_parts=PromptParts(prompt="hello"),
+    )
+    assert line["body"]["reasoning"] == {"effort": "minimal"}
+
+
 def test_write_requests_jsonl_and_parse_batch_output(tmp_path: Path) -> None:
     provider = OpenAIBatchProvider(
         OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
@@ -127,3 +148,29 @@ def test_upload_create_get_and_download() -> None:
     assert fetched["status"] == "completed"
     assert provider.download_file_content("file_text") == "hello"
     assert provider.download_file_content("file_bytes") == "hello"
+    provider.delete_input_file(uploaded)
+    assert fake.files.deleted == ["file_123"]
+
+
+def test_resolve_openai_api_key_prefers_explicit_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    resolved = resolve_openai_api_key(
+        OpenAIProviderConfig(api_key="explicit-key", model="gpt-4.1")
+    )
+    assert resolved == "explicit-key"
+
+
+def test_resolve_openai_api_key_falls_back_to_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    resolved = resolve_openai_api_key(OpenAIProviderConfig(model="gpt-4.1"))
+    assert resolved == "env-key"
+
+
+def test_resolve_openai_api_key_requires_explicit_or_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="OpenAI API key is required"):
+        resolve_openai_api_key(OpenAIProviderConfig(model="gpt-4.1"))
