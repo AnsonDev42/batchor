@@ -78,7 +78,6 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
             )
             if items:
                 conn.execute(ITEMS_TABLE.insert(), self._item_rows(run_id=run_id, items=items))
-            self._refresh_run_status(conn, run_id)
 
     def append_items(
         self,
@@ -90,7 +89,6 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
             return
         with self.engine.begin() as conn:
             conn.execute(ITEMS_TABLE.insert(), self._item_rows(run_id=run_id, items=items))
-            self._refresh_run_status(conn, run_id)
 
     def set_ingest_checkpoint(
         self,
@@ -172,7 +170,6 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                 )
                 .values(status=ItemStatus.QUEUED_LOCAL)
             )
-            self._refresh_run_status(conn, run_id)
             return [
                 ClaimedItem(
                     item_id=str(row["item_id"]),
@@ -202,7 +199,6 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                 )
                 .values(status=ItemStatus.PENDING)
             )
-            self._refresh_run_status(conn, run_id)
 
     def requeue_local_items(self, *, run_id: str) -> int:
         with self.engine.begin() as conn:
@@ -235,7 +231,6 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                     active_submission_tokens=0,
                 )
             )
-            self._refresh_run_status(conn, run_id)
             return row_count
 
     def register_batch(
@@ -262,7 +257,6 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                     }
                 ],
             )
-            self._refresh_run_status(conn, run_id)
 
     def mark_items_submitted(
         self,
@@ -303,7 +297,6 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                     for submission in submissions
                 ],
             )
-            self._refresh_run_status(conn, run_id)
 
     def update_batch_status(
         self,
@@ -315,6 +308,24 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
         error_file_id: str | None = None,
     ) -> None:
         with self.engine.begin() as conn:
+            current = conn.execute(
+                select(
+                    BATCHES_TABLE.c.status,
+                    BATCHES_TABLE.c.output_file_id,
+                    BATCHES_TABLE.c.error_file_id,
+                ).where(
+                    and_(
+                        BATCHES_TABLE.c.run_id == run_id,
+                        BATCHES_TABLE.c.provider_batch_id == provider_batch_id,
+                    )
+                )
+            ).mappings().one()
+            if (
+                str(current["status"]) == status
+                and _nullable_str(current["output_file_id"]) == output_file_id
+                and _nullable_str(current["error_file_id"]) == error_file_id
+            ):
+                return
             conn.execute(
                 update(BATCHES_TABLE)
                 .where(
@@ -329,7 +340,6 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                     error_file_id=error_file_id,
                 )
             )
-            self._refresh_run_status(conn, run_id)
 
     def record_request_artifacts(
         self,
@@ -370,7 +380,6 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                     for pointer in pointers
                 ],
             )
-            self._refresh_run_status(conn, run_id)
 
     def clear_request_artifact_pointers(
         self,
@@ -410,7 +419,6 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                     request_sha256=None,
                 )
             )
-            self._refresh_run_status(conn, run_id)
             return row_count
 
     def record_batch_artifacts(

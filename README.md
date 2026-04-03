@@ -10,6 +10,9 @@
 - durable `Run` handles with rehydration through local storage
 - typed structured-output parsing for Python API users
 - replayable request artifacts plus explicit export/prune lifecycle for terminal runs, including partial-failure runs
+- bounded submission prefetch so large runs do not claim the full pending queue up front
+- bounded concurrent batch polling/downloads plus transient poll failures that do not stall unrelated submissions
+- SQLite hot-path indexes and WAL-mode defaults for better local durability throughput
 - Typer-based CLI for CSV/JSONL text jobs and run operations
 
 The current built-in implementations are:
@@ -185,6 +188,7 @@ run = runner.start(
 ```
 
 If the source file and job config still match the persisted checkpoint, rerunning `start(job, run_id=...)` resumes from the last durable source position instead of duplicating previously materialized items.
+For JSONL inputs, resume now skips JSON decoding for already-checkpointed rows while scanning forward.
 
 ## CLI Quickstart
 

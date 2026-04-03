@@ -79,6 +79,7 @@ class BatchRunner:
             else Path(tempfile.gettempdir()) / "batchor"
         )
         self._contexts: dict[str, _RunContext] = {}
+        self._request_artifact_cache: dict[str, list[str]] = {}
 
     def start(
         self,
@@ -557,7 +558,13 @@ class BatchRunner:
             return prompt_value
         return PromptParts(prompt=str(prompt_value))
 
-    def _prepare_item(self, item: ClaimedItem, context: _RunContext) -> _PreparedItem:
+    def _prepare_item(
+        self,
+        item: ClaimedItem,
+        context: _RunContext,
+        *,
+        artifact_cache: dict[str, list[str]] | None = None,
+    ) -> _PreparedItem:
         custom_id = self.make_custom_id(item.item_id, item.attempt_count + 1)
         if item.request_artifact_path is not None:
             if item.request_artifact_line is None or item.request_sha256 is None:
@@ -568,6 +575,7 @@ class BatchRunner:
                 artifact_path=item.request_artifact_path,
                 line_number=item.request_artifact_line,
                 expected_sha256=item.request_sha256,
+                artifact_cache=artifact_cache,
             )
             request_line["custom_id"] = custom_id
         else:
@@ -630,13 +638,19 @@ class BatchRunner:
         artifact_path: str,
         line_number: int,
         expected_sha256: str,
+        artifact_cache: dict[str, list[str]] | None = None,
     ) -> JSONObject:
         if line_number <= 0:
             raise ValueError("line_number must be > 0")
-        for index, raw_line in enumerate(
-            self.artifact_store.read_text(artifact_path, encoding="utf-8").splitlines(),
-            start=1,
-        ):
+        cache = self._request_artifact_cache if artifact_cache is None else artifact_cache
+        lines = cache.get(artifact_path)
+        if lines is None:
+            lines = self.artifact_store.read_text(
+                artifact_path,
+                encoding="utf-8",
+            ).splitlines()
+            cache[artifact_path] = lines
+        for index, raw_line in enumerate(lines, start=1):
             if index != line_number:
                 continue
             record = json.loads(raw_line)

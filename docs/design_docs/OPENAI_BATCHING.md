@@ -24,6 +24,8 @@ This lets retry/resume replay the prepared request body without rebuilding the p
 
 The runner now owns request JSONL serialization and stages a local copy from the artifact store for provider upload. The provider contract builds request rows and uploads local files, but it no longer owns durable request-file writes.
 
+Within a single refresh/submission cycle, replay now caches shared request-artifact file contents so multiple items that point at the same JSONL artifact do not reread that file from disk line-by-line.
+
 After a run reaches a terminal state, users can call `Run.prune_artifacts()` to delete those replay files and clear their SQLite pointers. That preserves terminal results while reclaiming the request-side disk footprint.
 
 Before request artifacts exist, built-in CSV and JSONL sources can now resume ingestion from a persisted source checkpoint when the caller re-enters `start(job, run_id=...)` with the same file and config.
@@ -72,6 +74,8 @@ Splitting currently considers:
 - request file bytes
 - estimated request tokens
 
+Submission now claims a bounded pending-item window per refresh instead of materializing the entire pending queue up front. That keeps large durable backlogs from paying full prompt-build and token-estimation cost before there is provider capacity to submit them.
+
 If a single request exceeds the allowed OpenAI token limit by itself, that item is marked as a permanent failure with an OpenAI-specific error instead of aborting the whole run.
 
 ### Provider Errors
@@ -83,6 +87,8 @@ If a retryable control-plane failure happens after a request artifact has been w
 If the failure happens after the input file upload but before successful batch creation, `batchor` makes a best-effort attempt to delete the uploaded input file so retries do not accumulate orphaned uploads.
 
 If a process dies after local item claim and artifact persistence but before batch registration, fresh-process resume requeues those `queued_local` items and resubmits from the stored request artifact.
+
+Batch polling uses bounded concurrency when multiple active provider batches exist. Transient `get_batch(...)` failures now emit retry observability but do not apply the run-level submission backoff gate, so one flaky poll does not stall unrelated pending submissions.
 
 ## TBD
 

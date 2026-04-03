@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from sqlalchemy import event
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
@@ -39,7 +40,10 @@ class SQLiteStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin, 
         self.engine = engine or create_engine(
             f"sqlite+pysqlite:///{self.path}",
             future=True,
+            connect_args={"timeout": 5.0},
         )
+        if engine is None:
+            event.listen(self.engine, "connect", self._configure_connection)
         METADATA.create_all(self.engine)
         self._ensure_schema()
 
@@ -47,6 +51,16 @@ class SQLiteStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin, 
     def default_path(name: str) -> Path:
         normalized = name.strip() or "default"
         return Path.home() / ".batchor" / f"{normalized}.sqlite3"
+
+    @staticmethod
+    def _configure_connection(dbapi_connection, _connection_record) -> None:  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+        finally:
+            cursor.close()
 
     def close(self) -> None:
         self.engine.dispose()

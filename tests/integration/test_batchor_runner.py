@@ -17,6 +17,7 @@ from batchor import (
     BatchItem,
     BatchJob,
     BatchRunner,
+    ChunkPolicy,
     JsonlItemSource,
     ItemStatus,
     MemoryStateStore,
@@ -31,6 +32,7 @@ from batchor import (
 )
 from batchor.providers.openai import OpenAIBatchProvider
 from batchor.storage import sqlite as storage_sqlite
+from batchor.storage.state import MaterializedItem, RequestArtifactPointer
 
 
 class ClassificationResult(BaseModel):
@@ -198,6 +200,23 @@ class _ArtifactOnlyBatchProvider(_FakeBatchProvider):
         raise AssertionError("request line should be replayed from persisted artifact")
 
 
+class _TransientPollFailureBatchProvider(_FakeBatchProvider):
+    def __init__(
+        self,
+        *,
+        record_factory: Callable[[str], dict[str, object] | None],
+    ) -> None:
+        super().__init__(record_factory=record_factory)
+        self._poll_failures: dict[str, int] = {"batch_0": 1}
+
+    def get_batch(self, batch_id: str) -> dict[str, object]:
+        remaining = self._poll_failures.get(batch_id, 0)
+        if remaining > 0:
+            self._poll_failures[batch_id] = remaining - 1
+            raise ConnectionError("connection reset by peer")
+        return super().get_batch(batch_id)
+
+
 def test_sqlite_subprocess_resume_retries_from_persisted_request_artifact(
     tmp_path: Path,
 ) -> None:
@@ -318,6 +337,146 @@ def test_sqlite_subprocess_resume_retries_from_persisted_request_artifact(
     result = resumed.results()[0]
     assert result.status is ItemStatus.COMPLETED
     assert result.output_text == '{"label": "row1", "score": 0.9}' or result.output_text is not None
+
+
+def test_request_artifact_replay_reads_shared_file_once_per_submission_cycle(
+    tmp_path: Path,
+) -> None:
+    provider = _ArtifactOnlyBatchProvider(
+        record_factory=lambda custom_id: _success_record(f"text:{custom_id}")
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path,
+    )
+    job = BatchJob(
+        items=[
+            BatchItem(item_id="row1", payload={"text": "a"}),
+            BatchItem(item_id="row2", payload={"text": "b"}),
+        ],
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+    )
+    run_id = "artifact_cache_run"
+    runner.state.create_run(
+        run_id=run_id,
+        config=runner._persisted_config_for_job(job),
+        items=[
+            MaterializedItem(
+                item_id="row1",
+                item_index=0,
+                payload={"text": "a"},
+                metadata={},
+                prompt="a",
+            ),
+            MaterializedItem(
+                item_id="row2",
+                item_index=1,
+                payload={"text": "b"},
+                metadata={},
+                prompt="b",
+            ),
+        ],
+    )
+
+    request_lines = [
+        {
+            "custom_id": "row1:a1",
+            "method": "POST",
+            "url": "/v1/responses",
+            "body": {"input": "a"},
+        },
+        {
+            "custom_id": "row2:a1",
+            "method": "POST",
+            "url": "/v1/responses",
+            "body": {"input": "b"},
+        },
+    ]
+    artifact_path = f"{run_id}/requests/requests_a.jsonl"
+    runner.artifact_store.write_text(
+        artifact_path,
+        "".join(json.dumps(line) + "\n" for line in request_lines),
+        encoding="utf-8",
+    )
+    runner.state.record_request_artifacts(
+        run_id=run_id,
+        pointers=[
+            RequestArtifactPointer(
+                item_id="row1",
+                artifact_path=artifact_path,
+                line_number=1,
+                request_sha256=runner._request_sha256(request_lines[0]),
+            ),
+            RequestArtifactPointer(
+                item_id="row2",
+                artifact_path=artifact_path,
+                line_number=2,
+                request_sha256=runner._request_sha256(request_lines[1]),
+            ),
+        ],
+    )
+
+    read_count = 0
+    original_read_text = runner.artifact_store.read_text
+
+    def counting_read_text(key: str, *, encoding: str = "utf-8") -> str:
+        nonlocal read_count
+        read_count += 1
+        return original_read_text(key, encoding=encoding)
+
+    runner.artifact_store.read_text = counting_read_text  # type: ignore[method-assign]
+    run = runner.get_run(run_id)
+    submitted = runner._submit_pending_items(run.run_id, run._context)
+
+    assert submitted == 2
+    assert read_count == 1
+    assert provider.created_batches == ["batch_0"]
+
+
+def test_transient_poll_failures_do_not_block_new_submissions(tmp_path: Path) -> None:
+    provider = _TransientPollFailureBatchProvider(
+        record_factory=lambda custom_id: _success_record(f"text:{custom_id}")
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path,
+    )
+    run = runner.start(
+        BatchJob(
+            items=[
+                BatchItem(item_id="row1", payload="a"),
+                BatchItem(item_id="row2", payload="b"),
+                BatchItem(item_id="row3", payload="c"),
+                BatchItem(item_id="row4", payload="d"),
+                BatchItem(item_id="row5", payload="e"),
+            ],
+            build_prompt=lambda item: PromptParts(prompt=item.payload),
+            provider_config=OpenAIProviderConfig(
+                api_key="k",
+                model="gpt-4.1",
+                enqueue_limits=OpenAIEnqueueLimitConfig(
+                    enqueued_token_limit=5,
+                    target_ratio=1.0,
+                    headroom=0,
+                    max_batch_enqueued_tokens=1,
+                ),
+            ),
+            chunk_policy=ChunkPolicy(max_requests=1, max_file_bytes=1024),
+            retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=1.0, max_backoff_sec=1.0),
+        )
+    )
+
+    assert provider.created_batches == ["batch_0", "batch_1", "batch_2", "batch_3"]
+
+    run.refresh()
+
+    assert provider.created_batches == ["batch_0", "batch_1", "batch_2", "batch_3", "batch_4"]
+    summary = run.summary()
+    assert summary.completed_items == 3
+    assert summary.status_counts[ItemStatus.SUBMITTED] == 2
 
 
 def test_structured_run_handle_returns_model_instances(tmp_path: Path) -> None:

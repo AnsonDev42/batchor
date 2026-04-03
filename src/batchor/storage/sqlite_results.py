@@ -67,7 +67,6 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                     for completion in completions
                 ],
             )
-            self._refresh_run_status(conn, run_id)
 
     def mark_items_failed(
         self,
@@ -137,7 +136,6 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                 )
             )
             conn.execute(statement, payloads)
-            self._refresh_run_status(conn, run_id)
 
     def mark_queued_items_failed(
         self,
@@ -202,7 +200,6 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                 )
             )
             conn.execute(statement, payloads)
-            self._refresh_run_status(conn, run_id)
 
     def reset_batch_items_to_pending(
         self,
@@ -218,7 +215,6 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                 provider_batch_id=provider_batch_id,
             )
             if not custom_ids:
-                self._refresh_run_status(conn, run_id)
                 return
             conn.execute(
                 update(ITEMS_TABLE)
@@ -238,7 +234,6 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                     active_submission_tokens=0,
                 )
             )
-            self._refresh_run_status(conn, run_id)
 
     def get_active_submitted_token_estimate(self, *, run_id: str) -> int:
         with self.engine.begin() as conn:
@@ -292,7 +287,6 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                     last_error_class=state.last_error_class,
                 )
             )
-            self._refresh_run_status(conn, run_id)
             return state
 
     def clear_batch_retry_backoff(self, *, run_id: str) -> None:
@@ -309,7 +303,6 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                     last_error_class=None,
                 )
             )
-            self._refresh_run_status(conn, run_id)
 
     def get_batch_retry_backoff_remaining_sec(self, *, run_id: str) -> float:
         with self.engine.begin() as conn:

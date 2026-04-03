@@ -55,10 +55,13 @@ Execution and validation behavior:
 - Typer CLI entrypoint for operator workflows
 - optional observer callback for provider lifecycle events
 - token estimation and request chunking
+- bounded pending-item claim windows before submission
 - durable request-artifact replay for retry/resume
+- per-refresh request-artifact file caching during replay
 - artifact-store staging/export/delete orchestration
 - resumable file-backed ingestion checkpoints
 - fresh-process recovery of `queued_local` items back to pending submission
+- bounded concurrent provider polling and file download handling
 - explicit terminal-run artifact pruning
 - explicit raw-artifact export before raw-artifact pruning
 - retry helpers
@@ -82,6 +85,7 @@ Durable and ephemeral state backends:
 - in-memory implementation
 - storage registry
 - request-artifact pointers for replayable submissions
+- hot-path indexes for item/batch lookup and summary queries
 - schema-version metadata for SQLite compatibility guidance
 
 ## Current Invariants

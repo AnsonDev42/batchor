@@ -101,6 +101,9 @@ class JsonlItemSource(ResumableItemSource[PayloadT], Generic[PayloadT]):
                 line = raw_line.strip()
                 if not line:
                     continue
+                if current_index < item_index:
+                    current_index += 1
+                    continue
                 try:
                     parsed = cast(JSONValue, json.loads(line))
                 except json.JSONDecodeError as exc:
@@ -112,9 +115,6 @@ class JsonlItemSource(ResumableItemSource[PayloadT], Generic[PayloadT]):
                     if self.metadata_from_row is not None
                     else {}
                 )
-                if current_index < item_index:
-                    current_index += 1
-                    continue
                 yield IndexedBatchItem(
                     item_index=current_index,
                     item=BatchItem(

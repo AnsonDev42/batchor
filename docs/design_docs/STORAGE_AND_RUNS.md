@@ -26,6 +26,8 @@ Today terminal means either `completed` or `completed_with_failures`.
 SQLite is the default durable backend.
 Postgres is also implemented for shared control-plane state when callers explicitly construct `PostgresStorage(...)`.
 
+The SQLite backend now enables WAL-mode defaults and ships explicit hot-path indexes so durable local runs spend less time on repeated pending-item, active-batch, and artifact-pointer scans.
+
 Current storage responsibilities include:
 
 - persisting public run config
@@ -69,6 +71,8 @@ For the built-in CSV and JSONL sources, storage now also persists a source check
 - resume compatibility ignores non-persisted secret fields such as provider API keys
 
 Once an item has a durable request artifact pointer, `batchor` may prune large inline request-building fields from the control-plane store and rely on the artifact for later retries.
+
+Storage mutations no longer force a full run-summary recomputation after each write. Instead, summary aggregation happens on explicit summary reads and refresh boundaries, which reduces control-plane write amplification for large runs.
 
 Once the whole run is terminal, users may explicitly call `Run.prune_artifacts()` or `BatchRunner.prune_artifacts(run_id)` to remove replayable request files and clear their storage pointers. This is a manual lifecycle step today; `batchor` does not auto-delete artifacts behind the user's back.
 
