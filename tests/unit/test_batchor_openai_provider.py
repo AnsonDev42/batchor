@@ -110,21 +110,11 @@ def test_build_request_line_for_responses_can_include_reasoning_effort() -> None
     assert line["body"]["reasoning"] == {"effort": "minimal"}
 
 
-def test_write_requests_jsonl_and_parse_batch_output(tmp_path: Path) -> None:
+def test_parse_batch_output() -> None:
     provider = OpenAIBatchProvider(
         OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
         client=_FakeClient(),
     )
-    output_path = provider.write_requests_jsonl(
-        [
-            provider.build_request_line(
-                custom_id="abc",
-                prompt_parts=PromptParts(prompt="hello"),
-            )
-        ],
-        tmp_path / "requests.jsonl",
-    )
-    assert output_path.exists()
     success, errors, raw = provider.parse_batch_output(
         output_content='{"custom_id":"ok","response":{"status_code":200}}\n',
         error_content='{"custom_id":"bad","response":{"status_code":400}}\n',

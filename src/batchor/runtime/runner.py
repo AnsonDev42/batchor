@@ -4,7 +4,6 @@ import hashlib
 import importlib
 import json
 from pathlib import Path
-import shutil
 import tempfile
 import time
 from typing import Any, Callable, Iterator, cast
@@ -12,6 +11,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from batchor.artifacts import ArtifactStore, LocalArtifactStore
 from batchor.core.enums import ProviderKind, RunLifecycleStatus
 from batchor.core.exceptions import ModelResolutionError, RunNotFinishedError
 from batchor.core.models import (
@@ -58,6 +58,7 @@ class BatchRunner:
         provider_factory: Callable[[Any], BatchProvider] | None = None,
         observer: Callable[[RunEvent], None] | None = None,
         sleep: Callable[[float], None] | None = None,
+        artifact_store: ArtifactStore | None = None,
         temp_root: str | Path | None = None,
     ) -> None:
         self.provider_registry = provider_registry or build_default_provider_registry()
@@ -68,15 +69,15 @@ class BatchRunner:
         self.provider_factory = provider_factory
         self.observer = observer
         self.sleep = sleep or time.sleep
-        if temp_root is not None:
-            self.temp_root = Path(temp_root)
-        else:
-            artifact_root = getattr(self.state, "artifact_root", None)
-            self.temp_root = (
-                Path(cast(str | Path, artifact_root))
-                if artifact_root is not None
-                else Path(tempfile.gettempdir()) / "batchor"
-            )
+        self.artifact_store = self._resolve_artifact_store(
+            artifact_store=artifact_store,
+            temp_root=temp_root,
+        )
+        self.temp_root = (
+            self.artifact_store.root
+            if isinstance(self.artifact_store, LocalArtifactStore)
+            else Path(tempfile.gettempdir()) / "batchor"
+        )
         self._contexts: dict[str, _RunContext] = {}
 
     def start(
@@ -142,6 +143,7 @@ class BatchRunner:
         return run.wait()
 
     def get_run(self, run_id: str) -> Run:
+        self.state.requeue_local_items(run_id=run_id)
         context = self._contexts.get(run_id)
         if context is None:
             config = self.state.get_run_config(run_id=run_id)
@@ -173,12 +175,7 @@ class BatchRunner:
             + inventory.output_artifact_paths
             + inventory.error_artifact_paths
         ):
-            source_path = self._artifact_full_path(artifact_path)
-            if not source_path.exists():
-                raise FileNotFoundError(f"artifact missing during export: {artifact_path}")
-            target_path = export_root / artifact_path
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path, target_path)
+            self.artifact_store.export_to_directory(artifact_path, export_root)
             exported_artifact_paths.append(artifact_path)
         results_path = export_root / "results.jsonl"
         self._write_results_export(run_id=run_id, results_path=results_path)
@@ -290,6 +287,21 @@ class BatchRunner:
             return self.storage_registry.create(storage)
         return storage
 
+    def _resolve_artifact_store(
+        self,
+        *,
+        artifact_store: ArtifactStore | None,
+        temp_root: str | Path | None,
+    ) -> ArtifactStore:
+        if artifact_store is not None:
+            return artifact_store
+        if temp_root is not None:
+            return LocalArtifactStore(temp_root)
+        artifact_root = getattr(self.state, "artifact_root", None)
+        if artifact_root is not None:
+            return LocalArtifactStore(cast(str | Path, artifact_root))
+        return LocalArtifactStore(Path(tempfile.gettempdir()) / "batchor")
+
     def _create_provider(self, provider_config: Any) -> BatchProvider:
         if self.provider_factory is not None:
             return self.provider_factory(provider_config)
@@ -322,6 +334,7 @@ class BatchRunner:
         stored_config = self.state.get_run_config(run_id=run_id)
         if not self._configs_match_for_resume(stored_config, config):
             raise ValueError(f"existing run config does not match supplied job: {run_id}")
+        self.state.requeue_local_items(run_id=run_id)
         checkpoint = self.state.get_ingest_checkpoint(run_id=run_id)
         if checkpoint is not None and not checkpoint.ingestion_complete:
             source = self._require_resumable_source(job, run_id=run_id)
@@ -605,6 +618,12 @@ class BatchRunner:
     def _request_artifact_relative_path(run_id: str) -> Path:
         return Path(run_id) / "requests" / f"requests_{uuid4().hex}.jsonl"
 
+    @staticmethod
+    def _serialize_jsonl(records: list[JSONObject]) -> str:
+        if not records:
+            return ""
+        return "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records)
+
     def _load_request_artifact_line(
         self,
         *,
@@ -614,24 +633,25 @@ class BatchRunner:
     ) -> JSONObject:
         if line_number <= 0:
             raise ValueError("line_number must be > 0")
-        path = self._artifact_full_path(artifact_path)
-        with path.open("r", encoding="utf-8") as handle:
-            for index, raw_line in enumerate(handle, start=1):
-                if index != line_number:
-                    continue
-                record = json.loads(raw_line)
-                if not isinstance(record, dict):
-                    raise TypeError(
-                        f"request artifact line must be a JSON object: {artifact_path}:{line_number}"
-                    )
-                request_line = cast(JSONObject, record)
-                actual_sha256 = self._request_sha256(request_line)
-                if actual_sha256 != expected_sha256:
-                    raise ValueError(
-                        "request artifact hash mismatch for "
-                        f"{artifact_path}:{line_number}"
-                    )
-                return request_line
+        for index, raw_line in enumerate(
+            self.artifact_store.read_text(artifact_path, encoding="utf-8").splitlines(),
+            start=1,
+        ):
+            if index != line_number:
+                continue
+            record = json.loads(raw_line)
+            if not isinstance(record, dict):
+                raise TypeError(
+                    f"request artifact line must be a JSON object: {artifact_path}:{line_number}"
+                )
+            request_line = cast(JSONObject, record)
+            actual_sha256 = self._request_sha256(request_line)
+            if actual_sha256 != expected_sha256:
+                raise ValueError(
+                    "request artifact hash mismatch for "
+                    f"{artifact_path}:{line_number}"
+                )
+            return request_line
         raise FileNotFoundError(
             f"request artifact line missing: {artifact_path}:{line_number}"
         )
@@ -649,17 +669,13 @@ class BatchRunner:
             output_artifact_path = (
                 Path(run_id) / "outputs" / f"{provider_batch_id}_output.jsonl"
             ).as_posix()
-            full_output_path = self._artifact_full_path(output_artifact_path)
-            full_output_path.parent.mkdir(parents=True, exist_ok=True)
-            full_output_path.write_text(output_content, encoding="utf-8")
+            self.artifact_store.write_text(output_artifact_path, output_content, encoding="utf-8")
         error_artifact_path = None
         if error_content is not None:
             error_artifact_path = (
                 Path(run_id) / "outputs" / f"{provider_batch_id}_error.jsonl"
             ).as_posix()
-            full_error_path = self._artifact_full_path(error_artifact_path)
-            full_error_path.parent.mkdir(parents=True, exist_ok=True)
-            full_error_path.write_text(error_content, encoding="utf-8")
+            self.artifact_store.write_text(error_artifact_path, error_content, encoding="utf-8")
         return output_artifact_path, error_artifact_path
 
     def _results_for_run(
@@ -715,22 +731,15 @@ class BatchRunner:
         return normalized
 
     def _artifact_full_path(self, artifact_path: str) -> Path:
-        relative_path = Path(artifact_path)
-        if relative_path.is_absolute():
-            raise ValueError(f"artifact path must be relative: {artifact_path}")
-        if ".." in relative_path.parts:
-            raise ValueError(f"artifact path must not escape temp_root: {artifact_path}")
-        return self.temp_root / relative_path
+        if not isinstance(self.artifact_store, LocalArtifactStore):
+            raise ValueError("artifact store does not expose local artifact paths")
+        return self.artifact_store.resolve_path(artifact_path)
 
     def _remove_artifacts(self, artifact_paths: list[str]) -> tuple[list[str], list[str]]:
         removed: list[str] = []
         missing: list[str] = []
         for artifact_path in artifact_paths:
-            path = self._artifact_full_path(artifact_path)
-            if path.exists():
-                if not path.is_file():
-                    raise IsADirectoryError(f"artifact path is not a file: {artifact_path}")
-                path.unlink()
+            if self.artifact_store.delete(artifact_path):
                 removed.append(artifact_path)
             else:
                 missing.append(artifact_path)
@@ -780,14 +789,4 @@ class BatchRunner:
         return payload
 
     def _prune_empty_artifact_dirs(self, artifact_paths: list[str]) -> None:
-        candidate_dirs: set[Path] = set()
-        for artifact_path in artifact_paths:
-            for parent in self._artifact_full_path(artifact_path).parents:
-                if parent == self.temp_root:
-                    break
-                candidate_dirs.add(parent)
-        for directory in sorted(candidate_dirs, key=lambda path: len(path.parts), reverse=True):
-            try:
-                directory.rmdir()
-            except OSError:
-                continue
+        del artifact_paths

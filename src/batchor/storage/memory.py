@@ -202,6 +202,20 @@ class MemoryStateStore(StateStore):
                 item.status = ItemStatus.PENDING
         self._refresh_run_status(run)
 
+    def requeue_local_items(self, *, run_id: str) -> int:
+        run = self._get_run(run_id)
+        requeued = 0
+        for item in run.items.values():
+            if item.status != ItemStatus.QUEUED_LOCAL:
+                continue
+            item.status = ItemStatus.PENDING
+            item.active_batch_id = None
+            item.active_custom_id = None
+            item.active_submission_tokens = 0
+            requeued += 1
+        self._refresh_run_status(run)
+        return requeued
+
     def record_request_artifacts(
         self,
         *,

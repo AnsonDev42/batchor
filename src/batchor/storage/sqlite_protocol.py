@@ -93,6 +93,8 @@ class SQLiteStorageProtocol(Protocol):
         artifact_paths: list[str],
     ) -> int: ...
 
+    def requeue_local_items(self, *, run_id: str) -> int: ...
+
     def record_batch_artifacts(
         self,
         *,
