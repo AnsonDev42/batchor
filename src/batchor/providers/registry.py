@@ -90,9 +90,7 @@ class ProviderRegistry:
         Returns:
             A ``JSONObject`` with ``"provider_kind"`` and ``"config"`` keys.
         """
-        config_payload = (
-            config.to_payload() if include_secrets else config.to_public_payload()
-        )
+        config_payload = config.to_payload() if include_secrets else config.to_public_payload()
         return {
             "provider_kind": config.provider_kind.value,
             "config": config_payload,
@@ -152,7 +150,5 @@ def _require_openai_config(config: ProviderConfig) -> OpenAIProviderConfig:
     from batchor.core.models import OpenAIProviderConfig
 
     if not isinstance(config, OpenAIProviderConfig):
-        raise TypeError(
-            f"expected {ProviderKind.OPENAI.value} config, got {type(config).__name__}"
-        )
+        raise TypeError(f"expected {ProviderKind.OPENAI.value} config, got {type(config).__name__}")
     return config

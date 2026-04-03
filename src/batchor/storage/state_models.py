@@ -57,10 +57,7 @@ class PersistedRunConfig:
     @property
     def is_structured(self) -> bool:
         """Return ``True`` when this run uses structured JSON output."""
-        return (
-            self.structured_output_module is not None
-            and self.structured_output_qualname is not None
-        )
+        return self.structured_output_module is not None and self.structured_output_qualname is not None
 
 
 @dataclass(frozen=True)

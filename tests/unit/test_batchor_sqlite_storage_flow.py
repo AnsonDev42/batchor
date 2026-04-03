@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -32,7 +32,7 @@ from batchor.storage.state import (
 
 class _FrozenClock:
     def __init__(self) -> None:
-        self.current = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self.current = datetime(2026, 1, 1, tzinfo=UTC)
 
     def now(self) -> datetime:
         return self.current
@@ -252,15 +252,19 @@ def test_sqlite_storage_records_request_artifact_pointer_and_prunes_inline_reque
     assert claimed[0].system_prompt is None
 
     with storage.engine.begin() as conn:
-        row = conn.execute(
-            select(
-                storage_sqlite.ITEMS_TABLE.c.payload_json,
-                storage_sqlite.ITEMS_TABLE.c.prompt,
-                storage_sqlite.ITEMS_TABLE.c.request_artifact_path,
-                storage_sqlite.ITEMS_TABLE.c.request_artifact_line,
-                storage_sqlite.ITEMS_TABLE.c.request_sha256,
-            ).where(storage_sqlite.ITEMS_TABLE.c.run_id == "run_4")
-        ).mappings().one()
+        row = (
+            conn.execute(
+                select(
+                    storage_sqlite.ITEMS_TABLE.c.payload_json,
+                    storage_sqlite.ITEMS_TABLE.c.prompt,
+                    storage_sqlite.ITEMS_TABLE.c.request_artifact_path,
+                    storage_sqlite.ITEMS_TABLE.c.request_artifact_line,
+                    storage_sqlite.ITEMS_TABLE.c.request_sha256,
+                ).where(storage_sqlite.ITEMS_TABLE.c.run_id == "run_4")
+            )
+            .mappings()
+            .one()
+        )
     assert row["payload_json"] == "null"
     assert row["prompt"] == ""
     assert row["request_artifact_path"] == "run_4/requests/requests_a.jsonl"
@@ -289,9 +293,7 @@ def test_sqlite_storage_lists_and_clears_request_artifact_pointers(tmp_path: Pat
         ],
     )
 
-    assert storage.get_request_artifact_paths(run_id="run_5") == [
-        "run_5/requests/requests_a.jsonl"
-    ]
+    assert storage.get_request_artifact_paths(run_id="run_5") == ["run_5/requests/requests_a.jsonl"]
 
     cleared = storage.clear_request_artifact_pointers(
         run_id="run_5",

@@ -1,6 +1,5 @@
 from sqlalchemy import Column, Float, Index, Integer, MetaData, String, Table, Text
 
-
 METADATA = MetaData()
 SQLITE_SCHEMA_VERSION = 3
 

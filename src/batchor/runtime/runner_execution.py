@@ -19,9 +19,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from batchor.core.enums import RunControlState
-from batchor.core.models import ItemFailure
-from batchor.core.models import OpenAIProviderConfig
-from batchor.core.models import RunSummary
+from batchor.core.models import ItemFailure, OpenAIProviderConfig, RunSummary
 from batchor.core.types import BatchRemoteRecord, JSONObject, JSONValue
 from batchor.runtime.retry import (
     classify_batch_error,
@@ -136,10 +134,7 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
     )
 
     artifact_cache: dict[str, list[str]] = {}
-    prepared_items = [
-        self._prepare_item(item, context, artifact_cache=artifact_cache)
-        for item in claimed
-    ]
+    prepared_items = [self._prepare_item(item, context, artifact_cache=artifact_cache) for item in claimed]
     batch_token_limit = _batch_token_limit(config.provider_config)
     inflight_budget = _inflight_budget(config.provider_config)
     failed_item_ids: set[str] = set()
@@ -200,11 +195,7 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
             failed_item_ids.update(str(row["item_id"]) for row in oversized_rows)
 
     if not prepared_rows:
-        unsent = [
-            item.item_id
-            for item in claimed
-            if item.item_id not in failed_item_ids
-        ]
+        unsent = [item.item_id for item in claimed if item.item_id not in failed_item_ids]
         if unsent:
             self.state.release_items_to_pending(run_id=run_id, item_ids=unsent)
         return 0
@@ -218,11 +209,7 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
     )
     submitted_item_ids: set[str] = set()
     submitted_count = 0
-    active_tokens = (
-        self.state.get_active_submitted_token_estimate(run_id=run_id)
-        if inflight_budget is not None
-        else 0
-    )
+    active_tokens = self.state.get_active_submitted_token_estimate(run_id=run_id) if inflight_budget is not None else 0
 
     for chunk_index, chunk in enumerate(chunks, start=1):
         if self.state.get_run_control_state(run_id=run_id) is not RunControlState.RUNNING:
@@ -230,10 +217,7 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
         chunk_tokens = sum(int(row["submission_tokens"]) for row in chunk)
         if inflight_budget is not None and chunk_tokens > max(inflight_budget - active_tokens, 0):
             break
-        request_lines = [
-            cast(JSONObject, row["request_line"])
-            for row in chunk
-        ]
+        request_lines = [cast(JSONObject, row["request_line"]) for row in chunk]
         request_relative_path = self._request_artifact_relative_path(run_id)
         self.artifact_store.write_text(
             request_relative_path.as_posix(),
@@ -247,9 +231,7 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
                     item_id=str(row["item_id"]),
                     artifact_path=request_relative_path.as_posix(),
                     line_number=line_number,
-                    request_sha256=self._request_sha256(
-                        cast(JSONObject, row["request_line"])
-                    ),
+                    request_sha256=self._request_sha256(cast(JSONObject, row["request_line"])),
                 )
                 for line_number, row in enumerate(chunk, start=1)
             ],
@@ -257,9 +239,7 @@ def _submit_pending_items(self: BatchRunner, run_id: str, context: _RunContext) 
         if self.state.get_run_control_state(run_id=run_id) is not RunControlState.RUNNING:
             break
         with ExitStack() as stack:
-            request_file = stack.enter_context(
-                self.artifact_store.stage_local_copy(request_relative_path.as_posix())
-            )
+            request_file = stack.enter_context(self.artifact_store.stage_local_copy(request_relative_path.as_posix()))
             remote_input_file_id = context.provider.upload_input_file(request_file)
             try:
                 batch = context.provider.create_batch(
@@ -388,16 +368,10 @@ def _oversized_request_failure(
         provider_name = provider_config.provider_kind.value
     if limit_type == "batch":
         error_class = f"{provider_name}_request_exceeds_batch_token_limit"
-        message = (
-            "request token estimate exceeds the provider batch token limit "
-            f"({submission_tokens} > {limit})"
-        )
+        message = f"request token estimate exceeds the provider batch token limit ({submission_tokens} > {limit})"
     else:
         error_class = f"{provider_name}_request_exceeds_inflight_token_limit"
-        message = (
-            "request token estimate exceeds the provider inflight token budget "
-            f"({submission_tokens} > {limit})"
-        )
+        message = f"request token estimate exceeds the provider inflight token budget ({submission_tokens} > {limit})"
     return ItemFailure(
         error_class=error_class,
         message=message,
@@ -431,9 +405,7 @@ def _poll_once(self: BatchRunner, run_id: str, context: _RunContext) -> None:
     if len(batches) == 1:
         batch = batches[0]
         try:
-            remote_by_batch_id[batch.provider_batch_id] = context.provider.get_batch(
-                batch.provider_batch_id
-            )
+            remote_by_batch_id[batch.provider_batch_id] = context.provider.get_batch(batch.provider_batch_id)
         except Exception as exc:  # noqa: BLE001
             poll_errors[batch.provider_batch_id] = exc
     else:
@@ -699,10 +671,7 @@ def _consume_completed_batch(
                 custom_id=custom_id,
                 error=_item_failure(
                     error_class="batch_output_missing_row",
-                    message=(
-                        "batch completed without a terminal output record "
-                        "for the submitted item"
-                    ),
+                    message=("batch completed without a terminal output record for the submitted item"),
                     raw_error={"provider_batch_id": provider_batch_id},
                     retryable=True,
                 ),

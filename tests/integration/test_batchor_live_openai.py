@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import uuid
+from pathlib import Path
 
-from dotenv import find_dotenv, load_dotenv
 import pytest
+from dotenv import find_dotenv, load_dotenv
 
 from batchor import (
     BatchItem,
@@ -18,7 +18,6 @@ from batchor import (
     PromptParts,
     SQLiteStorage,
 )
-
 
 load_dotenv(find_dotenv(usecwd=True), override=False)
 
@@ -121,9 +120,7 @@ def test_live_openai_multiple_csv_sources_smoke(tmp_path: Path) -> None:
     run = runner.start(
         BatchJob(
             items=source,
-            build_prompt=lambda item: PromptParts(
-                prompt=f"Reply with exactly: {item.payload['text']}"
-            ),
+            build_prompt=lambda item: PromptParts(prompt=f"Reply with exactly: {item.payload['text']}"),
             provider_config=OpenAIProviderConfig(
                 api_key=api_key,
                 model=model,
@@ -149,12 +146,8 @@ def test_live_openai_multiple_csv_sources_smoke(tmp_path: Path) -> None:
     assert _normalized_exact_output(results[1].output_text) == "batchor-live-multi-b"
     assert results[0].metadata["batchor_lineage"]["source_primary_key"] == "dup"
     assert results[1].metadata["batchor_lineage"]["source_primary_key"] == "dup"
-    assert results[0].metadata["batchor_lineage"]["source_ref"] == str(
-        first_csv.resolve()
-    )
-    assert results[1].metadata["batchor_lineage"]["source_ref"] == str(
-        second_csv.resolve()
-    )
+    assert results[0].metadata["batchor_lineage"]["source_ref"] == str(first_csv.resolve())
+    assert results[1].metadata["batchor_lineage"]["source_ref"] == str(second_csv.resolve())
 
     inventory = storage.get_artifact_inventory(run_id=run.run_id)
     assert len(inventory.request_artifact_paths) >= 1

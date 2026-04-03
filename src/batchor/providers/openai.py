@@ -25,10 +25,7 @@ def resolve_openai_api_key(config: OpenAIProviderConfig) -> str:
     api_key = os.getenv("OPENAI_API_KEY", "")
     if api_key:
         return api_key
-    raise ValueError(
-        "OpenAI API key is required; pass OpenAIProviderConfig(api_key=...) "
-        "or set OPENAI_API_KEY"
-    )
+    raise ValueError("OpenAI API key is required; pass OpenAIProviderConfig(api_key=...) or set OPENAI_API_KEY")
 
 
 class OpenAIBatchProvider(BatchProvider):

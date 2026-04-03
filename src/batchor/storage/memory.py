@@ -12,7 +12,7 @@ State is lost when the process exits.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Callable
 
 from batchor.core.enums import ItemStatus, RunControlState, RunLifecycleStatus
@@ -108,7 +108,7 @@ class MemoryStateStore(StateStore):
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._runs: dict[str, _StoredRun] = {}
-        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._now = now or (lambda: datetime.now(UTC))
 
     def has_run(self, *, run_id: str) -> bool:
         return run_id in self._runs
@@ -276,9 +276,7 @@ class MemoryStateStore(StateStore):
     def get_request_artifact_paths(self, *, run_id: str) -> list[str]:
         run = self._get_run(run_id)
         artifact_paths = {
-            item.request_artifact_path
-            for item in run.items.values()
-            if item.request_artifact_path is not None
+            item.request_artifact_path for item in run.items.values() if item.request_artifact_path is not None
         }
         return sorted(artifact_path for artifact_path in artifact_paths if artifact_path is not None)
 
@@ -320,25 +318,13 @@ class MemoryStateStore(StateStore):
     def get_artifact_inventory(self, *, run_id: str) -> RunArtifactInventory:
         run = self._get_run(run_id)
         request_paths = sorted(
-            {
-                item.request_artifact_path
-                for item in run.items.values()
-                if item.request_artifact_path is not None
-            }
+            {item.request_artifact_path for item in run.items.values() if item.request_artifact_path is not None}
         )
         output_paths = sorted(
-            {
-                batch.output_artifact_path
-                for batch in run.batches.values()
-                if batch.output_artifact_path is not None
-            }
+            {batch.output_artifact_path for batch in run.batches.values() if batch.output_artifact_path is not None}
         )
         error_paths = sorted(
-            {
-                batch.error_artifact_path
-                for batch in run.batches.values()
-                if batch.error_artifact_path is not None
-            }
+            {batch.error_artifact_path for batch in run.batches.values() if batch.error_artifact_path is not None}
         )
         return RunArtifactInventory(
             request_artifact_paths=[path for path in request_paths if path is not None],
@@ -559,11 +545,7 @@ class MemoryStateStore(StateStore):
 
     def get_active_submitted_token_estimate(self, *, run_id: str) -> int:
         run = self._get_run(run_id)
-        return sum(
-            item.active_submission_tokens
-            for item in run.items.values()
-            if item.status == ItemStatus.SUBMITTED
-        )
+        return sum(item.active_submission_tokens for item in run.items.values() if item.status == ItemStatus.SUBMITTED)
 
     def record_batch_retry_failure(
         self,
@@ -581,11 +563,7 @@ class MemoryStateStore(StateStore):
             base_delay_sec=base_delay_sec,
             max_delay_sec=max_delay_sec,
         )
-        next_retry_at = (
-            self._now() + timedelta(seconds=backoff_sec)
-            if backoff_sec > 0
-            else None
-        )
+        next_retry_at = self._now() + timedelta(seconds=backoff_sec) if backoff_sec > 0 else None
         run.backoff = RetryBackoffState(
             consecutive_failures=consecutive,
             total_failures=total,
@@ -667,12 +645,9 @@ class MemoryStateStore(StateStore):
             )
             for item in sorted(
                 run.items.values(),
-                key=lambda entry: (
-                    entry.terminal_result_sequence if entry.terminal_result_sequence is not None else -1
-                ),
+                key=lambda entry: entry.terminal_result_sequence if entry.terminal_result_sequence is not None else -1,
             )
-            if item.terminal_result_sequence is not None
-            and item.terminal_result_sequence > after_sequence
+            if item.terminal_result_sequence is not None and item.terminal_result_sequence > after_sequence
         ]
         if limit is not None:
             return records[:limit]
@@ -717,24 +692,15 @@ class MemoryStateStore(StateStore):
         raise KeyError(f"unknown custom_id: {custom_id}")
 
     def _refresh_run_status(self, run: _StoredRun) -> None:
-        all_terminal = all(
-            run.items[item_id].status in self.TERMINAL_ITEM_STATUSES
-            for item_id in run.item_ids
-        )
-        active_batches = any(
-            batch.status not in self.TERMINAL_BATCH_STATUSES
-            for batch in run.batches.values()
-        )
+        all_terminal = all(run.items[item_id].status in self.TERMINAL_ITEM_STATUSES for item_id in run.item_ids)
+        active_batches = any(batch.status not in self.TERMINAL_BATCH_STATUSES for batch in run.batches.values())
         backoff_remaining = self.get_batch_retry_backoff_remaining_sec(run_id=run.run_id)
         if all_terminal and not active_batches and backoff_remaining <= 0:
             failed_items = sum(
-                1 for item_id in run.item_ids
-                if run.items[item_id].status == ItemStatus.FAILED_PERMANENT
+                1 for item_id in run.item_ids if run.items[item_id].status == ItemStatus.FAILED_PERMANENT
             )
             run.status = (
-                RunLifecycleStatus.COMPLETED_WITH_FAILURES
-                if failed_items > 0
-                else RunLifecycleStatus.COMPLETED
+                RunLifecycleStatus.COMPLETED_WITH_FAILURES if failed_items > 0 else RunLifecycleStatus.COMPLETED
             )
         else:
             run.status = RunLifecycleStatus.RUNNING
@@ -742,11 +708,7 @@ class MemoryStateStore(StateStore):
     @staticmethod
     def _next_terminal_sequence(run: _StoredRun) -> int:
         current = max(
-            (
-                item.terminal_result_sequence
-                for item in run.items.values()
-                if item.terminal_result_sequence is not None
-            ),
+            (item.terminal_result_sequence for item in run.items.values() if item.terminal_result_sequence is not None),
             default=0,
         )
         return current + 1

@@ -99,9 +99,7 @@ def model_output_schema(
             OpenAI's strict structured output requirements.
     """
     resolved_schema_name = schema_name or default_schema_name(model)
-    normalized_schema = _strict_json_schema(
-        cast(JSONObject, model.model_json_schema())
-    )
+    normalized_schema = _strict_json_schema(cast(JSONObject, model.model_json_schema()))
     validate_strict_json_schema(normalized_schema)
     return resolved_schema_name, normalized_schema
 
@@ -118,9 +116,7 @@ def _strict_json_schema(schema: JSONObject) -> JSONObject:
     """
     normalized = cast(JSONObject, _normalize_json_schema_value(schema))
     schema_type = normalized.get("type")
-    if schema_type == "object" or (
-        isinstance(schema_type, list) and "object" in schema_type
-    ):
+    if schema_type == "object" or (isinstance(schema_type, list) and "object" in schema_type):
         normalized.setdefault("additionalProperties", False)
     return normalized
 
@@ -144,9 +140,7 @@ def _normalize_json_schema_value(value: JSONValue) -> JSONValue:
         {key: _normalize_json_schema_value(item) for key, item in value.items()},
     )
     schema_type = normalized.get("type")
-    if schema_type == "object" or (
-        isinstance(schema_type, list) and "object" in schema_type
-    ):
+    if schema_type == "object" or (isinstance(schema_type, list) and "object" in schema_type):
         normalized.setdefault("additionalProperties", False)
     return normalized
 
@@ -168,13 +162,9 @@ def validate_strict_json_schema(schema: JSONObject) -> None:
         StructuredOutputSchemaError: If any rule is violated.
     """
     if "anyOf" in schema:
-        raise StructuredOutputSchemaError(
-            "structured output root schema must be an object and must not use anyOf"
-        )
+        raise StructuredOutputSchemaError("structured output root schema must be an object and must not use anyOf")
     if not _schema_type_includes(schema.get("type"), "object"):
-        raise StructuredOutputSchemaError(
-            "structured output root schema must be an object"
-        )
+        raise StructuredOutputSchemaError("structured output root schema must be an object")
     _validate_json_schema_value(schema, path="$")
 
 
@@ -197,23 +187,17 @@ def _validate_json_schema_value(value: JSONValue, *, path: str) -> None:
     if _schema_type_includes(value.get("type"), "object"):
         additional_properties = value.get("additionalProperties")
         if additional_properties is not False:
-            raise StructuredOutputSchemaError(
-                f"{path}: object schemas must set additionalProperties to false"
-            )
+            raise StructuredOutputSchemaError(f"{path}: object schemas must set additionalProperties to false")
         properties = value.get("properties")
         if isinstance(properties, dict):
             required = value.get("required")
             if not isinstance(required, list):
-                raise StructuredOutputSchemaError(
-                    f"{path}: object schemas with properties must define required"
-                )
+                raise StructuredOutputSchemaError(f"{path}: object schemas with properties must define required")
             property_names = set(properties.keys())
             required_names = {name for name in required if isinstance(name, str)}
             missing_names = sorted(property_names - required_names)
             if missing_names:
-                raise StructuredOutputSchemaError(
-                    f"{path}: properties must all be required; missing {missing_names}"
-                )
+                raise StructuredOutputSchemaError(f"{path}: properties must all be required; missing {missing_names}")
     for key, item in value.items():
         next_path = f"{path}.{key}" if key.isidentifier() else f"{path}[{key!r}]"
         _validate_json_schema_value(item, path=next_path)
@@ -315,7 +299,7 @@ def extract_response_text(response_record: dict[str, Any]) -> str:
 
 
 def strip_json_fence(text: str) -> str:
-    """Remove a Markdown JSON code fence from *text* if present.
+    r"""Remove a Markdown JSON code fence from *text* if present.
 
     Args:
         text: Text that may be wrapped in a ``\`\`\`json … \`\`\``` block.

@@ -17,12 +17,12 @@ The implementation is composed via multiple mixin classes:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
 
-from sqlalchemy import event
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 
 from batchor.core.enums import ItemStatus
@@ -79,7 +79,7 @@ class SQLiteStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin, 
         """
         self.path = Path(path) if path is not None else self.default_path(name)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._now = now or (lambda: datetime.now(UTC))
         self.provider_registry = provider_registry or build_default_provider_registry()
         self.engine = engine or create_engine(
             f"sqlite+pysqlite:///{self.path}",
@@ -126,15 +126,15 @@ class SQLiteStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin, 
     @property
     def schema_version(self) -> int:
         with self.engine.begin() as conn:
-            row = conn.execute(
-                STORAGE_METADATA_TABLE.select().where(STORAGE_METADATA_TABLE.c.key == "schema_version")
-            ).mappings().first()
+            row = (
+                conn.execute(STORAGE_METADATA_TABLE.select().where(STORAGE_METADATA_TABLE.c.key == "schema_version"))
+                .mappings()
+                .first()
+            )
             if row is None:
                 return SQLITE_SCHEMA_VERSION
             return int(row["value"])
 
     def __del__(self) -> None:
-        try:
+        with suppress(Exception):
             self.close()
-        except Exception:  # noqa: BLE001
-            pass

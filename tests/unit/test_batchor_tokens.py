@@ -14,23 +14,29 @@ from batchor.runtime.tokens import (
 
 
 def test_effective_inflight_token_budget() -> None:
-    assert effective_inflight_token_budget(
-        OpenAIEnqueueLimitConfig(
-            enqueued_token_limit=1000,
-            target_ratio=0.7,
-            headroom=50,
+    assert (
+        effective_inflight_token_budget(
+            OpenAIEnqueueLimitConfig(
+                enqueued_token_limit=1000,
+                target_ratio=0.7,
+                headroom=50,
+            )
         )
-    ) == 700
+        == 700
+    )
 
 
 def test_resolve_openai_batch_token_limit_uses_smaller_of_batch_and_inflight() -> None:
-    assert resolve_openai_batch_token_limit(
-        OpenAIEnqueueLimitConfig(
-            enqueued_token_limit=1000,
-            target_ratio=0.7,
-            max_batch_enqueued_tokens=500,
+    assert (
+        resolve_openai_batch_token_limit(
+            OpenAIEnqueueLimitConfig(
+                enqueued_token_limit=1000,
+                target_ratio=0.7,
+                max_batch_enqueued_tokens=500,
+            )
         )
-    ) == 500
+        == 500
+    )
 
 
 def test_split_rows_by_token_limit_separates_oversized_rows() -> None:

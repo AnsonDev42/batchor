@@ -37,8 +37,8 @@ from batchor.core.exceptions import (
     StructuredOutputSchemaError,
 )
 from batchor.core.models import (
-    ArtifactPolicy,
     ArtifactExportResult,
+    ArtifactPolicy,
     ArtifactPruneResult,
     BatchItem,
     BatchJob,

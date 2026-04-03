@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-
 type JSONScalar = None | bool | int | float | str
 """A primitive JSON scalar value."""
 

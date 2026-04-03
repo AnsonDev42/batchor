@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVER_NAME = "batchorRepo"
 SERVER_VERSION = "0.1.0"
@@ -94,7 +93,11 @@ DOC_TOPICS = {
         ("README", "README.md", "Public scope, quickstart, and mental model."),
         ("Architecture", "docs/design_docs/ARCHITECTURE.md", "Package layout and runtime boundaries."),
         ("OpenAI batching", "docs/design_docs/OPENAI_BATCHING.md", "Provider request construction and enqueue policy."),
-        ("Storage and runs", "docs/design_docs/STORAGE_AND_RUNS.md", "Durable state, run lifecycle, export, and prune behavior."),
+        (
+            "Storage and runs",
+            "docs/design_docs/STORAGE_AND_RUNS.md",
+            "Durable state, run lifecycle, export, and prune behavior.",
+        ),
         ("Smoke tests", "docs/smoke-test.md", "Required and targeted validation commands."),
     ],
     "runtime": [
@@ -103,7 +106,11 @@ DOC_TOPICS = {
         ("Smoke tests", "docs/smoke-test.md", "Targeted runtime validation."),
     ],
     "provider": [
-        ("OpenAI batching", "docs/design_docs/OPENAI_BATCHING.md", "Batch shaping, token budgeting, and provider behavior."),
+        (
+            "OpenAI batching",
+            "docs/design_docs/OPENAI_BATCHING.md",
+            "Batch shaping, token budgeting, and provider behavior.",
+        ),
         ("Architecture", "docs/design_docs/ARCHITECTURE.md", "Provider layer boundary."),
         ("Smoke tests", "docs/smoke-test.md", "Targeted provider validation."),
     ],

@@ -106,7 +106,7 @@ class ArtifactPolicy:
         }
 
     @classmethod
-    def from_payload(cls, payload: JSONObject) -> "ArtifactPolicy":
+    def from_payload(cls, payload: JSONObject) -> ArtifactPolicy:
         """Deserialise a previously persisted policy payload.
 
         Args:
@@ -158,10 +158,7 @@ class OpenAIEnqueueLimitConfig:
             raise ValueError("target_ratio must be in (0, 1]")
         if self.headroom < 0:
             raise ValueError("headroom must be >= 0")
-        if (
-            self.enqueued_token_limit > 0
-            and self.headroom >= self.enqueued_token_limit
-        ):
+        if self.enqueued_token_limit > 0 and self.headroom >= self.enqueued_token_limit:
             raise ValueError("headroom must be < enqueued_token_limit")
         if self.max_batch_enqueued_tokens < 0:
             raise ValueError("max_batch_enqueued_tokens must be >= 0")
@@ -174,11 +171,12 @@ class OpenAIEnqueueLimitConfig:
                 raise ValueError("effective inflight budget must be > 0")
         else:
             effective_budget = None
-        if self.max_batch_enqueued_tokens > 0 and effective_budget is not None:
-            if self.max_batch_enqueued_tokens > effective_budget:
-                raise ValueError(
-                    "max_batch_enqueued_tokens must be <= effective inflight budget"
-                )
+        if (
+            self.max_batch_enqueued_tokens > 0
+            and effective_budget is not None
+            and self.max_batch_enqueued_tokens > effective_budget
+        ):
+            raise ValueError("max_batch_enqueued_tokens must be <= effective inflight budget")
 
     def to_payload(self) -> JSONObject:
         """Serialise the config to a JSON-compatible dictionary.
@@ -254,9 +252,7 @@ class OpenAIProviderConfig(ProviderConfig):
     request_timeout_sec: int = 30
     poll_interval_sec: float = 1.0
     reasoning_effort: OpenAIReasoningLevel | None = None
-    enqueue_limits: OpenAIEnqueueLimitConfig = field(
-        default_factory=OpenAIEnqueueLimitConfig
-    )
+    enqueue_limits: OpenAIEnqueueLimitConfig = field(default_factory=OpenAIEnqueueLimitConfig)
 
     def __post_init__(self) -> None:
         if self.request_timeout_sec <= 0:

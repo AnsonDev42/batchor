@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from batchor.core.enums import ItemStatus
@@ -22,7 +22,7 @@ def _decode_json(value: object) -> Any:
 def _encode_datetime(value: datetime | None) -> str | None:
     if value is None:
         return None
-    return value.astimezone(timezone.utc).isoformat()
+    return value.astimezone(UTC).isoformat()
 
 
 def _decode_datetime(value: object) -> datetime | None:

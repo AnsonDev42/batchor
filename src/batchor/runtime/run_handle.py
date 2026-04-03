@@ -8,9 +8,9 @@ for polling, waiting, controlling, and inspecting a single batch run.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -54,7 +54,7 @@ class _RunContext:
 
 def generate_run_id() -> str:
     """Generate a timestamped durable run identifier."""
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"batchor_{timestamp}_{uuid4().hex[:8]}"
 
 
@@ -111,9 +111,7 @@ class Run:
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(f"timed out waiting for run {self.run_id}")
             sleep_for = (
-                poll_interval
-                if poll_interval is not None
-                else self._context.config.provider_config.poll_interval_sec
+                poll_interval if poll_interval is not None else self._context.config.provider_config.poll_interval_sec
             )
             if self._summary.backoff_remaining_sec > 0:
                 if sleep_for > 0:

@@ -45,9 +45,7 @@ def _composite_checkpoint_payload(
 
 
 def _source_namespace(source_index: int, identity: SourceIdentity) -> str:
-    payload = (
-        f"{source_index}\0{identity.source_kind}\0{identity.source_ref}".encode("utf-8")
-    )
+    payload = f"{source_index}\0{identity.source_kind}\0{identity.source_ref}".encode()
     return f"src_{hashlib.sha256(payload).hexdigest()[:12]}"
 
 
@@ -63,10 +61,7 @@ def _lineage_metadata(
         lineage = {}
     if not isinstance(lineage, dict):
         raise TypeError("batchor_lineage metadata must be a JSON object")
-    lineage_payload: dict[str, JSONValue] = {
-        str(key): cast(JSONValue, value)
-        for key, value in lineage.items()
-    }
+    lineage_payload: dict[str, JSONValue] = {str(key): cast(JSONValue, value) for key, value in lineage.items()}
     lineage_payload["source_namespace"] = source_namespace
     lineage_payload["source_primary_key"] = original_item_id
     normalized["batchor_lineage"] = cast(JSONObject, lineage_payload)
@@ -79,16 +74,11 @@ class CompositeItemSource(CheckpointedItemSource[PayloadT], Generic[PayloadT]):
     def __init__(self, sources: Sequence[CheckpointedItemSource[PayloadT]]) -> None:
         self.sources = tuple(sources)
         self._identities = tuple(source.source_identity() for source in self.sources)
-        identity_payload: JSONValue = [
-            _identity_payload(identity) for identity in self._identities
-        ]
+        identity_payload: JSONValue = [_identity_payload(identity) for identity in self._identities]
         self._source_ref = _canonical_json(identity_payload)
-        self._source_fingerprint = hashlib.sha256(
-            self._source_ref.encode("utf-8")
-        ).hexdigest()
+        self._source_fingerprint = hashlib.sha256(self._source_ref.encode("utf-8")).hexdigest()
         self._source_namespaces = tuple(
-            _source_namespace(index, identity)
-            for index, identity in enumerate(self._identities)
+            _source_namespace(index, identity) for index, identity in enumerate(self._identities)
         )
 
     def source_identity(self) -> SourceIdentity:
@@ -149,9 +139,7 @@ class CompositeItemSource(CheckpointedItemSource[PayloadT], Generic[PayloadT]):
         if source_index < 0 or source_index > len(self.sources):
             raise ValueError("composite checkpoint source_index is out of range")
         if source_index == len(self.sources) and child_checkpoint is not None:
-            raise ValueError(
-                "composite checkpoint child_checkpoint must be null at end of sources"
-            )
+            raise ValueError("composite checkpoint child_checkpoint must be null at end of sources")
         return source_index, cast(JSONValue | None, child_checkpoint)
 
     def _namespaced_item(

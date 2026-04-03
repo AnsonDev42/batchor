@@ -12,8 +12,8 @@ Used by the runner submission layer to:
 
 from __future__ import annotations
 
-from functools import lru_cache
 import json
+from functools import lru_cache
 from math import ceil
 from typing import Any, Callable
 
@@ -166,11 +166,7 @@ def resolve_openai_batch_token_limit(
     Returns:
         Per-batch token ceiling, or ``None`` when no limit applies.
     """
-    batch_limit = (
-        limits.max_batch_enqueued_tokens
-        if limits.max_batch_enqueued_tokens > 0
-        else None
-    )
+    batch_limit = limits.max_batch_enqueued_tokens if limits.max_batch_enqueued_tokens > 0 else None
     inflight_limit = effective_inflight_token_budget(limits)
     if batch_limit is not None and inflight_limit is not None:
         return min(batch_limit, inflight_limit)
@@ -286,11 +282,7 @@ def chunk_by_request_limits(
         if current and (
             len(current) >= max_requests
             or current_bytes + row_bytes > max_bytes
-            or (
-                max_tokens is not None
-                and row_tokens is not None
-                and current_tokens + row_tokens > max_tokens
-            )
+            or (max_tokens is not None and row_tokens is not None and current_tokens + row_tokens > max_tokens)
         ):
             chunks.append(current)
             current = []
@@ -300,12 +292,7 @@ def chunk_by_request_limits(
         if not current and row_bytes > max_bytes:
             chunks.append([row])
             continue
-        if (
-            not current
-            and max_tokens is not None
-            and row_tokens is not None
-            and row_tokens > max_tokens
-        ):
+        if not current and max_tokens is not None and row_tokens is not None and row_tokens > max_tokens:
             chunks.append([row])
             continue
 

@@ -109,9 +109,7 @@ def _build_prompt_factory(
 def _load_output_model(import_path: str) -> type[BaseModel]:
     module_name, sep, qualname = import_path.partition(":")
     if not sep or not module_name or not qualname:
-        raise ValueError(
-            "structured output class must use the form module.path:ClassName"
-        )
+        raise ValueError("structured output class must use the form module.path:ClassName")
     if "<locals>" in qualname:
         raise ValueError("structured output class must be importable at module scope")
     module = importlib.import_module(module_name)
@@ -121,9 +119,7 @@ def _load_output_model(import_path: str) -> type[BaseModel]:
         if target is None:
             raise ValueError(f"structured output class not found: {import_path}")
     if not isinstance(target, type) or not issubclass(target, BaseModel):
-        raise ValueError(
-            f"structured output class must be a Pydantic BaseModel subclass: {import_path}"
-        )
+        raise ValueError(f"structured output class must be a Pydantic BaseModel subclass: {import_path}")
     return cast(type[BaseModel], target)
 
 
@@ -152,9 +148,7 @@ def _serialize_summary(summary: RunSummary) -> dict[str, object]:
         "total_items": summary.total_items,
         "completed_items": summary.completed_items,
         "failed_items": summary.failed_items,
-        "status_counts": {
-            status.value: count for status, count in summary.status_counts.items()
-        },
+        "status_counts": {status.value: count for status, count in summary.status_counts.items()},
         "active_batches": summary.active_batches,
         "backoff_remaining_sec": summary.backoff_remaining_sec,
     }
@@ -259,10 +253,7 @@ def _source_for_inputs(
     input_paths: list[Path],
     id_field: str,
 ) -> CheckpointedItemSource[JSONObject]:
-    sources = [
-        _source_for_input(input_path=input_path, id_field=id_field)
-        for input_path in input_paths
-    ]
+    sources = [_source_for_input(input_path=input_path, id_field=id_field) for input_path in input_paths]
     if len(sources) == 1:
         return sources[0]
     return CompositeItemSource(sources)

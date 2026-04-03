@@ -44,9 +44,7 @@ class _FakeCliProvider:
 
     def upload_input_file(self, input_path: Path) -> str:
         self._current_lines = [
-            json.loads(raw_line)
-            for raw_line in input_path.read_text(encoding="utf-8").splitlines()
-            if raw_line.strip()
+            json.loads(raw_line) for raw_line in input_path.read_text(encoding="utf-8").splitlines() if raw_line.strip()
         ]
         file_id = f"file_{self._next_file}"
         self._next_file += 1
@@ -85,11 +83,7 @@ class _FakeCliProvider:
                         "custom_id": line["custom_id"],
                         "response": {
                             "status_code": 200,
-                            "body": {
-                                "output": [
-                                    {"content": [{"text": text}]}
-                                ]
-                            },
+                            "body": {"output": [{"content": [{"text": text}]}]},
                         },
                     }
                 )
@@ -314,10 +308,7 @@ def test_cli_start_supports_multiple_inputs_with_duplicate_ids(tmp_path: Path) -
         ["results", "--run-id", run_id, "--db-path", str(db_path), "--output", str(output_path)],
     )
     assert results.exit_code == 0
-    written = [
-        json.loads(line)
-        for line in output_path.read_text(encoding="utf-8").strip().splitlines()
-    ]
+    written = [json.loads(line) for line in output_path.read_text(encoding="utf-8").strip().splitlines()]
     first_namespace = written[0]["item_id"].split("__", maxsplit=1)[0]
     second_namespace = written[1]["item_id"].split("__", maxsplit=1)[0]
 

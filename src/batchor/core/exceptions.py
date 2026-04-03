@@ -42,10 +42,7 @@ class ModelResolutionError(RuntimeError):
             module_name: Module path stored for the structured output class.
             qualname: Qualified name stored for the structured output class.
         """
-        super().__init__(
-            "structured output model unavailable for rehydration: "
-            f"{module_name}:{qualname}"
-        )
+        super().__init__(f"structured output model unavailable for rehydration: {module_name}:{qualname}")
         self.module_name = module_name
         self.qualname = qualname
 

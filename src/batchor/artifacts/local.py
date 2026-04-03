@@ -7,10 +7,10 @@ directories are pruned automatically when artifacts are deleted.
 
 from __future__ import annotations
 
-from contextlib import AbstractContextManager
 import os
-from pathlib import Path
 import shutil
+from contextlib import AbstractContextManager
+from pathlib import Path
 
 from batchor.artifacts.base import ArtifactStore
 

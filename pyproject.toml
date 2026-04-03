@@ -90,7 +90,10 @@ select = [
 ignore = [
     "E501",    # line too long — handled by ruff format
     "B006",    # mutable default argument — handled by dataclass field()
+    "B008",    # Typer option declarations are intentionally expressed as defaults
     "SIM108",  # ternary operator — readability preference
+    "UP040",   # PEP 695 type aliases can be migrated incrementally
+    "UP046",   # PEP 695 generic syntax can be migrated incrementally
     "UP007",   # use X | Y for unions — already using modern syntax
     "UP035",   # deprecated imports — some stubs need them
 ]

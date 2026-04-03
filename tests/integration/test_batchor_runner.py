@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import textwrap
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Callable
 
 import pytest
@@ -20,8 +20,8 @@ from batchor import (
     BatchRunner,
     ChunkPolicy,
     CompositeItemSource,
-    JsonlItemSource,
     ItemStatus,
+    JsonlItemSource,
     MemoryStateStore,
     OpenAIEnqueueLimitConfig,
     OpenAIProviderConfig,
@@ -46,7 +46,7 @@ class ClassificationResult(BaseModel):
 
 class _FakeClock:
     def __init__(self) -> None:
-        self.current = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self.current = datetime(2026, 1, 1, tzinfo=UTC)
         self.sleeps: list[float] = []
 
     def now(self) -> datetime:
@@ -125,9 +125,7 @@ class _FakeBatchProvider:
 
     def upload_input_file(self, input_path: Path) -> str:
         self._current_lines = [
-            json.loads(raw_line)
-            for raw_line in input_path.read_text(encoding="utf-8").splitlines()
-            if raw_line.strip()
+            json.loads(raw_line) for raw_line in input_path.read_text(encoding="utf-8").splitlines() if raw_line.strip()
         ]
         file_id = f"file_{self._next_file}"
         self._next_file += 1
@@ -326,11 +324,7 @@ def test_sqlite_subprocess_resume_retries_from_persisted_request_artifact(
     )
     env = dict(os.environ)
     pythonpath = str(Path(__file__).resolve().parents[2] / "src")
-    env["PYTHONPATH"] = (
-        f"{pythonpath}{os.pathsep}{env['PYTHONPATH']}"
-        if env.get("PYTHONPATH")
-        else pythonpath
-    )
+    env["PYTHONPATH"] = f"{pythonpath}{os.pathsep}{env['PYTHONPATH']}" if env.get("PYTHONPATH") else pythonpath
     child = subprocess.run(
         [sys.executable, "-c", child_code],
         env=env,
@@ -343,15 +337,19 @@ def test_sqlite_subprocess_resume_retries_from_persisted_request_artifact(
 
     storage = SQLiteStorage(path=db_path)
     with storage.engine.begin() as conn:
-        row = conn.execute(
-            select(
-                storage_sqlite.ITEMS_TABLE.c.prompt,
-                storage_sqlite.ITEMS_TABLE.c.request_artifact_path,
-                storage_sqlite.ITEMS_TABLE.c.request_artifact_line,
-                storage_sqlite.ITEMS_TABLE.c.request_sha256,
-                storage_sqlite.ITEMS_TABLE.c.status,
-            ).where(storage_sqlite.ITEMS_TABLE.c.run_id == run_id)
-        ).mappings().one()
+        row = (
+            conn.execute(
+                select(
+                    storage_sqlite.ITEMS_TABLE.c.prompt,
+                    storage_sqlite.ITEMS_TABLE.c.request_artifact_path,
+                    storage_sqlite.ITEMS_TABLE.c.request_artifact_line,
+                    storage_sqlite.ITEMS_TABLE.c.request_sha256,
+                    storage_sqlite.ITEMS_TABLE.c.status,
+                ).where(storage_sqlite.ITEMS_TABLE.c.run_id == run_id)
+            )
+            .mappings()
+            .one()
+        )
     assert row["prompt"] == ""
     assert row["request_artifact_path"] is not None
     assert row["request_artifact_line"] == 1
@@ -376,9 +374,7 @@ def test_sqlite_subprocess_resume_retries_from_persisted_request_artifact(
 def test_request_artifact_replay_reads_shared_file_once_per_submission_cycle(
     tmp_path: Path,
 ) -> None:
-    provider = _ArtifactOnlyBatchProvider(
-        record_factory=lambda custom_id: _success_record(f"text:{custom_id}")
-    )
+    provider = _ArtifactOnlyBatchProvider(record_factory=lambda custom_id: _success_record(f"text:{custom_id}"))
     runner = BatchRunner(
         storage="memory",
         provider_factory=lambda _cfg: provider,
@@ -470,9 +466,7 @@ def test_request_artifact_replay_reads_shared_file_once_per_submission_cycle(
 
 
 def test_transient_poll_failures_do_not_block_new_submissions(tmp_path: Path) -> None:
-    provider = _TransientPollFailureBatchProvider(
-        record_factory=lambda custom_id: _success_record(f"text:{custom_id}")
-    )
+    provider = _TransientPollFailureBatchProvider(record_factory=lambda custom_id: _success_record(f"text:{custom_id}"))
     runner = BatchRunner(
         storage="memory",
         provider_factory=lambda _cfg: provider,
@@ -514,9 +508,7 @@ def test_transient_poll_failures_do_not_block_new_submissions(tmp_path: Path) ->
 
 
 def test_pause_blocks_polling_and_wait_raises_paused_error(tmp_path: Path) -> None:
-    provider = _ControlledBatchProvider(
-        record_factory=lambda custom_id: _success_record(f"text:{custom_id}")
-    )
+    provider = _ControlledBatchProvider(record_factory=lambda custom_id: _success_record(f"text:{custom_id}"))
     runner = BatchRunner(
         storage="memory",
         provider_factory=lambda _cfg: provider,
@@ -560,9 +552,7 @@ def test_pause_blocks_polling_and_wait_raises_paused_error(tmp_path: Path) -> No
 
 
 def test_cancel_drains_active_batch_and_marks_remaining_items_cancelled(tmp_path: Path) -> None:
-    provider = _ControlledBatchProvider(
-        record_factory=lambda custom_id: _success_record(f"text:{custom_id}")
-    )
+    provider = _ControlledBatchProvider(record_factory=lambda custom_id: _success_record(f"text:{custom_id}"))
     runner = BatchRunner(
         storage="memory",
         provider_factory=lambda _cfg: provider,
@@ -606,9 +596,7 @@ def test_cancel_drains_active_batch_and_marks_remaining_items_cancelled(tmp_path
 def test_read_terminal_results_and_export_terminal_results_use_sequence_cursor(
     tmp_path: Path,
 ) -> None:
-    provider = _ControlledBatchProvider(
-        record_factory=lambda custom_id: _success_record(f"text:{custom_id}")
-    )
+    provider = _ControlledBatchProvider(record_factory=lambda custom_id: _success_record(f"text:{custom_id}"))
     runner = BatchRunner(
         storage="memory",
         provider_factory=lambda _cfg: provider,
@@ -667,9 +655,7 @@ def test_read_terminal_results_and_export_terminal_results_use_sequence_cursor(
 
 def test_disabling_raw_output_artifacts_keeps_results_but_skips_output_files(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     storage = SQLiteStorage(path=tmp_path / "artifact_policy.sqlite3")
     runner = BatchRunner(
@@ -694,9 +680,7 @@ def test_disabling_raw_output_artifacts_keeps_results_but_skips_output_files(tmp
 
 def test_structured_run_handle_returns_model_instances(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     runner = BatchRunner(
         storage="memory",
@@ -834,9 +818,7 @@ def test_enqueue_limit_create_failure_recovers_without_consuming_attempts(tmp_pa
 
 def test_sqlite_resume_ignores_api_key_mismatch(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     storage = SQLiteStorage(path=tmp_path / "resume_key.sqlite3")
     runner = BatchRunner(
@@ -867,9 +849,7 @@ def test_sqlite_resume_ignores_api_key_mismatch(tmp_path: Path) -> None:
 
 def test_sqlite_rehydration_loads_provider_config_without_persisted_api_key(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     storage = SQLiteStorage(path=tmp_path / "persisted_public.sqlite3")
     runner = BatchRunner(
@@ -895,9 +875,7 @@ def test_sqlite_rehydration_loads_provider_config_without_persisted_api_key(tmp_
 
 def test_runner_observer_receives_provider_lifecycle_events(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     events: list[RunEvent] = []
     runner = BatchRunner(
@@ -928,9 +906,7 @@ def test_runner_observer_receives_provider_lifecycle_events(tmp_path: Path) -> N
 
 def test_sqlite_storage_supports_rehydrating_run_handle(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     storage = SQLiteStorage(path=tmp_path / "batchor.sqlite3")
     runner_one = BatchRunner(
@@ -962,9 +938,7 @@ def test_sqlite_storage_supports_rehydrating_run_handle(tmp_path: Path) -> None:
 
 def test_sqlite_resume_retries_from_persisted_request_artifact(tmp_path: Path) -> None:
     first_provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        ),
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9})),
         create_failures=[RuntimeError("temporary service unavailable")],
     )
     storage = SQLiteStorage(path=tmp_path / "artifact_resume.sqlite3")
@@ -983,15 +957,19 @@ def test_sqlite_resume_retries_from_persisted_request_artifact(tmp_path: Path) -
     )
 
     with storage.engine.begin() as conn:
-        row = conn.execute(
-            select(
-                storage_sqlite.ITEMS_TABLE.c.prompt,
-                storage_sqlite.ITEMS_TABLE.c.request_artifact_path,
-                storage_sqlite.ITEMS_TABLE.c.request_artifact_line,
-                storage_sqlite.ITEMS_TABLE.c.request_sha256,
-                storage_sqlite.ITEMS_TABLE.c.status,
-            ).where(storage_sqlite.ITEMS_TABLE.c.run_id == started.run_id)
-        ).mappings().one()
+        row = (
+            conn.execute(
+                select(
+                    storage_sqlite.ITEMS_TABLE.c.prompt,
+                    storage_sqlite.ITEMS_TABLE.c.request_artifact_path,
+                    storage_sqlite.ITEMS_TABLE.c.request_artifact_line,
+                    storage_sqlite.ITEMS_TABLE.c.request_sha256,
+                    storage_sqlite.ITEMS_TABLE.c.status,
+                ).where(storage_sqlite.ITEMS_TABLE.c.run_id == started.run_id)
+            )
+            .mappings()
+            .one()
+        )
     assert row["prompt"] == ""
     assert row["request_artifact_path"] is not None
     assert row["request_artifact_line"] == 1
@@ -999,9 +977,7 @@ def test_sqlite_resume_retries_from_persisted_request_artifact(tmp_path: Path) -
     assert row["status"] == ItemStatus.PENDING
 
     second_provider = _ArtifactOnlyBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     resumed = BatchRunner(
         storage=SQLiteStorage(path=storage.path),
@@ -1016,9 +992,7 @@ def test_sqlite_resume_retries_from_persisted_request_artifact(tmp_path: Path) -
 
 def test_completed_run_can_prune_persisted_request_artifacts(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     storage = SQLiteStorage(path=tmp_path / "artifact_prune.sqlite3")
     runner = BatchRunner(
@@ -1055,9 +1029,7 @@ def test_completed_run_exports_raw_artifacts_and_allows_pruning_after_export(
     tmp_path: Path,
 ) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     storage = SQLiteStorage(path=tmp_path / "artifact_export.sqlite3")
     runner = BatchRunner(
@@ -1103,9 +1075,7 @@ def test_completed_run_exports_raw_artifacts_and_allows_pruning_after_export(
 
 def test_prune_artifacts_requires_a_terminal_run(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     storage = SQLiteStorage(path=tmp_path / "artifact_guard.sqlite3")
     runner = BatchRunner(
@@ -1132,9 +1102,7 @@ def test_prune_artifacts_requires_a_terminal_run(tmp_path: Path) -> None:
 
 def test_auto_splits_large_input_into_multiple_batches(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     runner = BatchRunner(
         storage="memory",
@@ -1167,9 +1135,7 @@ def test_auto_splits_large_input_into_multiple_batches(tmp_path: Path) -> None:
 
 def test_inflight_limit_defers_later_submissions_without_consuming_attempts(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     runner = BatchRunner(
         storage="memory",
@@ -1202,9 +1168,7 @@ def test_inflight_limit_defers_later_submissions_without_consuming_attempts(tmp_
 
 def test_oversized_request_becomes_permanent_failure_instead_of_aborting_run(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     runner = BatchRunner(
         storage="memory",
@@ -1238,9 +1202,7 @@ def test_oversized_request_becomes_permanent_failure_instead_of_aborting_run(tmp
 
 def test_completed_with_failures_run_can_export_and_prune_artifacts(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     storage = SQLiteStorage(path=tmp_path / "artifact_export_with_failures.sqlite3")
     runner = BatchRunner(
@@ -1292,9 +1254,7 @@ def test_completed_with_failures_run_can_export_and_prune_artifacts(tmp_path: Pa
 
 def test_all_items_succeed_gives_completed_status(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     runner = BatchRunner(
         storage="memory",
@@ -1329,9 +1289,7 @@ def test_file_backed_jsonl_job_matches_in_memory_results(tmp_path: Path) -> None
         encoding="utf-8",
     )
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     source = JsonlItemSource(
         file_path,
@@ -1398,9 +1356,7 @@ def test_composite_item_source_namespaces_duplicate_ids_across_sources(
         ]
     )
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     runner = BatchRunner(
         storage="memory",
@@ -1432,31 +1388,26 @@ def test_composite_item_source_namespaces_duplicate_ids_across_sources(
     assert first_namespace.startswith("src_")
     assert second_namespace.startswith("src_")
     assert first_namespace != second_namespace
-    assert [
-        result.metadata["batchor_lineage"]["source_primary_key"]
-        for result in results
-    ] == ["row1", "row2", "row1", "row2"]
-    assert [
-        result.metadata["batchor_lineage"]["source_ref"]
-        for result in results
-    ] == [
+    assert [result.metadata["batchor_lineage"]["source_primary_key"] for result in results] == [
+        "row1",
+        "row2",
+        "row1",
+        "row2",
+    ]
+    assert [result.metadata["batchor_lineage"]["source_ref"] for result in results] == [
         str(first_path.resolve()),
         str(first_path.resolve()),
         str(second_path.resolve()),
         str(second_path.resolve()),
     ]
-    assert [
-        result.output.label if result.output is not None else None
-        for result in results
-    ] == [result.item_id for result in results]
+    assert [result.output.label if result.output is not None else None for result in results] == [
+        result.item_id for result in results
+    ]
 
 
 def test_start_with_same_run_id_resumes_incomplete_jsonl_ingestion(tmp_path: Path) -> None:
     path = tmp_path / "items.jsonl"
-    records = [
-        {"id": f"row{i}", "text": f"text-{i}"}
-        for i in range(1002)
-    ]
+    records = [{"id": f"row{i}", "text": f"text-{i}"} for i in range(1002)]
     path.write_text(
         "\n".join(json.dumps(record) for record in records) + "\n",
         encoding="utf-8",
@@ -1469,9 +1420,7 @@ def test_start_with_same_run_id_resumes_incomplete_jsonl_ingestion(tmp_path: Pat
     storage = SQLiteStorage(path=tmp_path / "resume_ingest.sqlite3")
     run_id = "resume_ingest_run"
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     runner = BatchRunner(
         storage=storage,
@@ -1524,14 +1473,8 @@ def test_start_with_same_run_id_resumes_incomplete_composite_ingestion(
 ) -> None:
     first_path = tmp_path / "items-a.jsonl"
     second_path = tmp_path / "items-b.jsonl"
-    first_records = [
-        {"id": f"row{i}", "text": f"first-{i}"}
-        for i in range(999)
-    ]
-    second_records = [
-        {"id": f"row{i}", "text": f"second-{i}"}
-        for i in range(3)
-    ]
+    first_records = [{"id": f"row{i}", "text": f"first-{i}"} for i in range(999)]
+    second_records = [{"id": f"row{i}", "text": f"second-{i}"} for i in range(3)]
     first_path.write_text(
         "\n".join(json.dumps(record) for record in first_records) + "\n",
         encoding="utf-8",
@@ -1560,9 +1503,7 @@ def test_start_with_same_run_id_resumes_incomplete_composite_ingestion(
     storage = SQLiteStorage(path=tmp_path / "resume_composite.sqlite3")
     run_id = "resume_composite_run"
     provider = _FakeBatchProvider(
-        record_factory=lambda custom_id: _success_record(
-            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
-        )
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
     )
     runner = BatchRunner(
         storage=storage,
@@ -1617,14 +1558,14 @@ def test_start_with_same_run_id_resumes_incomplete_composite_ingestion(
     item_records = storage.get_item_records(run_id=run_id)
     last_three = item_records[-3:]
     assert [record.item_index for record in last_three] == [999, 1000, 1001]
-    assert [
-        record.metadata["batchor_lineage"]["source_ref"]
-        for record in last_three
-    ] == [str(second_path.resolve())] * 3
-    assert [
-        record.metadata["batchor_lineage"]["source_primary_key"]
-        for record in last_three
-    ] == ["row0", "row1", "row2"]
+    assert [record.metadata["batchor_lineage"]["source_ref"] for record in last_three] == [
+        str(second_path.resolve())
+    ] * 3
+    assert [record.metadata["batchor_lineage"]["source_primary_key"] for record in last_three] == [
+        "row0",
+        "row1",
+        "row2",
+    ]
 
     results = resumed.results()
     second_namespace = results[-1].item_id.split("__", maxsplit=1)[0]
