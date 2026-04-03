@@ -109,6 +109,9 @@ graph LR
     Files -->|"BatchItem stream"| BatchRunner
 ```
 
+For the detailed execution diagrams and module-boundary narrative, see
+[`docs/design_docs/ARCHITECTURE.md`](docs/design_docs/ARCHITECTURE.md).
+
 ### Item lifecycle
 
 ```mermaid
@@ -126,6 +129,9 @@ stateDiagram-v2
     COMPLETED --> [*]
     FAILED_PERMANENT --> [*]
 ```
+
+Operational semantics for resume, run control, and artifact retention live in
+[`docs/design_docs/STORAGE_AND_RUNS.md`](docs/design_docs/STORAGE_AND_RUNS.md).
 
 ## Install
 
@@ -504,7 +510,8 @@ The live smoke also requires an OpenAI account with Batch API access and availab
 
 ## Documentation guide
 
-- `docs/getting-started/how-it-works.md`: the runtime mental model
+- `docs/design_docs/ARCHITECTURE.md`: canonical runtime diagrams and module boundaries
+- `docs/design_docs/STORAGE_AND_RUNS.md`: durable run, resume, and artifact lifecycle semantics
 - `docs/getting-started/python-api.md`: Python-first workflows
 - `docs/getting-started/cli.md`: operator CLI workflows
 - `docs/reference/api.md`: generated API surface

@@ -97,6 +97,29 @@ graph TB
     BatchRunner -->|creates via| StorageRegistry
 ```
 
+This is the canonical diagram page for the current package shape. Keep the
+README diagrams compact and reader-facing; put the detailed runtime and module
+boundary view here.
+
+## Core runtime concepts
+
+The public runtime model centers on four types:
+
+- `BatchItem`: one logical unit of work with stable `item_id`, application
+  `payload`, and optional metadata.
+- `BatchJob`: the declarative execution plan that bundles items or an
+  `ItemSource`, prompt-building logic, provider config, and retry/artifact
+  policy.
+- `BatchRunner`: the orchestrator that resolves implementations, persists run
+  state, builds or replays request artifacts, submits provider batches, polls
+  remote status, and writes terminal results back into durable storage.
+- `Run`: the durable handle returned by `start()` or `get_run()` for refresh,
+  wait, pause/resume/cancel, terminal result reads, and artifact export/prune.
+
+`CompositeItemSource` keeps the runner contract narrow: the runner still sees
+one logical source, while callers remain responsible for selecting and ordering
+the child sources up front.
+
 ## Main user-facing flow
 
 The normal public flow is:
@@ -225,6 +248,9 @@ stateDiagram-v2
         end note
     }
 ```
+
+Detailed storage, resume, and artifact-retention semantics live in
+[`STORAGE_AND_RUNS.md`](STORAGE_AND_RUNS.md).
 
 ## Module boundaries
 

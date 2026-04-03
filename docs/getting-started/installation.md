@@ -49,6 +49,7 @@ If you use Postgres across machines or fresh processes, configure a shared artif
 
 ## Where to go next
 
-- Read [How It Works](how-it-works.md) for the runtime model.
+- Read [Architecture](../design_docs/ARCHITECTURE.md) for the runtime model and diagrams.
+- Read [Storage & Runs](../design_docs/STORAGE_AND_RUNS.md) for durable-run and artifact semantics.
 - Read [Python API](python-api.md) if you are integrating `batchor` into application code.
 - Read [CLI Usage](cli.md) if you want file-backed operator workflows.

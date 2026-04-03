@@ -342,6 +342,6 @@ This policy is library-first in the current release; the CLI still uses the defa
 
 ## Which API should you read next?
 
-- Read [How It Works](how-it-works.md) if you want the mental model behind the lifecycle.
+- Read [Architecture](../design_docs/ARCHITECTURE.md) if you want the canonical runtime diagrams.
 - Read [API Reference](../reference/api.md) for exact signatures.
 - Read [Storage & Runs](../design_docs/STORAGE_AND_RUNS.md) if you are operating durable runs at scale.

@@ -5,7 +5,7 @@
 `batchor` is a durable OpenAI Batch runner for Python teams that want typed results, resumable runs, replayable artifacts, and a narrow operator CLI.
 
 [Get Started](getting-started/installation.md){ .md-button .md-button--primary }
-[How It Works](getting-started/how-it-works.md){ .md-button }
+[Architecture](design_docs/ARCHITECTURE.md){ .md-button }
 [Read The API](reference/api.md){ .md-button }
 
 </div>
@@ -49,7 +49,9 @@
 - `BatchRunner`: the durable orchestrator
 - `Run`: the handle you refresh, wait on, inspect, export, and prune
 
-If that is the mental model you were missing from the generated docs, go straight to [How It Works](getting-started/how-it-works.md).
+If that is the mental model you were missing from the generated docs, start with
+[Architecture](design_docs/ARCHITECTURE.md) and then read
+[Storage & Runs](design_docs/STORAGE_AND_RUNS.md).
 
 ## Current surface
 
@@ -64,7 +66,8 @@ If that is the mental model you were missing from the generated docs, go straigh
 ## Reading order
 
 - Start with [Installation](getting-started/installation.md) if you are evaluating the package.
-- Read [How It Works](getting-started/how-it-works.md) for the runtime mental model.
+- Read [Architecture](design_docs/ARCHITECTURE.md) for the runtime model and canonical diagrams.
+- Read [Storage & Runs](design_docs/STORAGE_AND_RUNS.md) for durable-run, resume, and artifact semantics.
 - Use [Python API](getting-started/python-api.md) or [CLI Usage](getting-started/cli.md) for concrete workflows.
 - Use [API Reference](reference/api.md) for symbols and signatures.
 - Use the Design section for implementation details and extension boundaries.

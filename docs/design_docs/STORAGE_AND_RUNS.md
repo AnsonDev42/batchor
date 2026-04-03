@@ -4,6 +4,11 @@ This document describes durable execution state in `batchor`.
 
 If you only read one implementation-oriented document after the getting-started guides, this should probably be it. The central idea in the repo is that a `Run` is durable, rehydratable state, not just an in-memory helper object.
 
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) first if you want the canonical
+runtime diagrams and module-boundary view. This document picks up where that
+one stops: durable state, resume rules, operator controls, and artifact
+lifecycle.
+
 ## Run model
 
 `BatchRunner.start(job)` returns a durable `Run` handle immediately.
@@ -142,6 +147,14 @@ Non-checkpointable iterables do not yet support the same mid-ingest crash recove
 
 `runner.get_run(run_id)` must work from a fresh runner when it points at the same durable storage.
 
+Resume happens at multiple layers:
+
+- `runner.get_run(run_id)` rehydrates an existing durable run
+- `start(job, run_id=...)` resumes the same run instead of creating a new one
+- fresh-process recovery requeues local-but-not-submitted items back to `pending`
+- deterministic built-in sources can resume ingestion from a checkpoint when the
+  source fingerprint still matches
+
 Successful rehydration depends on:
 
 - the durable storage still containing the run rows
@@ -155,6 +168,13 @@ Resume compatibility intentionally ignores non-persisted secret fields such as p
 
 For deterministic-source resume, the caller must also reuse the same `run_id` and provide the same source identity/fingerprint.
 For composite sources, that includes the same ordered child identities; changing the child order or swapping one file changes the logical source identity.
+
+Built-in deterministic sources currently include:
+
+- `CompositeItemSource`
+- `CsvItemSource`
+- `JsonlItemSource`
+- `ParquetItemSource`
 
 Once an item has a durable request artifact pointer, `batchor` prunes large inline request-building fields from the control-plane store and relies on the artifact for later retries.
 
@@ -173,6 +193,15 @@ Raw output/error artifacts follow a stricter rule:
 - only then may they call `Run.prune_artifacts(include_raw_output_artifacts=True)`
 
 That rule keeps destructive cleanup of raw provider evidence explicit.
+
+After a terminal run, the usual flow is:
+
+1. Call `export_artifacts(...)` if you want a portable bundle containing raw
+   files plus `results.jsonl`.
+2. Call `prune_artifacts()` to remove replayable request artifacts once replay
+   durability is no longer needed.
+3. Call `prune_artifacts(include_raw_output_artifacts=True)` only after export
+   if you also want to remove raw provider payloads.
 
 ## Run control semantics
 
@@ -195,6 +224,25 @@ Semantics:
 
 `wait()` fails fast on paused runs instead of sleeping indefinitely.
 Provider-side remote cancellation is still `TBD`.
+
+## Python API versus CLI
+
+The Python API is the main product surface. It supports:
+
+- in-memory, SQLite, and Postgres control-plane storage
+- custom item iterables and built-in deterministic file sources
+- custom artifact roots
+- direct access to `Run`
+- run control and incremental terminal-result APIs
+
+The CLI is intentionally narrower. It is designed for operator workflows around:
+
+- one or more explicit CSV and JSONL files
+- SQLite durability
+- JSON summaries and result export
+
+The CLI does not yet expose pause/resume/cancel or incremental terminal-result
+commands.
 
 ## Incremental terminal results
 

@@ -5,7 +5,11 @@ This page is split in two parts:
 - a short handwritten guide to the public surface
 - generated API reference from `mkdocstrings`
 
-If the generated reference feels terse, read [How It Works](../getting-started/how-it-works.md) first. The generated section reflects the code docstrings, so it is best for signatures and symbol discovery rather than architectural explanation.
+If the generated reference feels terse, read
+[Architecture](../design_docs/ARCHITECTURE.md) first, then
+[Storage & Runs](../design_docs/STORAGE_AND_RUNS.md). The generated section
+reflects the code docstrings, so it is best for signatures and symbol discovery
+rather than architectural explanation.
 
 ## Start here
 
