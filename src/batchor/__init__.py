@@ -1,3 +1,4 @@
+from batchor.artifacts import ArtifactStore, LocalArtifactStore
 from batchor.core.enums import (
     ItemStatus,
     OpenAIEndpoint,
@@ -41,11 +42,13 @@ from batchor.runtime.runner import BatchRunner, Run
 from batchor.runtime.validation import StructuredOutputError, default_schema_name, model_output_schema
 from batchor.sources.base import ItemSource
 from batchor.sources.files import CsvItemSource, JsonlItemSource
+from batchor.storage.postgres import PostgresStorage
 from batchor.storage.registry import StorageRegistry, build_default_storage_registry
 from batchor.storage.sqlite import SQLiteStorage
 from batchor.storage.state import MemoryStateStore, StateStore
 
 __all__ = [
+    "ArtifactStore",
     "BatchProvider",
     "ArtifactPruneResult",
     "ArtifactExportResult",
@@ -58,6 +61,7 @@ __all__ = [
     "ItemStatus",
     "ItemSource",
     "JsonlItemSource",
+    "LocalArtifactStore",
     "MemoryStateStore",
     "ModelResolutionError",
     "OpenAIBatchProvider",
@@ -72,6 +76,7 @@ __all__ = [
     "ProviderKind",
     "ProviderRegistry",
     "PromptParts",
+    "PostgresStorage",
     "RetryPolicy",
     "Run",
     "RunEvent",

@@ -24,6 +24,7 @@ class ProviderKind(StrEnum):
 
 class StorageKind(StrEnum):
     SQLITE = "sqlite"
+    POSTGRES = "postgres"
     MEMORY = "memory"
 
 

@@ -11,6 +11,7 @@ license = { file = "LICENSE" }
 requires-python = ">=3.12,<4"
 dependencies = [
     "openai>=2.7.1",
+    "psycopg[binary]>=3.2.0,<4",
     "pydantic>=2.12.0,<3",
     "sqlalchemy>=2.0.43,<3",
     "tiktoken>=0.12.0",

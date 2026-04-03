@@ -32,12 +32,17 @@ def build_default_storage_registry(
     *,
     provider_registry: ProviderRegistry | None = None,
 ) -> StorageRegistry:
+    from batchor.storage.postgres import PostgresStorage
     from batchor.storage.sqlite import SQLiteStorage
 
     registry = StorageRegistry()
     registry.register(
         kind=StorageKind.SQLITE,
         factory=lambda: SQLiteStorage(name="default", provider_registry=provider_registry),
+    )
+    registry.register(
+        kind=StorageKind.POSTGRES,
+        factory=lambda: PostgresStorage.from_env(provider_registry=provider_registry),
     )
     registry.register(kind=StorageKind.MEMORY, factory=MemoryStateStore)
     return registry
