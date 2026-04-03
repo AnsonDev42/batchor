@@ -9,7 +9,12 @@ from batchor.core.enums import (
     RunLifecycleStatus,
     StorageKind,
 )
-from batchor.core.exceptions import ModelResolutionError, RunNotFinishedError, RunPausedError
+from batchor.core.exceptions import (
+    ModelResolutionError,
+    RunNotFinishedError,
+    RunPausedError,
+    StructuredOutputSchemaError,
+)
 from batchor.core.models import (
     ArtifactPolicy,
     ArtifactExportResult,
@@ -99,6 +104,7 @@ __all__ = [
     "StorageRegistry",
     "StructuredItemResult",
     "StructuredOutputError",
+    "StructuredOutputSchemaError",
     "StructuredOutputSchema",
     "TerminalResultsExportResult",
     "TerminalResultsPage",

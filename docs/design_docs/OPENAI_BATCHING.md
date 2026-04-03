@@ -88,6 +88,8 @@ Only after those supported locations are checked does empty text become a parse 
 
 For structured outputs:
 
+- the generated JSON Schema is normalized to close object schemas with `additionalProperties: false`
+- schema compatibility is validated before submission; unsupported root/optional/open-object shapes fail fast locally
 - text is extracted first
 - Markdown JSON fences are stripped when present
 - the payload is parsed as JSON

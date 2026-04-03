@@ -169,6 +169,14 @@ run.wait()
 print(run.results()[0].output)
 ```
 
+Structured-output models are validated up front against the OpenAI strict-schema subset used by `batchor`.
+
+- root schema must be an object
+- object schemas must be closed with `additionalProperties: false`
+- object properties must all be listed in `required`
+
+If you need a field to be optional in Python, model it as nullable in the schema shape OpenAI accepts rather than relying on omitted required fields.
+
 ### Rehydrate a durable run
 
 ```python

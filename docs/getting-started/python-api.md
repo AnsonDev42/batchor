@@ -84,6 +84,7 @@ print(result.output_text)
 Notes:
 
 - `structured_output` must be a module-level Pydantic model class if you want fresh-process rehydration to work
+- `batchor` validates structured-output schemas before submission; the root schema must be an object, object schemas must be closed, and object properties must all be required
 - `output` is the parsed Pydantic object
 - `output_text` preserves the raw text that was parsed
 

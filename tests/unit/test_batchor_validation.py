@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, RootModel
 
+from batchor.core.exceptions import StructuredOutputSchemaError
 from batchor.runtime.validation import (
     StructuredOutputError,
     default_schema_name,
@@ -23,6 +24,21 @@ class NestedPayload(BaseModel):
 
 class EnvelopeResult(BaseModel):
     payload: NestedPayload
+
+
+class OptionalFieldResult(BaseModel):
+    label: str
+    score: float | None = None
+
+
+class OpenObjectResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    label: str
+
+
+class UnionRootResult(RootModel[_ClassificationResult | NestedPayload]):
+    pass
 
 
 def _responses_record(text: str) -> dict[str, object]:
@@ -79,6 +95,21 @@ def test_model_output_schema_marks_nested_objects_as_closed() -> None:
     object_schemas = _collect_object_schemas(schema)
     assert object_schemas != []
     assert all(item.get("additionalProperties") is False for item in object_schemas)
+
+
+def test_model_output_schema_rejects_optional_properties() -> None:
+    with pytest.raises(StructuredOutputSchemaError, match="must all be required"):
+        model_output_schema(OptionalFieldResult)
+
+
+def test_model_output_schema_rejects_open_object_models() -> None:
+    with pytest.raises(StructuredOutputSchemaError, match="additionalProperties"):
+        model_output_schema(OpenObjectResult)
+
+
+def test_model_output_schema_rejects_root_anyof() -> None:
+    with pytest.raises(StructuredOutputSchemaError, match="must not use anyOf"):
+        model_output_schema(UnionRootResult)
 
 
 def test_parse_structured_response_returns_model_instance() -> None:

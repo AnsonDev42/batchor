@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
+from batchor.core.exceptions import StructuredOutputSchemaError
 from batchor.core.types import JSONObject, JSONValue
 
 
@@ -35,9 +36,11 @@ def model_output_schema(
     schema_name: str | None = None,
 ) -> tuple[str, JSONObject]:
     resolved_schema_name = schema_name or default_schema_name(model)
-    return resolved_schema_name, _strict_json_schema(
+    normalized_schema = _strict_json_schema(
         cast(JSONObject, model.model_json_schema())
     )
+    validate_strict_json_schema(normalized_schema)
+    return resolved_schema_name, normalized_schema
 
 
 def _strict_json_schema(schema: JSONObject) -> JSONObject:
@@ -65,6 +68,56 @@ def _normalize_json_schema_value(value: JSONValue) -> JSONValue:
     ):
         normalized.setdefault("additionalProperties", False)
     return normalized
+
+
+def validate_strict_json_schema(schema: JSONObject) -> None:
+    if "anyOf" in schema:
+        raise StructuredOutputSchemaError(
+            "structured output root schema must be an object and must not use anyOf"
+        )
+    if not _schema_type_includes(schema.get("type"), "object"):
+        raise StructuredOutputSchemaError(
+            "structured output root schema must be an object"
+        )
+    _validate_json_schema_value(schema, path="$")
+
+
+def _validate_json_schema_value(value: JSONValue, *, path: str) -> None:
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_json_schema_value(item, path=f"{path}[{index}]")
+        return
+    if not isinstance(value, dict):
+        return
+    if _schema_type_includes(value.get("type"), "object"):
+        additional_properties = value.get("additionalProperties")
+        if additional_properties is not False:
+            raise StructuredOutputSchemaError(
+                f"{path}: object schemas must set additionalProperties to false"
+            )
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            required = value.get("required")
+            if not isinstance(required, list):
+                raise StructuredOutputSchemaError(
+                    f"{path}: object schemas with properties must define required"
+                )
+            property_names = set(properties.keys())
+            required_names = {name for name in required if isinstance(name, str)}
+            missing_names = sorted(property_names - required_names)
+            if missing_names:
+                raise StructuredOutputSchemaError(
+                    f"{path}: properties must all be required; missing {missing_names}"
+                )
+    for key, item in value.items():
+        next_path = f"{path}.{key}" if key.isidentifier() else f"{path}[{key!r}]"
+        _validate_json_schema_value(item, path=next_path)
+
+
+def _schema_type_includes(value: object, expected_type: str) -> bool:
+    if value == expected_type:
+        return True
+    return isinstance(value, list) and expected_type in value
 
 
 def _extract_content_text(content: Any) -> list[str]:
