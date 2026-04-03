@@ -217,7 +217,12 @@ stateDiagram-v2
         RUNNING2 --> PAUSED : pause_run() called
         PAUSED --> RUNNING2 : resume_run() called
         RUNNING2 --> CANCEL_REQUESTED : cancel_run() called
-        CANCEL_REQUESTED --> RUNNING2 : (not reversible — drains then terminates)
+
+        note right of CANCEL_REQUESTED
+            Not reversible.
+            Runner drains in-flight batches;
+            lifecycle then becomes terminal.
+        end note
     }
 ```
 
