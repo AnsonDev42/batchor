@@ -27,7 +27,7 @@ pip-wheel-metadata/
 .coverage.*
 htmlcov/
 coverage.xml
-
+tmp/
 # Environment and local config
 .env
 .env.*
