@@ -72,6 +72,67 @@ Durability is split on purpose:
 
 That split is what allows retries and fresh-process resume without keeping every request inline in the control-plane store.
 
+## Architecture
+
+```mermaid
+graph LR
+    User["User / CLI"]
+
+    subgraph runtime["runtime/"]
+        BatchRunner
+        Run["Run handle"]
+    end
+
+    subgraph providers["providers/"]
+        OpenAI["OpenAIBatchProvider"]
+    end
+
+    subgraph sources["sources/"]
+        Files["CSV / JSONL / Parquet"]
+    end
+
+    subgraph storage["storage/"]
+        SQLite["SQLiteStorage (default)"]
+        Postgres["PostgresStorage (opt-in)"]
+        Memory["MemoryStateStore (test)"]
+    end
+
+    subgraph artifacts["artifacts/"]
+        LocalFS["LocalArtifactStore"]
+    end
+
+    User -->|"start() / run_and_wait()"| BatchRunner
+    BatchRunner --> Run
+    BatchRunner --> OpenAI
+    BatchRunner --> SQLite
+    BatchRunner --> LocalFS
+    Files -->|"BatchItem stream"| BatchRunner
+```
+
+For the detailed execution diagrams and module-boundary narrative, see
+[`docs/design_docs/ARCHITECTURE.md`](docs/design_docs/ARCHITECTURE.md).
+
+### Item lifecycle
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> PENDING : ingested from source
+    PENDING --> QUEUED_LOCAL : claimed for submission
+    QUEUED_LOCAL --> PENDING : released (cycle interrupted)
+    QUEUED_LOCAL --> SUBMITTED : batch submitted to provider
+    SUBMITTED --> COMPLETED : result parsed OK
+    SUBMITTED --> FAILED_RETRYABLE : error — retrying
+    SUBMITTED --> FAILED_PERMANENT : error — max attempts reached
+    FAILED_RETRYABLE --> PENDING : re-queued after backoff
+    QUEUED_LOCAL --> FAILED_PERMANENT : rejected pre-submission
+    COMPLETED --> [*]
+    FAILED_PERMANENT --> [*]
+```
+
+Operational semantics for resume, run control, and artifact retention live in
+[`docs/design_docs/STORAGE_AND_RUNS.md`](docs/design_docs/STORAGE_AND_RUNS.md).
+
 ## Install
 
 ```bash
@@ -449,7 +510,9 @@ The live smoke also requires an OpenAI account with Batch API access and availab
 
 ## Documentation guide
 
-- `docs/getting-started/how-it-works.md`: the runtime mental model
+- `docs/design_docs/ARCHITECTURE.md`: canonical runtime diagrams and module boundaries
+- `docs/design_docs/STORAGE_AND_RUNS.md`: durable run, resume, and artifact lifecycle semantics
+- `docs/getting-started/use-cases.md`: practical single-file, multi-file, and pipeline examples
 - `docs/getting-started/python-api.md`: Python-first workflows
 - `docs/getting-started/cli.md`: operator CLI workflows
 - `docs/reference/api.md`: generated API surface

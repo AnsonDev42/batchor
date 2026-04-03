@@ -1,7 +1,19 @@
+"""Token estimation and request-chunking utilities.
+
+Used by the runner submission layer to:
+
+* Estimate the token count for a request line (via *tiktoken* with a
+  character-ratio fallback).
+* Split a batch of prepared request rows into chunks that respect the
+  provider's per-file limits (max requests, max bytes, max tokens).
+* Compute effective inflight token budgets from
+  :class:`~batchor.OpenAIEnqueueLimitConfig`.
+"""
+
 from __future__ import annotations
 
-from functools import lru_cache
 import json
+from functools import lru_cache
 from math import ceil
 from typing import Any, Callable
 
@@ -16,6 +28,26 @@ def estimate_text_tokens(
     model: str | None = None,
     use_tiktoken: bool = True,
 ) -> int:
+    """Estimate the number of tokens in *text*.
+
+    Uses *tiktoken* when available and ``use_tiktoken`` is ``True``; falls
+    back to a simple ``ceil(len(text) / chars_per_token)`` heuristic.
+
+    Args:
+        text: The text to estimate.  Empty string returns ``0``.
+        chars_per_token: Characters-per-token ratio for the fallback estimator.
+            Must be ``> 0``.
+        model: Optional model name passed to tiktoken's
+            ``encoding_for_model``.  When ``None``, ``cl100k_base`` is used.
+        use_tiktoken: Set to ``False`` to skip tiktoken and always use the
+            character-ratio fallback.
+
+    Returns:
+        Estimated token count as a non-negative integer.
+
+    Raises:
+        ValueError: If ``chars_per_token`` is ``<= 0``.
+    """
     if chars_per_token <= 0:
         raise ValueError("chars_per_token must be > 0")
     if not text:
@@ -36,6 +68,20 @@ def estimate_request_tokens(
     model: str | None = None,
     use_tiktoken: bool = True,
 ) -> int:
+    """Estimate the token count for a serialised batch request line.
+
+    Serialises *request_line* to compact JSON and delegates to
+    :func:`estimate_text_tokens`.
+
+    Args:
+        request_line: The request line to estimate.
+        chars_per_token: Fallback characters-per-token ratio.
+        model: Optional model name for tiktoken lookup.
+        use_tiktoken: When ``False``, bypasses tiktoken.
+
+    Returns:
+        Estimated token count.
+    """
     serialized = json.dumps(
         request_line,
         ensure_ascii=False,
@@ -57,6 +103,22 @@ def chunk_request_rows(
     estimate_row_bytes: Callable[[dict[str, Any]], int],
     estimate_row_tokens: Callable[[dict[str, Any]], int],
 ) -> list[list[dict[str, Any]]]:
+    """Split *rows* into chunks that respect the :class:`~batchor.ChunkPolicy`.
+
+    Delegates to :func:`chunk_by_request_limits` using the policy's
+    ``max_requests`` and ``max_file_bytes``.
+
+    Args:
+        rows: Prepared request row dicts to partition.
+        chunk_policy: Policy supplying ``max_requests`` and ``max_file_bytes``.
+        max_tokens: Optional per-chunk token ceiling.  ``None`` disables token
+            splitting.
+        estimate_row_bytes: Callable returning the byte size for a row.
+        estimate_row_tokens: Callable returning the token estimate for a row.
+
+    Returns:
+        A list of chunks; each chunk is a non-empty list of rows.
+    """
     return chunk_by_request_limits(
         rows,
         max_requests=chunk_policy.max_requests,
@@ -70,6 +132,19 @@ def chunk_request_rows(
 def effective_inflight_token_budget(
     limits: OpenAIEnqueueLimitConfig,
 ) -> int | None:
+    """Compute the effective inflight token budget from enqueue limit config.
+
+    The budget is the smaller of the ratio-based and headroom-based values:
+    ``min(limit * target_ratio, limit - headroom)``.
+
+    Args:
+        limits: Enqueue limit configuration from
+            :class:`~batchor.OpenAIEnqueueLimitConfig`.
+
+    Returns:
+        Effective inflight budget in tokens, or ``None`` when
+        ``enqueued_token_limit`` is ``<= 0`` (budget enforcement disabled).
+    """
     if limits.enqueued_token_limit <= 0:
         return None
     by_ratio = int(limits.enqueued_token_limit * limits.target_ratio)
@@ -80,11 +155,18 @@ def effective_inflight_token_budget(
 def resolve_openai_batch_token_limit(
     limits: OpenAIEnqueueLimitConfig,
 ) -> int | None:
-    batch_limit = (
-        limits.max_batch_enqueued_tokens
-        if limits.max_batch_enqueued_tokens > 0
-        else None
-    )
+    """Resolve the per-batch token ceiling, accounting for both config knobs.
+
+    Returns the more restrictive of ``max_batch_enqueued_tokens`` and the
+    effective inflight budget.
+
+    Args:
+        limits: Enqueue limit configuration.
+
+    Returns:
+        Per-batch token ceiling, or ``None`` when no limit applies.
+    """
+    batch_limit = limits.max_batch_enqueued_tokens if limits.max_batch_enqueued_tokens > 0 else None
     inflight_limit = effective_inflight_token_budget(limits)
     if batch_limit is not None and inflight_limit is not None:
         return min(batch_limit, inflight_limit)
@@ -97,6 +179,22 @@ def split_rows_by_token_limit(
     token_limit: int,
     token_field: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Partition *rows* into those within the token limit and those that exceed it.
+
+    Args:
+        rows: Request row dicts to partition.
+        token_limit: Maximum token count allowed per row.  Must be ``> 0``.
+        token_field: Name of the field in each row dict that holds the token
+            count (as an integer-like value).
+
+    Returns:
+        A 2-tuple ``(within_limit, oversized)`` where *within_limit* contains
+        rows whose token count is ``<= token_limit`` and *oversized* contains
+        the rest.
+
+    Raises:
+        ValueError: If ``token_limit`` is ``<= 0``.
+    """
     if token_limit <= 0:
         raise ValueError("token_limit must be > 0")
     within_limit: list[dict[str, Any]] = []
@@ -110,7 +208,7 @@ def split_rows_by_token_limit(
 
 
 @lru_cache(maxsize=32)
-def _encoding_for_model(model: str | None):
+def _encoding_for_model(model: str | None):  # noqa: ANN202
     import tiktoken
 
     if model:
@@ -130,6 +228,35 @@ def chunk_by_request_limits(
     max_tokens: int | None = None,
     estimate_row_tokens: Callable[[dict[str, Any]], int] | None = None,
 ) -> list[list[dict[str, Any]]]:
+    """Split *rows* into chunks respecting request-count, byte, and token limits.
+
+    Each chunk satisfies:
+    - ``len(chunk) <= max_requests``
+    - ``sum(row_bytes) <= max_bytes``
+    - ``sum(row_tokens) <= max_tokens`` (when *max_tokens* is provided)
+
+    Rows that individually exceed ``max_bytes`` or ``max_tokens`` are placed
+    in a singleton chunk rather than being discarded.
+
+    Args:
+        rows: Request row dicts to partition.
+        max_requests: Maximum number of rows per chunk.  Must be ``> 0``.
+        max_bytes: Maximum total byte size per chunk.  Must be ``> 0``.
+        estimate_row_bytes: Callable returning the byte size for a row.
+        max_tokens: Optional per-chunk token ceiling.  ``None`` disables token
+            splitting.
+        estimate_row_tokens: Callable returning the token estimate for a row.
+            Required when *max_tokens* is provided.
+
+    Returns:
+        A list of non-empty row chunks.
+
+    Raises:
+        ValueError: If ``max_requests`` or ``max_bytes`` are ``<= 0``, if
+            ``max_tokens`` is non-positive when provided, if
+            ``estimate_row_tokens`` is missing when ``max_tokens`` is set, or
+            if any row's estimated bytes or tokens are ``<= 0``.
+    """
     if max_requests <= 0:
         raise ValueError("max_requests must be > 0")
     if max_bytes <= 0:
@@ -155,11 +282,7 @@ def chunk_by_request_limits(
         if current and (
             len(current) >= max_requests
             or current_bytes + row_bytes > max_bytes
-            or (
-                max_tokens is not None
-                and row_tokens is not None
-                and current_tokens + row_tokens > max_tokens
-            )
+            or (max_tokens is not None and row_tokens is not None and current_tokens + row_tokens > max_tokens)
         ):
             chunks.append(current)
             current = []
@@ -169,12 +292,7 @@ def chunk_by_request_limits(
         if not current and row_bytes > max_bytes:
             chunks.append([row])
             continue
-        if (
-            not current
-            and max_tokens is not None
-            and row_tokens is not None
-            and row_tokens > max_tokens
-        ):
+        if not current and max_tokens is not None and row_tokens is not None and row_tokens > max_tokens:
             chunks.append([row])
             continue
 

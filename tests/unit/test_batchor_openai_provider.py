@@ -7,8 +7,8 @@ from pydantic import BaseModel
 
 from batchor.core.enums import OpenAIEndpoint, OpenAIModel, OpenAIReasoningEffort
 from batchor.core.models import OpenAIProviderConfig, PromptParts
-from batchor.providers.openai import OpenAIBatchProvider, resolve_openai_api_key
 from batchor.providers.base import StructuredOutputSchema
+from batchor.providers.openai import OpenAIBatchProvider, resolve_openai_api_key
 from batchor.runtime.validation import model_output_schema
 
 
@@ -144,9 +144,7 @@ def test_upload_create_get_and_download() -> None:
 
 def test_resolve_openai_api_key_prefers_explicit_value(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
-    resolved = resolve_openai_api_key(
-        OpenAIProviderConfig(api_key="explicit-key", model="gpt-4.1")
-    )
+    resolved = resolve_openai_api_key(OpenAIProviderConfig(api_key="explicit-key", model="gpt-4.1"))
     assert resolved == "explicit-key"
 
 

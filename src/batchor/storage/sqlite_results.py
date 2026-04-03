@@ -126,13 +126,9 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                         "b_attempt_count": attempt_count,
                         "b_status": status,
                         "b_terminal_result_sequence": (
-                            next_sequence + index
-                            if status in self.TERMINAL_ITEM_STATUSES
-                            else None
+                            next_sequence + index if status in self.TERMINAL_ITEM_STATUSES else None
                         ),
-                        "b_terminalized_at": (
-                            terminalized_at if status in self.TERMINAL_ITEM_STATUSES else None
-                        ),
+                        "b_terminalized_at": (terminalized_at if status in self.TERMINAL_ITEM_STATUSES else None),
                         "b_error_json": _encode_json(serialize_item_failure(failure.error)),
                     }
                 )
@@ -181,10 +177,7 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                     )
                 )
             ).mappings()
-            attempts_by_item_id = {
-                str(row["item_id"]): int(row["attempt_count"])
-                for row in rows
-            }
+            attempts_by_item_id = {str(row["item_id"]): int(row["attempt_count"]) for row in rows}
             payloads: list[dict[str, object | None]] = []
             for index, failure in enumerate(failures):
                 attempt_count = attempts_by_item_id[failure.item_id]
@@ -203,13 +196,9 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                         "b_attempt_count": attempt_count,
                         "b_status": status,
                         "b_terminal_result_sequence": (
-                            next_sequence + index
-                            if status in self.TERMINAL_ITEM_STATUSES
-                            else None
+                            next_sequence + index if status in self.TERMINAL_ITEM_STATUSES else None
                         ),
-                        "b_terminalized_at": (
-                            terminalized_at if status in self.TERMINAL_ITEM_STATUSES else None
-                        ),
+                        "b_terminalized_at": (terminalized_at if status in self.TERMINAL_ITEM_STATUSES else None),
                         "b_error_json": _encode_json(serialize_item_failure(failure.error)),
                     }
                 )
@@ -297,11 +286,7 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                 base_delay_sec=base_delay_sec,
                 max_delay_sec=max_delay_sec,
             )
-            resolved_retry_at = (
-                self._now() + timedelta(seconds=backoff_sec)
-                if backoff_sec > 0
-                else None
-            )
+            resolved_retry_at = self._now() + timedelta(seconds=backoff_sec) if backoff_sec > 0 else None
             state = RetryBackoffState(
                 consecutive_failures=consecutive,
                 total_failures=total,

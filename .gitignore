@@ -22,6 +22,10 @@ site/
 .eggs/
 pip-wheel-metadata/
 
+# Internal planning docs
+docs/plans/
+plans/
+
 # Coverage and test outputs
 .coverage
 .coverage.*

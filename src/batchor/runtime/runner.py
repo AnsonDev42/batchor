@@ -1,11 +1,27 @@
+"""BatchRunner — the durable orchestrator for creating and managing batch runs.
+
+The :class:`BatchRunner` is the main entry point for library users.  It wires
+together a :class:`~batchor.StateStore`, a provider registry, an artifact
+store, and the execution layer to provide a single object for:
+
+* Creating new runs (:meth:`BatchRunner.start`).
+* Resuming existing runs (:meth:`BatchRunner.get_run`).
+* Controlling runs (pause / resume / cancel).
+* Exporting and pruning artifacts.
+* Reading terminal results in a paginated, cursor-based manner.
+
+The returned :class:`~batchor.Run` handle is a thin wrapper around the run
+state that delegates actual work back to the runner.
+"""
+
 from __future__ import annotations
 
 import hashlib
 import importlib
 import json
-from pathlib import Path
 import tempfile
 import time
+from pathlib import Path
 from typing import Any, Callable, Iterator, cast
 from uuid import uuid4
 
@@ -168,6 +184,18 @@ class BatchRunner:
         )
 
     def pause_run(self, run_id: str) -> Run:
+        """Suspend execution of an active run.
+
+        The run's control state is set to ``PAUSED``.  Subsequent calls to
+        :meth:`~batchor.Run.refresh` return immediately without polling or
+        submitting new items.
+
+        Args:
+            run_id: Identifier of the run to pause.
+
+        Returns:
+            A :class:`~batchor.Run` handle reflecting the paused state.
+        """
         self.state.set_run_control_state(
             run_id=run_id,
             control_state=RunControlState.PAUSED,
@@ -175,6 +203,19 @@ class BatchRunner:
         return self.get_run(run_id)
 
     def resume_run(self, run_id: str) -> Run:
+        """Resume a previously paused run.
+
+        Args:
+            run_id: Identifier of the run to resume.
+
+        Returns:
+            A :class:`~batchor.Run` handle with the control state reset to
+            ``RUNNING``.
+
+        Raises:
+            ValueError: If the run's control state is ``CANCEL_REQUESTED``
+                (a cancelling run cannot be resumed).
+        """
         control_state = self.state.get_run_control_state(run_id=run_id)
         if control_state is RunControlState.CANCEL_REQUESTED:
             raise ValueError(f"run {run_id} is cancelling and cannot be resumed")
@@ -185,6 +226,18 @@ class BatchRunner:
         return self.get_run(run_id)
 
     def cancel_run(self, run_id: str) -> Run:
+        """Request cancellation of an active run.
+
+        The control state is set to ``CANCEL_REQUESTED``.  On the next
+        refresh cycle the runner drains remaining in-flight batches and marks
+        all non-terminal items as cancelled.
+
+        Args:
+            run_id: Identifier of the run to cancel.
+
+        Returns:
+            A :class:`~batchor.Run` handle reflecting the cancellation request.
+        """
         self.state.set_run_control_state(
             run_id=run_id,
             control_state=RunControlState.CANCEL_REQUESTED,
@@ -198,6 +251,23 @@ class BatchRunner:
         after_sequence: int = 0,
         limit: int | None = None,
     ) -> TerminalResultsPage:
+        """Read a page of terminal item results for cursor-based streaming.
+
+        Args:
+            run_id: Identifier of the run to read results from.
+            after_sequence: Opaque cursor from the previous page's
+                ``next_after_sequence``.  Pass ``0`` to start from the
+                beginning.
+            limit: Maximum number of results to return.  ``None`` returns all
+                available results after the cursor.
+
+        Returns:
+            A :class:`~batchor.TerminalResultsPage` with items and an updated
+            cursor.
+
+        Raises:
+            ValueError: If ``after_sequence`` is negative.
+        """
         if after_sequence < 0:
             raise ValueError("after_sequence must be >= 0")
         records = self.state.get_terminal_item_records(
@@ -229,6 +299,26 @@ class BatchRunner:
         append: bool = True,
         limit: int | None = None,
     ) -> TerminalResultsExportResult:
+        """Export terminal item results to a JSONL file.
+
+        Each result is serialised as a single JSON object per line.  The file
+        can be extended incrementally by calling this method multiple times
+        with the cursor returned in the previous result.
+
+        Args:
+            run_id: Identifier of the run to export results from.
+            destination: Path to the output JSONL file.  Parent directories
+                are created automatically.
+            after_sequence: Cursor from a previous call.  Pass ``0`` to start
+                from the beginning.
+            append: When ``True`` (default), the file is opened in append
+                mode; when ``False`` the file is overwritten.
+            limit: Maximum number of results to export per call.
+
+        Returns:
+            A :class:`~batchor.TerminalResultsExportResult` with the file path,
+            export count, and updated cursor.
+        """
         page = self.read_terminal_results(
             run_id,
             after_sequence=after_sequence,
@@ -262,9 +352,7 @@ class BatchRunner:
         inventory = self.state.get_artifact_inventory(run_id=run_id)
         exported_artifact_paths: list[str] = []
         for artifact_path in (
-            inventory.request_artifact_paths
-            + inventory.output_artifact_paths
-            + inventory.error_artifact_paths
+            inventory.request_artifact_paths + inventory.output_artifact_paths + inventory.error_artifact_paths
         ):
             self.artifact_store.export_to_directory(artifact_path, export_root)
             exported_artifact_paths.append(artifact_path)
@@ -290,7 +378,9 @@ class BatchRunner:
         self._emit_event(
             "artifacts_exported",
             run_id=run_id,
-            provider_kind=context.config.provider_config.provider_kind if (context := self._contexts.get(run_id)) else None,
+            provider_kind=context.config.provider_config.provider_kind
+            if (context := self._contexts.get(run_id))
+            else None,
             data={"destination_dir": str(export_root)},
         )
         return ArtifactExportResult(
@@ -326,9 +416,7 @@ class BatchRunner:
         cleared_batch_pointers = 0
         if include_raw_output_artifacts:
             if inventory.exported_at is None or inventory.export_root is None:
-                raise ValueError(
-                    f"raw output artifacts require export before pruning: {run_id}"
-                )
+                raise ValueError(f"raw output artifacts require export before pruning: {run_id}")
             raw_artifact_paths = inventory.output_artifact_paths + inventory.error_artifact_paths
             if raw_artifact_paths:
                 raw_removed, raw_missing = self._remove_artifacts(raw_artifact_paths)
@@ -342,7 +430,9 @@ class BatchRunner:
         self._emit_event(
             "artifacts_pruned",
             run_id=run_id,
-            provider_kind=context.config.provider_config.provider_kind if (context := self._contexts.get(run_id)) else None,
+            provider_kind=context.config.provider_config.provider_kind
+            if (context := self._contexts.get(run_id))
+            else None,
             data={
                 "removed_artifact_count": len(removed),
                 "include_raw_output_artifacts": include_raw_output_artifacts,
@@ -516,11 +606,7 @@ class BatchRunner:
         current_index = start_index
         next_checkpoint = checkpoint_payload
         if source is not None:
-            source_checkpoint = (
-                checkpoint_payload
-                if checkpoint_payload is not None
-                else source.initial_checkpoint()
-            )
+            source_checkpoint = checkpoint_payload if checkpoint_payload is not None else source.initial_checkpoint()
             for source_item in source.iter_from_checkpoint(source_checkpoint):
                 item_index = current_index
                 item = source_item.item
@@ -655,10 +741,8 @@ class BatchRunner:
             or stored_config.batch_metadata != supplied_config.batch_metadata
             or stored_config.artifact_policy != supplied_config.artifact_policy
             or stored_config.schema_name != supplied_config.schema_name
-            or stored_config.structured_output_module
-            != supplied_config.structured_output_module
-            or stored_config.structured_output_qualname
-            != supplied_config.structured_output_qualname
+            or stored_config.structured_output_module != supplied_config.structured_output_module
+            or stored_config.structured_output_qualname != supplied_config.structured_output_qualname
         ):
             return False
         return self.provider_registry.dump_config(
@@ -710,9 +794,7 @@ class BatchRunner:
         custom_id = self.make_custom_id(item.item_id, item.attempt_count + 1)
         if item.request_artifact_path is not None:
             if item.request_artifact_line is None or item.request_sha256 is None:
-                raise ValueError(
-                    f"incomplete request artifact pointer for item {item.item_id}"
-                )
+                raise ValueError(f"incomplete request artifact pointer for item {item.item_id}")
             request_line = self._load_request_artifact_line(
                 artifact_path=item.request_artifact_path,
                 line_number=item.request_artifact_line,
@@ -797,20 +879,13 @@ class BatchRunner:
                 continue
             record = json.loads(raw_line)
             if not isinstance(record, dict):
-                raise TypeError(
-                    f"request artifact line must be a JSON object: {artifact_path}:{line_number}"
-                )
+                raise TypeError(f"request artifact line must be a JSON object: {artifact_path}:{line_number}")
             request_line = cast(JSONObject, record)
             actual_sha256 = self._request_sha256(request_line)
             if actual_sha256 != expected_sha256:
-                raise ValueError(
-                    "request artifact hash mismatch for "
-                    f"{artifact_path}:{line_number}"
-                )
+                raise ValueError(f"request artifact hash mismatch for {artifact_path}:{line_number}")
             return request_line
-        raise FileNotFoundError(
-            f"request artifact line missing: {artifact_path}:{line_number}"
-        )
+        raise FileNotFoundError(f"request artifact line missing: {artifact_path}:{line_number}")
 
     def _write_batch_result_artifacts(
         self,
@@ -825,15 +900,11 @@ class BatchRunner:
             return None, None
         output_artifact_path = None
         if output_content is not None:
-            output_artifact_path = (
-                Path(run_id) / "outputs" / f"{provider_batch_id}_output.jsonl"
-            ).as_posix()
+            output_artifact_path = (Path(run_id) / "outputs" / f"{provider_batch_id}_output.jsonl").as_posix()
             self.artifact_store.write_text(output_artifact_path, output_content, encoding="utf-8")
         error_artifact_path = None
         if error_content is not None:
-            error_artifact_path = (
-                Path(run_id) / "outputs" / f"{provider_batch_id}_error.jsonl"
-            ).as_posix()
+            error_artifact_path = (Path(run_id) / "outputs" / f"{provider_batch_id}_error.jsonl").as_posix()
             self.artifact_store.write_text(error_artifact_path, error_content, encoding="utf-8")
         return output_artifact_path, error_artifact_path
 
@@ -842,10 +913,7 @@ class BatchRunner:
         run_id: str,
         context: _RunContext,
     ) -> list[BatchResultItem]:
-        return [
-            self._result_from_record(record, context)
-            for record in self.state.get_item_records(run_id=run_id)
-        ]
+        return [self._result_from_record(record, context) for record in self.state.get_item_records(run_id=run_id)]
 
     def _result_from_record(
         self,
@@ -914,10 +982,7 @@ class BatchRunner:
         results_path: Path,
     ) -> None:
         run = self.get_run(run_id)
-        lines = [
-            json.dumps(self._serialize_result(result), ensure_ascii=False)
-            for result in run.results()
-        ]
+        lines = [json.dumps(self._serialize_result(result), ensure_ascii=False) for result in run.results()]
         results_path.write_text(
             ("\n".join(lines) + "\n") if lines else "",
             encoding="utf-8",
@@ -943,11 +1008,7 @@ class BatchRunner:
             }
         if isinstance(result, StructuredItemResult):
             output = result.output
-            payload["output_json"] = (
-                cast(BaseModel, output).model_dump(mode="json")
-                if output is not None
-                else None
-            )
+            payload["output_json"] = cast(BaseModel, output).model_dump(mode="json") if output is not None else None
         return payload
 
     def _prune_empty_artifact_dirs(self, artifact_paths: list[str]) -> None:

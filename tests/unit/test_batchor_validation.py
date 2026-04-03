@@ -84,9 +84,7 @@ def test_model_output_schema_marks_nested_objects_as_closed() -> None:
             return []
         results = []
         schema_type = value.get("type")
-        if schema_type == "object" or (
-            isinstance(schema_type, list) and "object" in schema_type
-        ):
+        if schema_type == "object" or (isinstance(schema_type, list) and "object" in schema_type):
             results.append(value)
         for item in value.values():
             results.extend(_collect_object_schemas(item))

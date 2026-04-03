@@ -8,8 +8,8 @@ from batchor.core.models import ArtifactPolicy, ChunkPolicy, RetryPolicy, RunSum
 from batchor.storage.sqlite_codec import (
     _decode_datetime,
     _decode_dict,
-    _decode_json,
     _decode_item_failure,
+    _decode_json,
     _decode_object,
     _decode_optional_object,
     _decode_string_list,
@@ -30,12 +30,12 @@ from batchor.storage.sqlite_schema import (
     STORAGE_METADATA_TABLE,
 )
 from batchor.storage.state import (
-    RunArtifactInventory,
     IngestCheckpoint,
     MaterializedItem,
     PersistedItemRecord,
     PersistedRunConfig,
     RetryBackoffState,
+    RunArtifactInventory,
 )
 
 
@@ -43,16 +43,12 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
     def has_run(self, *, run_id: str) -> bool:
         with self.engine.begin() as conn:
             count = conn.execute(
-                select(func.count())
-                .select_from(RUNS_TABLE)
-                .where(RUNS_TABLE.c.run_id == run_id)
+                select(func.count()).select_from(RUNS_TABLE).where(RUNS_TABLE.c.run_id == run_id)
             ).scalar_one()
             return int(count) > 0
 
     def _fetch_run_row(self, conn: Connection, run_id: str) -> RowMapping:
-        return conn.execute(
-            select(RUNS_TABLE).where(RUNS_TABLE.c.run_id == run_id)
-        ).mappings().one()
+        return conn.execute(select(RUNS_TABLE).where(RUNS_TABLE.c.run_id == run_id)).mappings().one()
 
     def _item_rows(
         self,
@@ -96,15 +92,10 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
     def _run_config_from_row(self, row: RowMapping) -> PersistedRunConfig:
         chunk_data = _decode_dict(row["chunk_policy_json"])
         retry_data = _decode_dict(row["retry_policy_json"])
-        metadata = {
-            key: str(value)
-            for key, value in _decode_dict(row["batch_metadata_json"]).items()
-        }
+        metadata = {key: str(value) for key, value in _decode_dict(row["batch_metadata_json"]).items()}
         artifact_policy = ArtifactPolicy.from_payload(_decode_object(row["artifact_policy_json"]))
         return PersistedRunConfig(
-            provider_config=self.provider_registry.load_config(
-                _decode_object(row["provider_config_json"])
-            ),
+            provider_config=self.provider_registry.load_config(_decode_object(row["provider_config_json"])),
             chunk_policy=ChunkPolicy(
                 max_requests=_require_int(chunk_data, "max_requests"),
                 max_file_bytes=_require_int(chunk_data, "max_file_bytes"),
@@ -124,70 +115,40 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
 
     def _ensure_schema(self) -> None:
         with self.engine.begin() as conn:
-            item_columns = {
-                str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(items)").fetchall()
-            }
+            item_columns = {str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(items)").fetchall()}
             if "request_artifact_path" not in item_columns:
-                conn.exec_driver_sql(
-                    "ALTER TABLE items ADD COLUMN request_artifact_path TEXT"
-                )
+                conn.exec_driver_sql("ALTER TABLE items ADD COLUMN request_artifact_path TEXT")
             if "request_artifact_line" not in item_columns:
-                conn.exec_driver_sql(
-                    "ALTER TABLE items ADD COLUMN request_artifact_line INTEGER"
-                )
+                conn.exec_driver_sql("ALTER TABLE items ADD COLUMN request_artifact_line INTEGER")
             if "request_sha256" not in item_columns:
-                conn.exec_driver_sql(
-                    "ALTER TABLE items ADD COLUMN request_sha256 TEXT"
-                )
+                conn.exec_driver_sql("ALTER TABLE items ADD COLUMN request_sha256 TEXT")
             if "terminal_result_sequence" not in item_columns:
-                conn.exec_driver_sql(
-                    "ALTER TABLE items ADD COLUMN terminal_result_sequence INTEGER"
-                )
+                conn.exec_driver_sql("ALTER TABLE items ADD COLUMN terminal_result_sequence INTEGER")
             if "terminalized_at" not in item_columns:
-                conn.exec_driver_sql(
-                    "ALTER TABLE items ADD COLUMN terminalized_at TEXT"
-                )
-            batch_columns = {
-                str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(batches)").fetchall()
-            }
+                conn.exec_driver_sql("ALTER TABLE items ADD COLUMN terminalized_at TEXT")
+            batch_columns = {str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(batches)").fetchall()}
             if "output_artifact_path" not in batch_columns:
-                conn.exec_driver_sql(
-                    "ALTER TABLE batches ADD COLUMN output_artifact_path TEXT"
-                )
+                conn.exec_driver_sql("ALTER TABLE batches ADD COLUMN output_artifact_path TEXT")
             if "error_artifact_path" not in batch_columns:
-                conn.exec_driver_sql(
-                    "ALTER TABLE batches ADD COLUMN error_artifact_path TEXT"
-                )
-            run_columns = {
-                str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(runs)").fetchall()
-            }
+                conn.exec_driver_sql("ALTER TABLE batches ADD COLUMN error_artifact_path TEXT")
+            run_columns = {str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(runs)").fetchall()}
             if "control_state" not in run_columns:
-                conn.exec_driver_sql(
-                    "ALTER TABLE runs ADD COLUMN control_state TEXT NOT NULL DEFAULT 'running'"
-                )
+                conn.exec_driver_sql("ALTER TABLE runs ADD COLUMN control_state TEXT NOT NULL DEFAULT 'running'")
             if "artifact_policy_json" not in run_columns:
                 conn.exec_driver_sql(
                     "ALTER TABLE runs ADD COLUMN artifact_policy_json TEXT NOT NULL DEFAULT '{\"persist_raw_output_artifacts\": true}'"
                 )
             if "artifacts_exported_at" not in run_columns:
-                conn.exec_driver_sql(
-                    "ALTER TABLE runs ADD COLUMN artifacts_exported_at TEXT"
-                )
+                conn.exec_driver_sql("ALTER TABLE runs ADD COLUMN artifacts_exported_at TEXT")
             if "artifact_export_root" not in run_columns:
-                conn.exec_driver_sql(
-                    "ALTER TABLE runs ADD COLUMN artifact_export_root TEXT"
-                )
+                conn.exec_driver_sql("ALTER TABLE runs ADD COLUMN artifact_export_root TEXT")
             ingest_columns = {
                 str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(run_ingest_state)").fetchall()
             }
             if "checkpoint_payload_json" not in ingest_columns:
-                conn.exec_driver_sql(
-                    "ALTER TABLE run_ingest_state ADD COLUMN checkpoint_payload_json TEXT"
-                )
+                conn.exec_driver_sql("ALTER TABLE run_ingest_state ADD COLUMN checkpoint_payload_json TEXT")
             existing_schema_row = conn.execute(
-                select(STORAGE_METADATA_TABLE.c.value).where(
-                    STORAGE_METADATA_TABLE.c.key == "schema_version"
-                )
+                select(STORAGE_METADATA_TABLE.c.value).where(STORAGE_METADATA_TABLE.c.key == "schema_version")
             ).first()
             if existing_schema_row is None:
                 conn.execute(
@@ -202,9 +163,9 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
                 )
 
     def _fetch_retry_state(self, conn: Connection, run_id: str) -> RetryBackoffState:
-        row = conn.execute(
-            select(RUN_RETRY_STATE_TABLE).where(RUN_RETRY_STATE_TABLE.c.run_id == run_id)
-        ).mappings().one()
+        row = (
+            conn.execute(select(RUN_RETRY_STATE_TABLE).where(RUN_RETRY_STATE_TABLE.c.run_id == run_id)).mappings().one()
+        )
         return RetryBackoffState(
             consecutive_failures=int(row["consecutive_failures"]),
             total_failures=int(row["total_failures"]),
@@ -224,10 +185,7 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
         with self.engine.begin() as conn:
             rows = conn.execute(
                 select(ITEMS_TABLE.c.request_artifact_path)
-                .where(
-                    (ITEMS_TABLE.c.run_id == run_id)
-                    & ITEMS_TABLE.c.request_artifact_path.is_not(None)
-                )
+                .where((ITEMS_TABLE.c.run_id == run_id) & ITEMS_TABLE.c.request_artifact_path.is_not(None))
                 .distinct()
                 .order_by(ITEMS_TABLE.c.request_artifact_path)
             )
@@ -239,9 +197,11 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
 
     def get_ingest_checkpoint(self, *, run_id: str) -> IngestCheckpoint | None:
         with self.engine.begin() as conn:
-            row = conn.execute(
-                select(RUN_INGEST_STATE_TABLE).where(RUN_INGEST_STATE_TABLE.c.run_id == run_id)
-            ).mappings().first()
+            row = (
+                conn.execute(select(RUN_INGEST_STATE_TABLE).where(RUN_INGEST_STATE_TABLE.c.run_id == run_id))
+                .mappings()
+                .first()
+            )
             if row is None:
                 return None
             return IngestCheckpoint(
@@ -266,10 +226,7 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
                     _nullable_str(value)
                     for value in conn.execute(
                         select(ITEMS_TABLE.c.request_artifact_path)
-                        .where(
-                            (ITEMS_TABLE.c.run_id == run_id)
-                            & ITEMS_TABLE.c.request_artifact_path.is_not(None)
-                        )
+                        .where((ITEMS_TABLE.c.run_id == run_id) & ITEMS_TABLE.c.request_artifact_path.is_not(None))
                         .distinct()
                         .order_by(ITEMS_TABLE.c.request_artifact_path)
                     ).scalars()
@@ -282,10 +239,7 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
                     _nullable_str(value)
                     for value in conn.execute(
                         select(BATCHES_TABLE.c.output_artifact_path)
-                        .where(
-                            (BATCHES_TABLE.c.run_id == run_id)
-                            & BATCHES_TABLE.c.output_artifact_path.is_not(None)
-                        )
+                        .where((BATCHES_TABLE.c.run_id == run_id) & BATCHES_TABLE.c.output_artifact_path.is_not(None))
                         .distinct()
                         .order_by(BATCHES_TABLE.c.output_artifact_path)
                     ).scalars()
@@ -298,10 +252,7 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
                     _nullable_str(value)
                     for value in conn.execute(
                         select(BATCHES_TABLE.c.error_artifact_path)
-                        .where(
-                            (BATCHES_TABLE.c.run_id == run_id)
-                            & BATCHES_TABLE.c.error_artifact_path.is_not(None)
-                        )
+                        .where((BATCHES_TABLE.c.run_id == run_id) & BATCHES_TABLE.c.error_artifact_path.is_not(None))
                         .distinct()
                         .order_by(BATCHES_TABLE.c.error_artifact_path)
                     ).scalars()
@@ -331,11 +282,7 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
         )
         status_counts = {ItemStatus(str(status)): int(count) for status, count in counts_rows}
         total_items = sum(status_counts.values())
-        terminal_items = sum(
-            count
-            for status, count in status_counts.items()
-            if status in self.TERMINAL_ITEM_STATUSES
-        )
+        terminal_items = sum(count for status, count in status_counts.items() if status in self.TERMINAL_ITEM_STATUSES)
         active_batches = int(
             conn.execute(
                 select(func.count())
@@ -352,18 +299,12 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
         control_state = RunControlState(str(run_row["control_state"]))
         if terminal_items == total_items and active_batches == 0 and backoff_remaining_sec <= 0:
             status: RunLifecycleStatus = (
-                RunLifecycleStatus.COMPLETED_WITH_FAILURES
-                if failed_items > 0
-                else RunLifecycleStatus.COMPLETED
+                RunLifecycleStatus.COMPLETED_WITH_FAILURES if failed_items > 0 else RunLifecycleStatus.COMPLETED
             )
         else:
             status = RunLifecycleStatus.RUNNING
         if persist:
-            conn.execute(
-                update(RUNS_TABLE)
-                .where(RUNS_TABLE.c.run_id == run_id)
-                .values(status=status)
-            )
+            conn.execute(update(RUNS_TABLE).where(RUNS_TABLE.c.run_id == run_id).values(status=status))
         return RunSummary(
             run_id=run_id,
             status=status,
@@ -386,12 +327,15 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
         run_id: str,
         provider_batch_id: str,
     ) -> list[str]:
-        batch_row = conn.execute(
-            select(BATCHES_TABLE.c.custom_ids_json).where(
-                (BATCHES_TABLE.c.run_id == run_id)
-                & (BATCHES_TABLE.c.provider_batch_id == provider_batch_id)
+        batch_row = (
+            conn.execute(
+                select(BATCHES_TABLE.c.custom_ids_json).where(
+                    (BATCHES_TABLE.c.run_id == run_id) & (BATCHES_TABLE.c.provider_batch_id == provider_batch_id)
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
         custom_ids = _decode_string_list(batch_row["custom_ids_json"])
         active_rows = conn.execute(
             select(ITEMS_TABLE.c.active_custom_id).where(
@@ -405,9 +349,7 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
 
     def _item_records_for_run(self, conn: Connection, run_id: str) -> list[PersistedItemRecord]:
         rows = conn.execute(
-            select(ITEMS_TABLE)
-            .where(ITEMS_TABLE.c.run_id == run_id)
-            .order_by(ITEMS_TABLE.c.item_index)
+            select(ITEMS_TABLE).where(ITEMS_TABLE.c.run_id == run_id).order_by(ITEMS_TABLE.c.item_index)
         ).mappings()
         return [
             PersistedItemRecord(

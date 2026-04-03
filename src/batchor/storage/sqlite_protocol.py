@@ -6,7 +6,7 @@ from typing import Callable, Protocol
 from sqlalchemy.engine import Connection, Engine, RowMapping
 
 from batchor.core.enums import ItemStatus, RunControlState
-from batchor.core.models import ItemFailure, RunSummary
+from batchor.core.models import RunSummary
 from batchor.core.types import JSONValue
 from batchor.providers.registry import ProviderRegistry
 from batchor.storage.state import (

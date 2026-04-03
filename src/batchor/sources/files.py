@@ -1,10 +1,24 @@
+"""File-backed item source implementations (CSV, JSONL, Parquet).
+
+Each source wraps a local file and streams :class:`~batchor.BatchItem` objects
+row by row.  All three implementations support durable resumption:
+
+* :class:`CsvItemSource` and :class:`JsonlItemSource` use a monotonic row
+  index as the checkpoint (via :class:`~batchor.sources.base.ResumableItemSource`).
+* :class:`ParquetItemSource` uses a ``(row_group_index, row_index_within_group)``
+  checkpoint to resume efficiently within large Parquet files.
+
+Every emitted item carries ``batchor_lineage`` metadata recording the source
+path, row index, and (where applicable) a primary key and partition ID.
+"""
+
 from __future__ import annotations
 
 import csv
 import hashlib
 import json
-from pathlib import Path
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, Callable, Generic, TypeVar, cast
 
 from batchor.core.models import BatchItem
@@ -66,10 +80,7 @@ def _parquet_checkpoint_payload(
 
 
 def _normalized_parquet_row(payload_by_column: dict[str, list[Any]], row_index: int) -> ParquetRow:
-    return {
-        column: values[row_index]
-        for column, values in payload_by_column.items()
-    }
+    return {column: values[row_index] for column, values in payload_by_column.items()}
 
 
 class CsvItemSource(ResumableItemSource[PayloadT], Generic[PayloadT]):
@@ -106,11 +117,7 @@ class CsvItemSource(ResumableItemSource[PayloadT], Generic[PayloadT]):
                 if current_index < item_index:
                     continue
                 normalized_row = {str(key): value for key, value in row.items() if key is not None}
-                metadata = (
-                    self.metadata_from_row(normalized_row)
-                    if self.metadata_from_row is not None
-                    else {}
-                )
+                metadata = self.metadata_from_row(normalized_row) if self.metadata_from_row is not None else {}
                 row_id = self.item_id_from_row(normalized_row)
                 yield IndexedBatchItem(
                     item_index=current_index,
@@ -167,14 +174,8 @@ class JsonlItemSource(ResumableItemSource[PayloadT], Generic[PayloadT]):
                 try:
                     parsed = cast(JSONValue, json.loads(line))
                 except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"invalid JSONL record at {self.path}:{line_number}"
-                    ) from exc
-                metadata = (
-                    self.metadata_from_row(parsed)
-                    if self.metadata_from_row is not None
-                    else {}
-                )
+                    raise ValueError(f"invalid JSONL record at {self.path}:{line_number}") from exc
+                metadata = self.metadata_from_row(parsed) if self.metadata_from_row is not None else {}
                 row_id = self.item_id_from_row(parsed)
                 yield IndexedBatchItem(
                     item_index=current_index,
@@ -193,6 +194,20 @@ class JsonlItemSource(ResumableItemSource[PayloadT], Generic[PayloadT]):
 
 
 class ParquetItemSource(CheckpointedItemSource[PayloadT], Generic[PayloadT]):
+    """Stream :class:`~batchor.BatchItem` values from a Parquet file.
+
+    Uses ``pyarrow`` to read row groups lazily, checkpointing at the
+    ``(row_group_index, row_index_within_group)`` level to support efficient
+    resumption within large files.
+
+    Attributes:
+        path: Path to the Parquet file.
+        item_id_from_row: Callable that derives a unique item ID from a row.
+        payload_from_row: Callable that converts a row to the item payload.
+        metadata_from_row: Optional callable for per-item metadata.
+        columns: Optional list of column names to read (projection push-down).
+    """
+
     def __init__(
         self,
         path: str | Path,
@@ -244,11 +259,7 @@ class ParquetItemSource(CheckpointedItemSource[PayloadT], Generic[PayloadT]):
             row_start = row_index_within_group if current_row_group_index == row_group_index else 0
             for current_row_index in range(row_start, table.num_rows):
                 row = _normalized_parquet_row(payload_by_column, current_row_index)
-                metadata = (
-                    self.metadata_from_row(row)
-                    if self.metadata_from_row is not None
-                    else {}
-                )
+                metadata = self.metadata_from_row(row) if self.metadata_from_row is not None else {}
                 row_id = self.item_id_from_row(row)
                 next_checkpoint = _parquet_checkpoint_payload(
                     row_group_index=current_row_group_index,

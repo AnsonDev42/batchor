@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime, timezone
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
 
@@ -47,7 +48,7 @@ class PostgresStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin
         self.dsn = dsn
         self.schema = schema
         self.path = Path(f"postgres/{schema}")
-        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._now = now or (lambda: datetime.now(UTC))
         self.provider_registry = provider_registry or build_default_provider_registry()
         self._base_engine = engine or create_engine(dsn, future=True)
         with self._base_engine.begin() as conn:
@@ -61,12 +62,10 @@ class PostgresStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin
         cls,
         *,
         provider_registry: ProviderRegistry | None = None,
-    ) -> "PostgresStorage":
+    ) -> PostgresStorage:
         dsn = os.getenv("BATCHOR_POSTGRES_DSN", "")
         if not dsn:
-            raise ValueError(
-                "BATCHOR_POSTGRES_DSN is required to create the default postgres storage backend"
-            )
+            raise ValueError("BATCHOR_POSTGRES_DSN is required to create the default postgres storage backend")
         return cls(
             dsn=dsn,
             schema=os.getenv("BATCHOR_POSTGRES_SCHEMA", "batchor"),
@@ -76,9 +75,7 @@ class PostgresStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin
     def _ensure_schema(self) -> None:
         with self.engine.begin() as conn:
             existing_schema_row = conn.execute(
-                select(STORAGE_METADATA_TABLE.c.value).where(
-                    STORAGE_METADATA_TABLE.c.key == "schema_version"
-                )
+                select(STORAGE_METADATA_TABLE.c.value).where(STORAGE_METADATA_TABLE.c.key == "schema_version")
             ).first()
             if existing_schema_row is None:
                 conn.execute(
@@ -105,9 +102,7 @@ class PostgresStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin
                 .where(
                     and_(
                         ITEMS_TABLE.c.run_id == run_id,
-                        ITEMS_TABLE.c.status.in_(
-                            (ItemStatus.PENDING, ItemStatus.FAILED_RETRYABLE)
-                        ),
+                        ITEMS_TABLE.c.status.in_((ItemStatus.PENDING, ItemStatus.FAILED_RETRYABLE)),
                         ITEMS_TABLE.c.attempt_count < max_attempts,
                     )
                 )
@@ -150,15 +145,15 @@ class PostgresStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin
     @property
     def schema_version(self) -> int:
         with self.engine.begin() as conn:
-            row = conn.execute(
-                STORAGE_METADATA_TABLE.select().where(STORAGE_METADATA_TABLE.c.key == "schema_version")
-            ).mappings().first()
+            row = (
+                conn.execute(STORAGE_METADATA_TABLE.select().where(STORAGE_METADATA_TABLE.c.key == "schema_version"))
+                .mappings()
+                .first()
+            )
             if row is None:
                 return SQLITE_SCHEMA_VERSION
             return int(row["value"])
 
     def __del__(self) -> None:
-        try:
+        with suppress(Exception):
             self.close()
-        except Exception:  # noqa: BLE001
-            pass

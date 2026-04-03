@@ -38,6 +38,88 @@ The package is organized around one core concern: durable batch execution. Most 
 - input streaming
 - durable state and artifacts
 
+## High-Level Architecture
+
+```mermaid
+graph TB
+    User["User / CLI"]
+
+    subgraph runtime["runtime/"]
+        BatchRunner
+        Run["Run handle"]
+    end
+
+    subgraph core["core/"]
+        BatchJob
+        BatchItem
+        Models["Models, Enums, Exceptions"]
+    end
+
+    subgraph providers["providers/"]
+        BatchProvider["BatchProvider (ABC)"]
+        OpenAIProvider["OpenAIBatchProvider"]
+        ProviderRegistry
+    end
+
+    subgraph sources["sources/"]
+        ItemSource["ItemSource (ABC)"]
+        FileAdapters["CSV / JSONL / Parquet"]
+    end
+
+    subgraph storage["storage/"]
+        StateStore["StateStore (ABC)"]
+        SQLiteStorage
+        PostgresStorage
+        MemoryStateStore
+        StorageRegistry
+    end
+
+    subgraph artifacts["artifacts/"]
+        ArtifactStore["ArtifactStore (ABC)"]
+        LocalArtifactStore
+    end
+
+    User -->|"start() / run_and_wait()"| BatchRunner
+    BatchRunner --> Run
+    BatchRunner -->|reads| BatchJob
+    BatchJob -->|contains| BatchItem
+    BatchJob -->|uses| ItemSource
+    FileAdapters -.->|implements| ItemSource
+    BatchRunner -->|persists state| StateStore
+    SQLiteStorage -.->|implements| StateStore
+    PostgresStorage -.->|implements| StateStore
+    MemoryStateStore -.->|implements| StateStore
+    BatchRunner -->|submits/polls| BatchProvider
+    OpenAIProvider -.->|implements| BatchProvider
+    BatchRunner -->|stores artifacts| ArtifactStore
+    LocalArtifactStore -.->|implements| ArtifactStore
+    BatchRunner -->|creates via| ProviderRegistry
+    BatchRunner -->|creates via| StorageRegistry
+```
+
+This is the canonical diagram page for the current package shape. Keep the
+README diagrams compact and reader-facing; put the detailed runtime and module
+boundary view here.
+
+## Core runtime concepts
+
+The public runtime model centers on four types:
+
+- `BatchItem`: one logical unit of work with stable `item_id`, application
+  `payload`, and optional metadata.
+- `BatchJob`: the declarative execution plan that bundles items or an
+  `ItemSource`, prompt-building logic, provider config, and retry/artifact
+  policy.
+- `BatchRunner`: the orchestrator that resolves implementations, persists run
+  state, builds or replays request artifacts, submits provider batches, polls
+  remote status, and writes terminal results back into durable storage.
+- `Run`: the durable handle returned by `start()` or `get_run()` for refresh,
+  wait, pause/resume/cancel, terminal result reads, and artifact export/prune.
+
+`CompositeItemSource` keeps the runner contract narrow: the runner still sees
+one logical source, while callers remain responsible for selecting and ordering
+the child sources up front.
+
 ## Main user-facing flow
 
 The normal public flow is:
@@ -58,6 +140,123 @@ Internally that expands to:
 7. Poll active batches.
 8. Download output/error files.
 9. Parse terminal item results back into the state store.
+
+## Execution Sequence
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant BatchRunner
+    participant StateStore
+    participant ItemSource
+    participant ArtifactStore
+    participant Provider as BatchProvider
+
+    User->>BatchRunner: start(job) / run_and_wait(job)
+    BatchRunner->>StateStore: create_run(run_id, config)
+    BatchRunner->>ItemSource: iterate items
+    ItemSource-->>BatchRunner: BatchItem stream
+    BatchRunner->>StateStore: append_items(materialized_items)
+    BatchRunner->>StateStore: set_ingest_checkpoint()
+
+    loop refresh() cycle (polling + submission)
+        BatchRunner->>StateStore: get_active_batches()
+        StateStore-->>BatchRunner: [ActiveBatchRecord...]
+
+        opt active batches exist
+            BatchRunner->>Provider: get_batch(batch_id)
+            Provider-->>BatchRunner: BatchRemoteRecord
+
+            alt status == "completed"
+                BatchRunner->>Provider: download_file_content(output_file_id, error_file_id)
+                Provider-->>BatchRunner: output/error JSONL
+                BatchRunner->>ArtifactStore: write_text(output/error artifacts)
+                BatchRunner->>Provider: parse_batch_output()
+                Provider-->>BatchRunner: successes + errors
+                BatchRunner->>StateStore: mark_items_completed(successes)
+                BatchRunner->>StateStore: mark_items_failed(errors)
+            else status in {failed, cancelled, expired}
+                BatchRunner->>Provider: download_file_content(output_file_id, error_file_id)
+                Provider-->>BatchRunner: output/error JSONL
+                BatchRunner->>ArtifactStore: write_text(output/error artifacts)
+                BatchRunner->>StateStore: record_batch_retry_failure()
+                BatchRunner->>StateStore: reset_batch_items_to_pending()
+            end
+        end
+
+        BatchRunner->>StateStore: claim_items_for_submission(limit)
+        StateStore-->>BatchRunner: [ClaimedItem...]
+        BatchRunner->>ArtifactStore: write_text(request JSONL artifact)
+        BatchRunner->>Provider: upload_input_file(local_path)
+        Provider-->>BatchRunner: remote_file_id
+        BatchRunner->>Provider: create_batch(remote_file_id)
+        Provider-->>BatchRunner: BatchRemoteRecord (status=validating)
+        BatchRunner->>StateStore: register_batch()
+        BatchRunner->>StateStore: mark_items_submitted()
+    end
+
+    BatchRunner-->>User: Run (terminal)
+    User->>Run: results()
+    Run->>StateStore: get_item_records()
+    StateStore-->>Run: [PersistedItemRecord...]
+    Run-->>User: [BatchResultItem...]
+```
+
+## Batch Lifecycle
+
+### Item state machine
+
+Each item in a run transitions through the following statuses:
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING : item ingested from source
+
+    PENDING --> QUEUED_LOCAL : claimed for submission cycle
+    QUEUED_LOCAL --> PENDING : released — batch submission failed or cycle ended early
+    QUEUED_LOCAL --> FAILED_PERMANENT : rejected pre-submission (e.g. token budget exceeded, max attempts)
+    QUEUED_LOCAL --> SUBMITTED : batch created and registered with provider
+
+    SUBMITTED --> COMPLETED : batch completed, result parsed OK
+    SUBMITTED --> FAILED_RETRYABLE : batch error / item error — attempt count below max
+    SUBMITTED --> FAILED_PERMANENT : batch error / item error — attempt count reached max
+
+    FAILED_RETRYABLE --> PENDING : re-queued after backoff delay
+
+    COMPLETED --> [*]
+    FAILED_PERMANENT --> [*]
+```
+
+### Run lifecycle
+
+A run has two orthogonal state axes — **lifecycle status** (progress toward completion) and **control state** (operator signal).
+
+```mermaid
+stateDiagram-v2
+    direction LR
+
+    state "Lifecycle Status" as ls {
+        [*] --> RUNNING : run created
+        RUNNING --> COMPLETED : all items completed successfully
+        RUNNING --> COMPLETED_WITH_FAILURES : run finished with ≥1 FAILED_PERMANENT item
+    }
+
+    state "Control State" as cs {
+        [*] --> RUNNING2 : run created
+        RUNNING2 --> PAUSED : pause_run() called
+        PAUSED --> RUNNING2 : resume_run() called
+        RUNNING2 --> CANCEL_REQUESTED : cancel_run() called
+
+        note right of CANCEL_REQUESTED
+            Not reversible.
+            Runner drains in-flight batches;
+            lifecycle then becomes terminal.
+        end note
+    }
+```
+
+Detailed storage, resume, and artifact-retention semantics live in
+[`STORAGE_AND_RUNS.md`](STORAGE_AND_RUNS.md).
 
 ## Module boundaries
 

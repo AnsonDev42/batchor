@@ -150,11 +150,7 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
         control_state: RunControlState,
     ) -> None:
         with self.engine.begin() as conn:
-            conn.execute(
-                update(RUNS_TABLE)
-                .where(RUNS_TABLE.c.run_id == run_id)
-                .values(control_state=control_state)
-            )
+            conn.execute(update(RUNS_TABLE).where(RUNS_TABLE.c.run_id == run_id).values(control_state=control_state))
 
     def claim_items_for_submission(
         self,
@@ -169,9 +165,7 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                 .where(
                     and_(
                         ITEMS_TABLE.c.run_id == run_id,
-                        ITEMS_TABLE.c.status.in_(
-                            (ItemStatus.PENDING, ItemStatus.FAILED_RETRYABLE)
-                        ),
+                        ITEMS_TABLE.c.status.in_((ItemStatus.PENDING, ItemStatus.FAILED_RETRYABLE)),
                         ITEMS_TABLE.c.attempt_count < max_attempts,
                     )
                 )
@@ -331,18 +325,22 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
         error_file_id: str | None = None,
     ) -> None:
         with self.engine.begin() as conn:
-            current = conn.execute(
-                select(
-                    BATCHES_TABLE.c.status,
-                    BATCHES_TABLE.c.output_file_id,
-                    BATCHES_TABLE.c.error_file_id,
-                ).where(
-                    and_(
-                        BATCHES_TABLE.c.run_id == run_id,
-                        BATCHES_TABLE.c.provider_batch_id == provider_batch_id,
+            current = (
+                conn.execute(
+                    select(
+                        BATCHES_TABLE.c.status,
+                        BATCHES_TABLE.c.output_file_id,
+                        BATCHES_TABLE.c.error_file_id,
+                    ).where(
+                        and_(
+                            BATCHES_TABLE.c.run_id == run_id,
+                            BATCHES_TABLE.c.provider_batch_id == provider_batch_id,
+                        )
                     )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
             if (
                 str(current["status"]) == status
                 and _nullable_str(current["output_file_id"]) == output_file_id

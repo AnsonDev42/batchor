@@ -8,21 +8,17 @@ import pytest
 from sqlalchemy import text
 
 from batchor import (
-    BatchRunner,
-    ItemStatus,
-    MemoryStateStore,
     OpenAIEnqueueLimitConfig,
     OpenAIProviderConfig,
     ProviderKind,
     SQLiteStorage,
 )
-from batchor.core.models import ChunkPolicy, ItemFailure, RetryPolicy
+from batchor.core.models import ChunkPolicy, RetryPolicy
 from batchor.storage.postgres import PostgresStorage
 from batchor.storage.state import (
     BatchArtifactPointer,
     CompletedItemRecord,
     IngestCheckpoint,
-    ItemFailureRecord,
     MaterializedItem,
     PersistedRunConfig,
     PreparedSubmission,
@@ -168,9 +164,7 @@ def test_storage_contract_artifact_pointers_and_summary_rehydration(storage) -> 
     storage.mark_items_submitted(
         run_id="run_2",
         provider_batch_id="provider_1",
-        submissions=[
-            PreparedSubmission(item_id="row1", custom_id="row1:a1", submission_tokens=10)
-        ],
+        submissions=[PreparedSubmission(item_id="row1", custom_id="row1:a1", submission_tokens=10)],
     )
     storage.mark_items_completed(
         run_id="run_2",
@@ -186,14 +180,20 @@ def test_storage_contract_artifact_pointers_and_summary_rehydration(storage) -> 
     inventory = storage.get_artifact_inventory(run_id="run_2")
     assert inventory.request_artifact_paths == ["run_2/requests/requests_1.jsonl"]
     assert inventory.output_artifact_paths == ["run_2/outputs/output.jsonl"]
-    assert storage.clear_request_artifact_pointers(
-        run_id="run_2",
-        artifact_paths=inventory.request_artifact_paths,
-    ) == 1
-    assert storage.clear_batch_artifact_pointers(
-        run_id="run_2",
-        artifact_paths=inventory.output_artifact_paths,
-    ) == 1
+    assert (
+        storage.clear_request_artifact_pointers(
+            run_id="run_2",
+            artifact_paths=inventory.request_artifact_paths,
+        )
+        == 1
+    )
+    assert (
+        storage.clear_batch_artifact_pointers(
+            run_id="run_2",
+            artifact_paths=inventory.output_artifact_paths,
+        )
+        == 1
+    )
     storage.mark_artifacts_exported(run_id="run_2", export_root="/tmp/exported")
     summary = storage.get_run_summary(run_id="run_2")
     assert summary.completed_items == 1
