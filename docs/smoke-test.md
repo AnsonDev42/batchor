@@ -127,10 +127,16 @@ This is not part of default CI. Prefer fake-provider tests for automated coverag
 Manual only. Recommended local flow:
 
 ```bash
-export OPENAI_API_KEY=sk-...
 export BATCHOR_RUN_LIVE_TESTS=1
 export BATCHOR_LIVE_OPENAI_MODEL=gpt-5-nano
 uv run pytest tests/integration/test_batchor_live_openai.py --no-cov -q
+```
+
+Minimum single-item live smoke:
+
+```bash
+export BATCHOR_RUN_LIVE_TESTS=1
+uv run pytest tests/integration/test_batchor_live_openai.py -k text_job_smoke --no-cov -q
 ```
 
 Behavior:
@@ -139,7 +145,7 @@ Behavior:
 - uses SQLite durability and the normal `BatchRunner` flow
 - defaults to `gpt-5-nano` unless `BATCHOR_LIVE_OPENAI_MODEL` is set
 - sends no reasoning field unless `BATCHOR_LIVE_OPENAI_REASONING_EFFORT` is set
-- loads `.env` when present through the test harness for local use
+- loads `.env` when present through the test harness for local use, so `OPENAI_API_KEY` may come from the shell or `.env`
 - is skipped unless `BATCHOR_RUN_LIVE_TESTS=1`
 - requires an OpenAI account with Batch API access and available billing quota
 

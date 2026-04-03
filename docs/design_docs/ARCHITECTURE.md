@@ -319,6 +319,14 @@ Owns execution behavior:
 
 This is where the durable lifecycle lives. It bridges the domain models, providers, storage, and artifact store.
 
+The public facade is still `BatchRunner` plus `Run`, but the current internal layering under `runtime/` is intentionally split so execution concerns do not collapse back into one file:
+
+- `context.py`: persisted config building, resume config comparison, output-model resolution, and provider-backed `RunContext` creation
+- `ingestion.py`: checkpoint-aware item materialization, ingest checkpoint updates, and resume-aware ingestion flow
+- `submission.py`: pending-item claiming, request replay/build, token-budget gating, request artifact persistence, and batch submission
+- `polling.py`: refresh orchestration, active-batch polling, terminal batch consumption, and batch-failure reset/backoff handling
+- `artifacts.py` and `results.py`: request replay helpers, raw artifact writes/deletes, public result mapping, and JSONL result serialization
+
 ### `sources/`
 
 Owns streaming input adapters:
