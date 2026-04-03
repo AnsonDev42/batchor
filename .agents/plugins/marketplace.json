@@ -1,0 +1,20 @@
+{
+  "name": "batchor-local",
+  "interface": {
+    "displayName": "Batchor Local"
+  },
+  "plugins": [
+    {
+      "name": "batchor-agent-tools",
+      "source": {
+        "source": "local",
+        "path": "./plugins/batchor-agent-tools"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    }
+  ]
+}

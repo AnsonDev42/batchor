@@ -1,0 +1,38 @@
+{
+  "name": "batchor-agent-tools",
+  "version": "0.1.0",
+  "description": "Repo-local agent helpers for batchor contributors.",
+  "author": {
+    "name": "batchor contributors",
+    "email": "support@example.invalid",
+    "url": "https://github.com/AnsonDev42/batchor"
+  },
+  "homepage": "https://github.com/AnsonDev42/batchor#readme",
+  "repository": "https://github.com/AnsonDev42/batchor",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "keywords": [
+    "batchor",
+    "agent",
+    "mcp",
+    "python",
+    "openai-batch"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Batchor Agent Tools",
+    "shortDescription": "Repo-local MCP helpers for batchor development",
+    "longDescription": "Adds a lightweight repo-aware MCP server that returns the batchor project guide, validation commands, and document index so coding agents can orient quickly without re-deriving repo conventions.",
+    "developerName": "batchor contributors",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "websiteURL": "https://github.com/AnsonDev42/batchor",
+    "privacyPolicyURL": "https://github.com/AnsonDev42/batchor",
+    "termsOfServiceURL": "https://github.com/AnsonDev42/batchor",
+    "defaultPrompt": "Use the batchor repo MCP helpers to inspect the project guide, validation commands, and design-doc entry points before editing.",
+    "brandColor": "#0F766E",
+    "screenshots": []
+  }
+}

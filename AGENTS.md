@@ -27,3 +27,10 @@
   - `docs/design_docs/STORAGE_AND_RUNS.md`
   - `docs/smoke-test.md`
 - If a design area is not implemented yet, keep the section and mark it `TBD` instead of omitting it.
+
+## Repo Agent Helpers
+
+- Repo-local skill: `.agents/skills/batchor-dev/`
+- Repo-local plugin marketplace: `.agents/plugins/marketplace.json`
+- Repo-local MCP plugin: `plugins/batchor-agent-tools/`
+- Prefer these when an agent needs quick orientation on repo structure, docs, or validation commands.

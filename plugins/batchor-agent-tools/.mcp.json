@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "batchorRepo": {
+      "command": "python3",
+      "args": [
+        "./scripts/batchor_repo_mcp.py"
+      ]
+    }
+  }
+}
