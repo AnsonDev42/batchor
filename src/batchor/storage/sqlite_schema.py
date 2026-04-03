@@ -64,3 +64,14 @@ RUN_RETRY_STATE_TABLE = Table(
     Column("next_retry_at", String, nullable=True),
     Column("last_error_class", String, nullable=True),
 )
+
+RUN_INGEST_STATE_TABLE = Table(
+    "run_ingest_state",
+    METADATA,
+    Column("run_id", String, primary_key=True),
+    Column("source_kind", String, nullable=False),
+    Column("source_ref", Text, nullable=False),
+    Column("source_fingerprint", String, nullable=False),
+    Column("next_item_index", Integer, nullable=False),
+    Column("ingestion_complete", Integer, nullable=False),
+)

@@ -12,6 +12,7 @@ from batchor.storage.state_models import (
     ActiveBatchRecord,
     ClaimedItem,
     CompletedItemRecord,
+    IngestCheckpoint,
     ItemFailureRecord,
     MaterializedItem,
     PersistedItemRecord,
@@ -65,6 +66,7 @@ class _StoredRun:
     items: dict[str, _StoredItem] = field(default_factory=dict)
     batches: dict[str, _StoredBatch] = field(default_factory=dict)
     backoff: RetryBackoffState = field(default_factory=RetryBackoffState)
+    ingest_checkpoint: IngestCheckpoint | None = None
 
 
 class MemoryStateStore(StateStore):
@@ -78,6 +80,9 @@ class MemoryStateStore(StateStore):
     ) -> None:
         self._runs: dict[str, _StoredRun] = {}
         self._now = now or (lambda: datetime.now(timezone.utc))
+
+    def has_run(self, *, run_id: str) -> bool:
+        return run_id in self._runs
 
     def create_run(
         self,
@@ -115,6 +120,37 @@ class MemoryStateStore(StateStore):
                 system_prompt=item.system_prompt,
             )
         self._refresh_run_status(run)
+
+    def set_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        checkpoint: IngestCheckpoint,
+    ) -> None:
+        run = self._get_run(run_id)
+        run.ingest_checkpoint = checkpoint
+
+    def get_ingest_checkpoint(self, *, run_id: str) -> IngestCheckpoint | None:
+        return self._get_run(run_id).ingest_checkpoint
+
+    def update_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        next_item_index: int,
+        ingestion_complete: bool,
+    ) -> None:
+        run = self._get_run(run_id)
+        checkpoint = run.ingest_checkpoint
+        if checkpoint is None:
+            raise ValueError(f"run has no ingest checkpoint: {run_id}")
+        run.ingest_checkpoint = IngestCheckpoint(
+            source_kind=checkpoint.source_kind,
+            source_ref=checkpoint.source_ref,
+            source_fingerprint=checkpoint.source_fingerprint,
+            next_item_index=next_item_index,
+            ingestion_complete=ingestion_complete,
+        )
 
     def get_run_config(self, *, run_id: str) -> PersistedRunConfig:
         return self._get_run(run_id).config

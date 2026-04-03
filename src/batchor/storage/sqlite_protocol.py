@@ -8,7 +8,13 @@ from sqlalchemy.engine import Connection, Engine, RowMapping
 from batchor.core.enums import ItemStatus
 from batchor.core.models import ItemFailure, RunSummary
 from batchor.providers.registry import ProviderRegistry
-from batchor.storage.state import MaterializedItem, PersistedItemRecord, PersistedRunConfig, RetryBackoffState
+from batchor.storage.state import (
+    IngestCheckpoint,
+    MaterializedItem,
+    PersistedItemRecord,
+    PersistedRunConfig,
+    RetryBackoffState,
+)
 
 
 class SQLiteStorageProtocol(Protocol):
@@ -56,6 +62,25 @@ class SQLiteStorageProtocol(Protocol):
     ) -> RunSummary: ...
 
     def _item_records_for_run(self, conn: Connection, run_id: str) -> list[PersistedItemRecord]: ...
+
+    def has_run(self, *, run_id: str) -> bool: ...
+
+    def set_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        checkpoint: IngestCheckpoint,
+    ) -> None: ...
+
+    def get_ingest_checkpoint(self, *, run_id: str) -> IngestCheckpoint | None: ...
+
+    def update_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        next_item_index: int,
+        ingestion_complete: bool,
+    ) -> None: ...
 
     def get_request_artifact_paths(self, *, run_id: str) -> list[str]: ...
 

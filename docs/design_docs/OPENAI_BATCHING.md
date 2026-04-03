@@ -18,6 +18,8 @@ This lets retry/resume replay the prepared request body without rebuilding the p
 
 After a run reaches a terminal state, users can call `Run.prune_artifacts()` to delete those replay files and clear their SQLite pointers. That preserves terminal results while reclaiming the request-side disk footprint.
 
+Before request artifacts exist, built-in CSV and JSONL sources can now resume ingestion from a persisted source checkpoint when the caller re-enters `start(job, run_id=...)` with the same file and config.
+
 ### Token Estimation
 
 Token estimation is `tiktoken`-first:

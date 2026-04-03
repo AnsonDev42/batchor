@@ -30,9 +30,11 @@ from batchor.providers.registry import (
 from batchor.runtime.run_handle import Run, _PreparedItem, _RunContext, generate_run_id
 from batchor.runtime.runner_execution import _refresh_run, _submit_pending_items
 from batchor.runtime.validation import model_output_schema
+from batchor.sources.base import ResumableItemSource
 from batchor.storage.registry import StorageRegistry, build_default_storage_registry
 from batchor.storage.state import (
     ClaimedItem,
+    IngestCheckpoint,
     MaterializedItem,
     PersistedItemRecord,
     PersistedRunConfig,
@@ -72,24 +74,56 @@ class BatchRunner:
             )
         self._contexts: dict[str, _RunContext] = {}
 
-    def start(self, job: BatchJob[Any, BaseModel]) -> Run:
-        run_id = generate_run_id()
+    def start(
+        self,
+        job: BatchJob[Any, BaseModel],
+        *,
+        run_id: str | None = None,
+    ) -> Run:
+        resolved_run_id = run_id or generate_run_id()
         config = self._persisted_config_for_job(job)
-        self.state.create_run(run_id=run_id, config=config, items=[])
         context = self._context_for_config(config=config, output_model=job.structured_output)
-        self._contexts[run_id] = context
-        for item_chunk in self._materialize_item_chunks(job):
-            self.state.append_items(run_id=run_id, items=item_chunk)
-            self._submit_pending_items(run_id, context)
+        self._contexts[resolved_run_id] = context
+        if self.state.has_run(run_id=resolved_run_id):
+            self._resume_existing_run(
+                run_id=resolved_run_id,
+                job=job,
+                config=config,
+                context=context,
+            )
+        else:
+            self.state.create_run(run_id=resolved_run_id, config=config, items=[])
+            source = self._resumable_source(job)
+            if source is not None:
+                identity = source.source_identity()
+                self.state.set_ingest_checkpoint(
+                    run_id=resolved_run_id,
+                    checkpoint=IngestCheckpoint(
+                        source_kind=identity.source_kind,
+                        source_ref=identity.source_ref,
+                        source_fingerprint=identity.source_fingerprint,
+                    ),
+                )
+            self._ingest_job_items(
+                run_id=resolved_run_id,
+                job=job,
+                context=context,
+                start_index=0,
+            )
         return Run(
             runner=self,
-            run_id=run_id,
+            run_id=resolved_run_id,
             context=context,
-            summary=self.state.get_run_summary(run_id=run_id),
+            summary=self.state.get_run_summary(run_id=resolved_run_id),
         )
 
-    def run_and_wait(self, job: BatchJob[Any, BaseModel]) -> Run:
-        run = self.start(job)
+    def run_and_wait(
+        self,
+        job: BatchJob[Any, BaseModel],
+        *,
+        run_id: str | None = None,
+    ) -> Run:
+        run = self.start(job, run_id=run_id)
         return run.wait()
 
     def get_run(self, run_id: str) -> Run:
@@ -173,17 +207,79 @@ class BatchRunner:
             structured_output_qualname=structured_output_qualname,
         )
 
+    def _resume_existing_run(
+        self,
+        *,
+        run_id: str,
+        job: BatchJob[Any, BaseModel],
+        config: PersistedRunConfig,
+        context: _RunContext,
+    ) -> None:
+        stored_config = self.state.get_run_config(run_id=run_id)
+        if stored_config != config:
+            raise ValueError(f"existing run config does not match supplied job: {run_id}")
+        checkpoint = self.state.get_ingest_checkpoint(run_id=run_id)
+        if checkpoint is not None and not checkpoint.ingestion_complete:
+            source = self._require_resumable_source(job, run_id=run_id)
+            self._validate_checkpoint_source(run_id=run_id, source=source, checkpoint=checkpoint)
+            self._ingest_job_items(
+                run_id=run_id,
+                job=job,
+                context=context,
+                start_index=checkpoint.next_item_index,
+            )
+            return
+        self._submit_pending_items(run_id, context)
+
+    def _ingest_job_items(
+        self,
+        *,
+        run_id: str,
+        job: BatchJob[Any, BaseModel],
+        context: _RunContext,
+        start_index: int,
+    ) -> None:
+        next_item_index = start_index
+        checkpointed = self._resumable_source(job) is not None
+        for item_chunk in self._materialize_item_chunks(job, start_index=start_index):
+            self.state.append_items(run_id=run_id, items=item_chunk)
+            next_item_index = item_chunk[-1].item_index + 1
+            if checkpointed:
+                self.state.update_ingest_checkpoint(
+                    run_id=run_id,
+                    next_item_index=next_item_index,
+                    ingestion_complete=False,
+                )
+            self._submit_pending_items(run_id, context)
+        if checkpointed:
+            self.state.update_ingest_checkpoint(
+                run_id=run_id,
+                next_item_index=next_item_index,
+                ingestion_complete=True,
+            )
+
     def _materialize_item_chunks(
         self,
         job: BatchJob[Any, BaseModel],
         *,
+        start_index: int = 0,
         chunk_size: int = 1000,
     ) -> Iterator[list[MaterializedItem]]:
         if chunk_size <= 0:
             raise ValueError("chunk_size must be > 0")
         current_chunk: list[MaterializedItem] = []
         seen_ids: set[str] = set()
-        for item_index, item in enumerate(job.items):
+        source = self._resumable_source(job)
+        if source is not None:
+            item_stream = (
+                (indexed_item.item_index, indexed_item.item)
+                for indexed_item in source.iter_from(start_index)
+            )
+        else:
+            if start_index != 0:
+                raise ValueError("non-resumable item sources cannot start from a checkpoint")
+            item_stream = enumerate(job.items)
+        for item_index, item in item_stream:
             if item.item_id in seen_ids:
                 raise ValueError(f"duplicate item_id: {item.item_id}")
             seen_ids.add(item.item_id)
@@ -203,6 +299,40 @@ class BatchRunner:
                 current_chunk = []
         if current_chunk:
             yield current_chunk
+
+    @staticmethod
+    def _resumable_source(
+        job: BatchJob[Any, BaseModel],
+    ) -> ResumableItemSource[Any] | None:
+        if isinstance(job.items, ResumableItemSource):
+            return cast(ResumableItemSource[Any], job.items)
+        return None
+
+    def _require_resumable_source(
+        self,
+        job: BatchJob[Any, BaseModel],
+        *,
+        run_id: str,
+    ) -> ResumableItemSource[Any]:
+        source = self._resumable_source(job)
+        if source is None:
+            raise ValueError(f"run requires a resumable item source for restart: {run_id}")
+        return source
+
+    @staticmethod
+    def _validate_checkpoint_source(
+        *,
+        run_id: str,
+        source: ResumableItemSource[Any],
+        checkpoint: IngestCheckpoint,
+    ) -> None:
+        identity = source.source_identity()
+        if identity.source_kind != checkpoint.source_kind:
+            raise ValueError(f"source kind mismatch for resumed run: {run_id}")
+        if identity.source_ref != checkpoint.source_ref:
+            raise ValueError(f"source path mismatch for resumed run: {run_id}")
+        if identity.source_fingerprint != checkpoint.source_fingerprint:
+            raise ValueError(f"source fingerprint mismatch for resumed run: {run_id}")
 
     def _context_for_config(
         self,

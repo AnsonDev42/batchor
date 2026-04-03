@@ -20,6 +20,7 @@ from batchor.storage import sqlite as storage_sqlite
 from batchor.storage.sqlite import SQLiteStorage
 from batchor.storage.state import (
     CompletedItemRecord,
+    IngestCheckpoint,
     ItemFailureRecord,
     MaterializedItem,
     PersistedRunConfig,
@@ -80,6 +81,7 @@ def _items() -> list[MaterializedItem]:
 def test_sqlite_storage_submission_and_terminal_summary(tmp_path: Path) -> None:
     storage = SQLiteStorage(path=tmp_path / "batchor.sqlite3")
     storage.create_run(run_id="run_1", config=_config(), items=_items())
+    assert storage.has_run(run_id="run_1") is True
 
     initial = storage.get_run_summary(run_id="run_1")
     assert initial.status is RunLifecycleStatus.RUNNING
@@ -300,3 +302,42 @@ def test_sqlite_storage_lists_and_clears_request_artifact_pointers(tmp_path: Pat
     claimed = storage.claim_items_for_submission(run_id="run_5", max_attempts=2)
     assert claimed[0].request_artifact_path is None
     assert claimed[1].request_artifact_path is None
+
+
+def test_sqlite_storage_persists_ingest_checkpoint(tmp_path: Path) -> None:
+    storage = SQLiteStorage(path=tmp_path / "ingest.sqlite3")
+    storage.create_run(run_id="run_6", config=_config(), items=[])
+
+    storage.set_ingest_checkpoint(
+        run_id="run_6",
+        checkpoint=IngestCheckpoint(
+            source_kind="jsonl",
+            source_ref=str((tmp_path / "items.jsonl").resolve()),
+            source_fingerprint="abc123",
+        ),
+    )
+
+    initial = storage.get_ingest_checkpoint(run_id="run_6")
+    assert initial is not None
+    assert initial.next_item_index == 0
+    assert initial.ingestion_complete is False
+
+    storage.update_ingest_checkpoint(
+        run_id="run_6",
+        next_item_index=1000,
+        ingestion_complete=False,
+    )
+    advanced = storage.get_ingest_checkpoint(run_id="run_6")
+    assert advanced is not None
+    assert advanced.next_item_index == 1000
+    assert advanced.ingestion_complete is False
+
+    storage.update_ingest_checkpoint(
+        run_id="run_6",
+        next_item_index=1002,
+        ingestion_complete=True,
+    )
+    completed = storage.get_ingest_checkpoint(run_id="run_6")
+    assert completed is not None
+    assert completed.next_item_index == 1002
+    assert completed.ingestion_complete is True

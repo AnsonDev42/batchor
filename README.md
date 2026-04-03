@@ -10,6 +10,7 @@ Structured-first OpenAI Batch runner with durable `Run` handles, Pydantic v2 val
 - iterable or file-backed item inputs via `CsvItemSource` and `JsonlItemSource`
 - `runner.start(...) -> Run` returns immediately with a durable `run_id`
 - `runner.get_run(run_id)` rehydrates a run from storage
+- `runner.start(..., run_id="...")` can resume incomplete file-backed ingestion for the same durable run
 - completed runs can explicitly prune replayable request artifacts through `Run.prune_artifacts()`
 - local SQLAlchemy 2 SQLite storage is the default backend
 - `BatchRunner(storage="memory")` is available for ephemeral tests and one-off runs
@@ -190,6 +191,14 @@ run = runner.start(
 ```
 
 CSV sources work the same way through `CsvItemSource`, with explicit row-to-item mapping callbacks.
+
+For long file-backed ingests, prefer a caller-supplied `run_id` so a killed worker can safely re-enter the same run:
+
+```python
+run = runner.start(job, run_id="customer_export_20260403")
+```
+
+If the source file and job config still match the persisted checkpoint, rerunning `start(job, run_id=...)` resumes from the last durable source position instead of duplicating previously materialized items.
 
 ## Extension Hooks
 

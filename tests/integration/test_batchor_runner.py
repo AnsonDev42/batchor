@@ -622,3 +622,71 @@ def test_file_backed_jsonl_job_matches_in_memory_results(tmp_path: Path) -> None
         "row1",
         "row2",
     ]
+
+
+def test_start_with_same_run_id_resumes_incomplete_jsonl_ingestion(tmp_path: Path) -> None:
+    path = tmp_path / "items.jsonl"
+    records = [
+        {"id": f"row{i}", "text": f"text-{i}"}
+        for i in range(1002)
+    ]
+    path.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+    source = JsonlItemSource(
+        path,
+        item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+        payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+    )
+    storage = SQLiteStorage(path=tmp_path / "resume_ingest.sqlite3")
+    run_id = "resume_ingest_run"
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+    )
+
+    def flaky_prompt_builder(item: BatchItem[dict[str, str]]) -> PromptParts:
+        if item.item_id == "row1000":
+            raise RuntimeError("simulated ingest crash")
+        return PromptParts(prompt=item.payload["text"])
+
+    with pytest.raises(RuntimeError, match="simulated ingest crash"):
+        runner.start(
+            BatchJob(
+                items=source,
+                build_prompt=flaky_prompt_builder,
+                structured_output=ClassificationResult,
+                provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+            ),
+            run_id=run_id,
+        )
+
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1000
+    assert checkpoint.ingestion_complete is False
+
+    resumed = runner.start(
+        BatchJob(
+            items=source,
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        ),
+        run_id=run_id,
+    )
+    resumed.wait(poll_interval=0)
+
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1002
+    assert checkpoint.ingestion_complete is True
+    assert len(resumed.results()) == 1002
+    assert resumed.results()[0].item_id == "row0"
+    assert resumed.results()[-1].item_id == "row1001"

@@ -13,10 +13,17 @@ from batchor.storage.sqlite_codec import (
     _nullable_str,
 )
 from batchor.storage.sqlite_protocol import SQLiteStorageProtocol
-from batchor.storage.sqlite_schema import BATCHES_TABLE, ITEMS_TABLE, RUN_RETRY_STATE_TABLE, RUNS_TABLE
+from batchor.storage.sqlite_schema import (
+    BATCHES_TABLE,
+    ITEMS_TABLE,
+    RUN_INGEST_STATE_TABLE,
+    RUN_RETRY_STATE_TABLE,
+    RUNS_TABLE,
+)
 from batchor.storage.state import (
     ActiveBatchRecord,
     ClaimedItem,
+    IngestCheckpoint,
     MaterializedItem,
     PersistedRunConfig,
     PreparedSubmission,
@@ -80,6 +87,44 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
         with self.engine.begin() as conn:
             conn.execute(ITEMS_TABLE.insert(), self._item_rows(run_id=run_id, items=items))
             self._refresh_run_status(conn, run_id)
+
+    def set_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        checkpoint: IngestCheckpoint,
+    ) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(
+                RUN_INGEST_STATE_TABLE.insert(),
+                [
+                    {
+                        "run_id": run_id,
+                        "source_kind": checkpoint.source_kind,
+                        "source_ref": checkpoint.source_ref,
+                        "source_fingerprint": checkpoint.source_fingerprint,
+                        "next_item_index": checkpoint.next_item_index,
+                        "ingestion_complete": 1 if checkpoint.ingestion_complete else 0,
+                    }
+                ],
+            )
+
+    def update_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        next_item_index: int,
+        ingestion_complete: bool,
+    ) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(
+                update(RUN_INGEST_STATE_TABLE)
+                .where(RUN_INGEST_STATE_TABLE.c.run_id == run_id)
+                .values(
+                    next_item_index=next_item_index,
+                    ingestion_complete=1 if ingestion_complete else 0,
+                )
+            )
 
     def get_run_config(self, *, run_id: str) -> PersistedRunConfig:
         with self.engine.begin() as conn:

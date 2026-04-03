@@ -7,7 +7,7 @@ This file tracks important work that should be explicit in the extracted reposit
 - add a live OpenAI smoke harness with low-cost fixtures
 - add provider-level observability hooks
 - add Postgres storage backend
-- add resumable ingestion for file-backed item sources
+- extend resumable ingestion beyond the built-in CSV/JSONL sources
 - add more input adapters beyond CSV and JSONL
 - document API stability expectations before public release
 

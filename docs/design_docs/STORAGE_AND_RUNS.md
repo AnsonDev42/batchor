@@ -27,6 +27,7 @@ SQLite is the default durable backend.
 Current storage responsibilities include:
 
 - persisting run config
+- persisting file-source ingest checkpoints when available
 - persisting item state and attempts
 - persisting submitted batch metadata
 - persisting request-artifact pointers for replayable submissions
@@ -37,10 +38,19 @@ For SQLite-backed runs, replayable request JSONL artifacts are stored durably be
 
 In-memory storage exists for tests and short-lived local runs.
 
+For the built-in CSV and JSONL sources, storage now also persists a source checkpoint with:
+
+- source kind
+- source path/reference
+- source fingerprint
+- next durable item index
+- ingestion completion flag
+
 ## Rehydration Rules
 
 - `runner.get_run(run_id)` must work from a fresh runner if it points at the same SQLite database
 - SQLite-backed rehydration expects the sibling request-artifact directory to still be present for replayable pending/retryable items
+- file-backed ingestion resume expects the caller to reuse the same `run_id` and provide the same source file contents
 - structured output rehydration requires importable model classes
 - if a model class cannot be resolved, `batchor` raises a clear model-resolution error
 
@@ -51,9 +61,9 @@ Once the whole run is terminal, users may explicitly call `Run.prune_artifacts()
 ## Current Gaps
 
 - SQLite is the only durable backend implemented today
-- file-source ingestion is synchronous during `start()`
+- file-source ingestion is synchronous during `start()` and checkpointed only for the built-in CSV/JSONL sources
 - artifact storage is local-filesystem only today; there is no remote/object-store abstraction yet
-- mid-ingest crash recovery is not yet implemented
+- non-file item iterables still do not support mid-ingest crash recovery
 
 ## TBD
 
@@ -61,3 +71,4 @@ Once the whole run is terminal, users may explicitly call `Run.prune_artifacts()
 - automated retention windows and archive/export workflow beyond explicit terminal pruning
 - explicit schema migration/versioning guidance
 - partial-result read APIs for non-terminal runs
+- resumable ingestion for non-file/custom sources

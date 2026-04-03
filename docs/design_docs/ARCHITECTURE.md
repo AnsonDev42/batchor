@@ -49,6 +49,7 @@ Execution and validation behavior:
 - `Run`
 - token estimation and request chunking
 - durable request-artifact replay for retry/resume
+- resumable file-backed ingestion checkpoints
 - explicit terminal-run artifact pruning
 - retry helpers
 - response validation and structured-output parsing
@@ -81,6 +82,7 @@ Durable and ephemeral state backends:
 6. `Run.refresh()` is explicit; status properties do not implicitly hit the provider.
 7. SQLite-backed runs can replay prepared request JSONL artifacts without rebuilding prompts from the original item source.
 8. `Run.prune_artifacts()` is explicit and terminal-only; it is not automatic garbage collection.
+9. File-backed source resume requires a caller-supplied `run_id` plus a stable source fingerprint.
 
 ## Extension Seams
 
@@ -90,6 +92,7 @@ The code is intentionally shaped for future providers and storage backends:
 - storage creation goes through the storage registry
 - runtime code works in terms of provider/store contracts instead of direct OpenAI/SQLite branches
 - durable request replay is provider-agnostic at the runner/store boundary and currently materializes as local JSONL artifacts for SQLite
+- file-backed resume uses source-specific checkpoints and currently supports the built-in CSV and JSONL sources
 
 ## TBD
 

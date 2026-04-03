@@ -20,11 +20,32 @@ from batchor.storage.sqlite_codec import (
     _require_int,
 )
 from batchor.storage.sqlite_protocol import SQLiteStorageProtocol
-from batchor.storage.sqlite_schema import BATCHES_TABLE, ITEMS_TABLE, RUN_RETRY_STATE_TABLE, RUNS_TABLE
-from batchor.storage.state import MaterializedItem, PersistedItemRecord, PersistedRunConfig, RetryBackoffState
+from batchor.storage.sqlite_schema import (
+    BATCHES_TABLE,
+    ITEMS_TABLE,
+    RUN_INGEST_STATE_TABLE,
+    RUN_RETRY_STATE_TABLE,
+    RUNS_TABLE,
+)
+from batchor.storage.state import (
+    IngestCheckpoint,
+    MaterializedItem,
+    PersistedItemRecord,
+    PersistedRunConfig,
+    RetryBackoffState,
+)
 
 
 class SQLiteQueryMixin(SQLiteStorageProtocol):
+    def has_run(self, *, run_id: str) -> bool:
+        with self.engine.begin() as conn:
+            count = conn.execute(
+                select(func.count())
+                .select_from(RUNS_TABLE)
+                .where(RUNS_TABLE.c.run_id == run_id)
+            ).scalar_one()
+            return int(count) > 0
+
     def _fetch_run_row(self, conn: Connection, run_id: str) -> RowMapping:
         return conn.execute(
             select(RUNS_TABLE).where(RUNS_TABLE.c.run_id == run_id)
@@ -147,6 +168,21 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
                 for artifact_path in (_nullable_str(value) for value in rows.scalars())
                 if artifact_path is not None
             ]
+
+    def get_ingest_checkpoint(self, *, run_id: str) -> IngestCheckpoint | None:
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                select(RUN_INGEST_STATE_TABLE).where(RUN_INGEST_STATE_TABLE.c.run_id == run_id)
+            ).mappings().first()
+            if row is None:
+                return None
+            return IngestCheckpoint(
+                source_kind=str(row["source_kind"]),
+                source_ref=str(row["source_ref"]),
+                source_fingerprint=str(row["source_fingerprint"]),
+                next_item_index=int(row["next_item_index"]),
+                ingestion_complete=bool(row["ingestion_complete"]),
+            )
 
     def _summary_for_run(
         self,

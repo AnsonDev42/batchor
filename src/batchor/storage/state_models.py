@@ -38,6 +38,15 @@ class RetryBackoffState:
 
 
 @dataclass(frozen=True)
+class IngestCheckpoint:
+    source_kind: str
+    source_ref: str
+    source_fingerprint: str
+    next_item_index: int = 0
+    ingestion_complete: bool = False
+
+
+@dataclass(frozen=True)
 class MaterializedItem:
     item_id: str
     item_index: int
@@ -119,6 +128,9 @@ class PersistedItemRecord:
 
 class StateStore(ABC):
     @abstractmethod
+    def has_run(self, *, run_id: str) -> bool: ...
+
+    @abstractmethod
     def create_run(
         self,
         *,
@@ -133,6 +145,26 @@ class StateStore(ABC):
         *,
         run_id: str,
         items: list[MaterializedItem],
+    ) -> None: ...
+
+    @abstractmethod
+    def set_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        checkpoint: IngestCheckpoint,
+    ) -> None: ...
+
+    @abstractmethod
+    def get_ingest_checkpoint(self, *, run_id: str) -> IngestCheckpoint | None: ...
+
+    @abstractmethod
+    def update_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        next_item_index: int,
+        ingestion_complete: bool,
     ) -> None: ...
 
     @abstractmethod
