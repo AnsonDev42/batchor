@@ -1,0 +1,22 @@
+.hero {
+  padding: 1.5rem 0 0.5rem;
+}
+
+.hero p,
+.hero code {
+  font-size: 1.05rem;
+}
+
+.grid.cards > ul > li,
+.md-typeset .grid.cards > ul > li {
+  border: 1px solid color-mix(in srgb, var(--md-default-fg-color--lightest) 70%, transparent);
+  border-radius: 1rem;
+  padding: 0.9rem 1rem;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--md-primary-fg-color) 7%, var(--md-default-bg-color)),
+      var(--md-default-bg-color)
+    );
+  box-shadow: 0 0.6rem 1.4rem rgba(0, 0, 0, 0.05);
+}

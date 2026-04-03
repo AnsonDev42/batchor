@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib import resources
 from pathlib import Path
 
 from batchor import (
@@ -71,3 +72,7 @@ def test_storage_registry_supports_explicit_backend_factories(tmp_path: Path) ->
     assert isinstance(memory, MemoryStateStore)
     assert isinstance(sqlite, SQLiteStorage)
     sqlite.close()
+
+
+def test_package_marks_itself_as_typed() -> None:
+    assert resources.files("batchor").joinpath("py.typed").is_file()

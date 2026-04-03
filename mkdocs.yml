@@ -1,0 +1,91 @@
+site_name: batchor
+site_description: Durable OpenAI Batch execution with typed Pydantic results and replayable artifacts.
+site_url: https://yaowenshen.github.io/batchor/
+repo_url: https://github.com/yaowenshen/batchor
+repo_name: yaowenshen/batchor
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.instant
+    - navigation.indexes
+    - content.code.copy
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+extra_css:
+  - assets/stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - src
+          options:
+            show_source: false
+            members_order: source
+            inherited_members: false
+            filters:
+              - "!^_"
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Python API: getting-started/python-api.md
+      - CLI Usage: getting-started/cli.md
+  - Reference:
+      - API Reference: reference/api.md
+      - Smoke Test Guide: smoke-test.md
+  - Design:
+      - Docs Index: doc-map.md
+      - Architecture: design_docs/ARCHITECTURE.md
+      - Boundary & Philosophy: design_docs/BOUNDARY_AND_PHILOSOPHY.md
+      - OpenAI Batching: design_docs/OPENAI_BATCHING.md
+      - Storage & Runs: design_docs/STORAGE_AND_RUNS.md
+      - Storage Migrations: design_docs/STORAGE_MIGRATIONS.md
+      - Roadmap: design_docs/ROADMAP.md
+      - Plans:
+          - Plans Index: plans/README.md
+          - Durable Execution Boundary: plans/DURABLE_EXECUTION_BOUNDARY.md
+  - Project:
+      - Support Policy: policies/support.md
+      - Versioning Policy: policies/versioning.md
+      - Contributing: policies/contributing.md

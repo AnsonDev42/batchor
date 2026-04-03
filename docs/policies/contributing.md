@@ -1,6 +1,6 @@
 # Contributing
 
-Issues and pull requests are welcome for the noncommercial open-source package.
+Issues and pull requests are welcome for the noncommercial package.
 
 Before submitting changes:
 
