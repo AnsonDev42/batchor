@@ -23,6 +23,8 @@ def _file_fingerprint(path: Path) -> str:
 
 
 class CsvItemSource(ResumableItemSource[PayloadT], Generic[PayloadT]):
+    """Stream `BatchItem` values from a CSV file with durable resume support."""
+
     def __init__(
         self,
         path: str | Path,
@@ -70,6 +72,8 @@ class CsvItemSource(ResumableItemSource[PayloadT], Generic[PayloadT]):
 
 
 class JsonlItemSource(ResumableItemSource[PayloadT], Generic[PayloadT]):
+    """Stream `BatchItem` values from a JSONL file with durable resume support."""
+
     def __init__(
         self,
         path: str | Path,

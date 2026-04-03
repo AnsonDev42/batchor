@@ -43,11 +43,14 @@ class _RunContext:
 
 
 def generate_run_id() -> str:
+    """Generate a timestamped durable run identifier."""
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"batchor_{timestamp}_{uuid4().hex[:8]}"
 
 
 class Run:
+    """Durable handle for polling, waiting on, and inspecting one batch run."""
+
     def __init__(
         self,
         *,
@@ -63,13 +66,16 @@ class Run:
 
     @property
     def status(self) -> RunLifecycleStatus:
+        """Return the cached lifecycle status for the run."""
         return self._summary.status
 
     @property
     def is_finished(self) -> bool:
+        """Return whether the run is in a terminal lifecycle state."""
         return self.status in (RunLifecycleStatus.COMPLETED, RunLifecycleStatus.COMPLETED_WITH_FAILURES)
 
     def refresh(self) -> RunSummary:
+        """Perform one poll-and-submit cycle and return the updated summary."""
         self._summary = self._runner._refresh_run(self.run_id, self._context)
         return self._summary
 
@@ -79,6 +85,7 @@ class Run:
         timeout: float | None = None,
         poll_interval: float | None = None,
     ) -> Run:
+        """Block until the run is terminal or the optional timeout expires."""
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             self.refresh()
@@ -100,10 +107,12 @@ class Run:
                 self._runner.sleep(sleep_for)
 
     def summary(self) -> RunSummary:
+        """Read the latest persisted summary for the run from storage."""
         self._summary = self._runner.state.get_run_summary(run_id=self.run_id)
         return self._summary
 
     def snapshot(self) -> RunSnapshot:
+        """Return the current summary plus expanded terminal item payloads."""
         self._summary = self._runner.state.get_run_summary(run_id=self.run_id)
         return RunSnapshot(
             run_id=self._summary.run_id,
@@ -118,6 +127,7 @@ class Run:
         )
 
     def results(self) -> list[BatchResultItem]:
+        """Return terminal item results for the run."""
         if not self.is_finished:
             raise RunNotFinishedError(self.run_id)
         return self._runner._results_for_run(self.run_id, self._context)
@@ -127,6 +137,7 @@ class Run:
         *,
         include_raw_output_artifacts: bool = False,
     ) -> ArtifactPruneResult:
+        """Prune retained artifacts for this terminal run."""
         self._summary = self._runner.state.get_run_summary(run_id=self.run_id)
         return self._runner.prune_artifacts(
             self.run_id,
@@ -134,5 +145,6 @@ class Run:
         )
 
     def export_artifacts(self, destination_dir: str) -> ArtifactExportResult:
+        """Export retained artifacts for this terminal run."""
         self._summary = self._runner.state.get_run_summary(run_id=self.run_id)
         return self._runner.export_artifacts(self.run_id, destination_dir=destination_dir)

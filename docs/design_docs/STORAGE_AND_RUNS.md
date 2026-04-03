@@ -2,7 +2,9 @@
 
 This document describes durable execution state in `batchor`.
 
-## Run Model
+If you only read one implementation-oriented document after the getting-started guides, this should probably be it. The central idea in the repo is that a `Run` is durable, rehydratable state, not just an in-memory helper object.
+
+## Run model
 
 `BatchRunner.start(job)` returns a durable `Run` handle immediately.
 
@@ -13,28 +15,58 @@ The public handle exposes:
 - `is_finished`
 - `refresh()`
 - `wait()`
-- `snapshot()`
 - `summary()`
+- `snapshot()`
 - `results()`
 - `export_artifacts()`
 - `prune_artifacts()`
 
-`results()` and `prune_artifacts()` are intentionally terminal-only.
-Today terminal means either `completed` or `completed_with_failures`.
+Important semantics:
 
-## Current Durable Backends
+- `status` is cached from the last summary read or refresh
+- `refresh()` performs one poll-and-submit pass
+- `wait()` repeatedly refreshes until the run is terminal
+- `results()` and artifact lifecycle operations are terminal-only
+- terminal currently means either `completed` or `completed_with_failures`
+
+## Control plane and payload plane
+
+`batchor` persists durable state in two layers.
+
+The control plane is the state store:
+
+- run config
+- item rows and attempts
+- active batch rows
+- parsed outputs and failure records
+- artifact pointers
+- ingest checkpoints
+
+The payload plane is the artifact store:
+
+- request JSONL files
+- raw output JSONL
+- raw error JSONL
+
+This split is intentional. Large artifacts remain files, while the durable store keeps the indexed state needed for orchestration and rehydration.
+
+## Current durable backends
 
 SQLite is the default durable backend.
+
 Postgres is also implemented for shared control-plane state when callers explicitly construct `PostgresStorage(...)`.
+
+In-memory storage exists for tests and short-lived local runs.
+
 The SQLite/OpenAI path is covered by the default smoke test. Postgres storage compatibility is validated in a dedicated storage-contract CI job and requires `BATCHOR_TEST_POSTGRES_DSN` for equivalent local coverage.
 
-The SQLite backend now enables WAL-mode defaults and ships explicit hot-path indexes so durable local runs spend less time on repeated pending-item, active-batch, and artifact-pointer scans.
+## Storage responsibilities
 
 Current storage responsibilities include:
 
 - persisting public run config
-- persisting file-source ingest checkpoints when available
 - persisting item state and attempts
+- persisting file-source ingest checkpoints when available
 - persisting submitted batch metadata
 - persisting request-artifact pointers for replayable submissions
 - persisting batch output/error artifact pointers for raw provider payload retention
@@ -42,19 +74,49 @@ Current storage responsibilities include:
 - reconstructing structured results on reload
 - persisting storage metadata such as schema version
 
-Durable artifacts now flow through the `ArtifactStore` contract. The built-in implementation is `LocalArtifactStore`, which stores replayable request JSONL and raw output/error files on local disk or a shared mounted volume.
+For provider configs that contain secrets, durable storage persists only the public provider config. Secret material such as the API key must come from in-memory config or the environment when a rehydrated run needs to talk to the provider again.
 
-For SQLite-backed runs, the default local artifact root is still a sibling `*_artifacts/` directory beside the database. SQLite remains the control-plane ledger and stores item-to-artifact pointers rather than treating the database itself as the long-term request file store.
+## SQLite behavior
 
-For Postgres-backed runs, callers must provide a shared artifact root explicitly if they expect multiple machines or fresh processes to see the same replayable artifacts.
+SQLite is the default because the package is optimized first for local durable runs.
 
-For provider configs that contain secrets, SQLite stores the public provider config only. Runtime credential lookup must come from the explicit in-memory config or ambient environment when a rehydrated run needs to talk to the provider again.
+Current SQLite characteristics:
 
-`SQLiteStorage.schema_version` exposes the effective schema version after startup checks. Current migration behavior is additive at startup; see `docs/design_docs/STORAGE_MIGRATIONS.md` for guidance and limits.
+- WAL mode is enabled by default
+- hot-path indexes exist for pending-item, active-batch, and artifact-pointer queries
+- schema version is exposed through `SQLiteStorage.schema_version`
+- startup migration behavior is additive and documented separately in `STORAGE_MIGRATIONS.md`
 
-In-memory storage exists for tests and short-lived local runs.
+For SQLite-backed runs, the default artifact root is a sibling `*_artifacts/` directory beside the database.
 
-For the built-in CSV and JSONL sources, storage now also persists a source checkpoint with:
+## Postgres behavior
+
+Postgres exists as an opt-in control-plane backend for cases where SQLite is not enough, such as shared state across processes or hosts.
+
+Important operational rule:
+
+- if you use Postgres across machines or fresh processes, provide a shared artifact root explicitly
+
+Postgres stores the control plane, not the large request/output files themselves.
+
+## Rehydration rules
+
+`runner.get_run(run_id)` must work from a fresh runner when it points at the same durable storage.
+
+Successful rehydration depends on:
+
+- the durable storage still containing the run rows
+- the configured artifact store still containing any artifacts needed for retry/resume
+- structured output model classes still being importable
+- credentials being available when a refresh needs to talk to the provider
+
+Fresh-process resume also requeues any `queued_local` items back to `pending` before submission resumes.
+
+Resume compatibility intentionally ignores non-persisted secret fields such as provider API keys.
+
+## File-source checkpoints
+
+For the built-in CSV and JSONL sources, storage persists a source checkpoint with:
 
 - source kind
 - source path/reference
@@ -62,29 +124,37 @@ For the built-in CSV and JSONL sources, storage now also persists a source check
 - next durable item index
 - ingestion completion flag
 
-## Rehydration Rules
+This enables `start(job, run_id=...)` to resume ingestion rather than rematerializing already-ingested rows, as long as the source still matches the stored identity.
 
-- `runner.get_run(run_id)` must work from a fresh runner if it points at the same SQLite database
-- rehydration expects the configured artifact store to still contain replayable pending/retryable items
-- fresh-process rehydration requeues any `queued_local` items back to `pending` before submission resumes
-- file-backed ingestion resume expects the caller to reuse the same `run_id` and provide the same source file contents
-- structured output rehydration requires importable model classes
-- if a model class cannot be resolved, `batchor` raises a clear model-resolution error
-- resume compatibility ignores non-persisted secret fields such as provider API keys
+Non-file iterables do not yet support the same mid-ingest crash recovery behavior.
 
-Once an item has a durable request artifact pointer, `batchor` may prune large inline request-building fields from the control-plane store and rely on the artifact for later retries.
+## Artifact lifecycle
 
-Storage mutations no longer force a full run-summary recomputation after each write. Instead, summary aggregation happens on explicit summary reads and refresh boundaries, which reduces control-plane write amplification for large runs.
+Once an item has a durable request artifact pointer, `batchor` may rely on that artifact for later retries instead of rebuilding the prompt from source data.
 
-Once the whole run is terminal, users may explicitly call `Run.prune_artifacts()` or `BatchRunner.prune_artifacts(run_id)` to remove replayable request files and clear their storage pointers. This is a manual lifecycle step today; `batchor` does not auto-delete artifacts behind the user's back.
+Once the whole run is terminal:
 
-Raw output/error artifacts follow a stricter rule: users must call `Run.export_artifacts(...)` first, and only then may they call `Run.prune_artifacts(include_raw_output_artifacts=True)`. This keeps raw provider payload retention explicit for both terminal success and terminal partial-failure runs.
+- users may call `Run.prune_artifacts()` or `BatchRunner.prune_artifacts(run_id)` to remove replayable request files and clear their pointers
+- this is explicit lifecycle management, not automatic garbage collection
 
-## Current Gaps
+Raw output/error artifacts follow a stricter rule:
 
-- file-source ingestion is synchronous during `start()` and checkpointed only for the built-in CSV/JSONL sources
-- the only artifact backend implemented today is `LocalArtifactStore`; there is no remote/object-store backend yet
-- non-file item iterables still do not support mid-ingest crash recovery
+- users must call `Run.export_artifacts(...)` first
+- only then may they call `Run.prune_artifacts(include_raw_output_artifacts=True)`
+
+That rule keeps destructive cleanup of raw provider evidence explicit.
+
+## Summary recomputation
+
+Storage mutations do not force a full run-summary recomputation after every write. Summary aggregation happens on explicit summary reads and refresh boundaries instead. That reduces write amplification for larger runs.
+
+## Current gaps
+
+- file-source ingestion is synchronous during `start()`
+- only the built-in CSV and JSONL sources support ingest checkpoints
+- the only built-in artifact backend today is `LocalArtifactStore`
+- non-file item iterables do not support mid-ingest crash recovery
+- there is no partial-result API for non-terminal runs
 
 ## TBD
 

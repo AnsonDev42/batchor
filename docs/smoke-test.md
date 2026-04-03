@@ -4,22 +4,39 @@ This guide defines the minimum validation bar for `batchor`.
 
 ## Goals
 
-- Catch obvious regressions in the package API.
-- Verify durable run handling and SQLite persistence still work.
-- Verify artifact-store wiring still supports replay, export, and prune.
-- Verify OpenAI-specific batching logic through fake-provider integration tests.
+- catch obvious regressions in the package API
+- verify durable run handling and SQLite persistence still work
+- verify artifact-store wiring still supports replay, export, and prune
+- verify OpenAI-specific batching logic through fake-provider integration tests
+- verify the documentation site still builds cleanly in strict mode
 
 ## Prerequisites
 
-- Dependencies installed:
+Install dependencies:
 
 ```bash
 uv sync --all-groups
 ```
 
-If you are working from the monorepo, run commands from `batchor/`. If you are working from the extracted repo, run them from the repo root.
+If you are working from the monorepo, run commands from `batchor/`. If you are working from the extracted repo, run commands from the repo root.
 
-## Level 1: Fast Smoke
+## Required smoke path
+
+Run this after refactors or behavior-changing code edits:
+
+```bash
+uv run pytest -q
+```
+
+This path uses the default pytest configuration, which:
+
+- runs in parallel
+- enforces strict pytest config/marker handling
+- enforces the `85%` coverage gate
+
+## Recommended repo-level validation
+
+In practice, the project expects more than just pytest for a clean change:
 
 ```bash
 uv run ty check src
@@ -33,17 +50,17 @@ Expected:
 - exit code `0`
 - type checks pass
 - coverage gate passes at `85%` or higher
-- pytest runs in parallel through the default project config
-- the docs site builds cleanly in strict mode
+- MkDocs builds without missing pages or bad internal references
 - sdist and wheel both build successfully
 
 GitHub pull request CI runs the main smoke across Python `3.12` and `3.13`, builds the docs site in a dedicated docs job, and runs packaging in a dedicated Python `3.13` build job so each validation path stays explicit.
 
-## Level 2: Targeted Runtime Smoke
+## Targeted runtime smoke
 
-Use this when touching provider/storage/runtime wiring:
+Use this when touching provider wiring, storage wiring, token budgeting, or run lifecycle behavior:
 
 ```bash
+uv run ty check src
 uv run pytest tests/unit/test_batchor_tokens.py tests/unit/test_batchor_sqlite_storage_flow.py tests/unit/test_batchor_validation.py --no-cov -q
 uv run pytest tests/unit/test_batchor_artifacts.py tests/unit/test_batchor_storage_contracts.py --no-cov -q
 uv run pytest tests/integration/test_batchor_runner.py --no-cov -q
@@ -65,12 +82,26 @@ Expected:
 
 Notes:
 
-- The default pytest configuration includes `-n auto` and the `85%` coverage gate.
-- `--no-cov` is only for supplemental targeted runs after the main smoke test already passed.
-- Postgres contract tests run in required GitHub Actions CI through an ephemeral PostgreSQL service.
-- Local Postgres contract tests still require `BATCHOR_TEST_POSTGRES_DSN` to be set.
+- the default pytest configuration already includes `-n auto` and the `85%` coverage gate
+- `--no-cov` is only for supplemental targeted runs after the main smoke test already passed
+- Postgres contract tests run in required GitHub Actions CI through an ephemeral PostgreSQL service
+- local Postgres contract tests still require `BATCHOR_TEST_POSTGRES_DSN` to be set
 
-## CLI Smoke
+## Docs smoke
+
+If a change touches docs, navigation, or API docstrings, also run:
+
+```bash
+uv run mkdocs build --strict
+```
+
+This catches:
+
+- broken navigation entries
+- unresolved page links
+- generated API pages that fail to render
+
+## CLI smoke
 
 The CLI auto-loads a local `.env` for operator usage. The Python library does not.
 
@@ -83,7 +114,7 @@ batchor start --input input/items.jsonl --id-field id --prompt-field text --mode
 
 This is not part of default CI. Prefer fake-provider tests for automated coverage and run live CLI smoke manually when changing CLI/provider wiring.
 
-## Live OpenAI Smoke
+## Live OpenAI smoke
 
 Manual only. Recommended local flow:
 

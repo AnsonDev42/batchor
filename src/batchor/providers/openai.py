@@ -12,6 +12,7 @@ from batchor.runtime.tokens import estimate_request_tokens
 
 
 def resolve_openai_api_key(config: OpenAIProviderConfig) -> str:
+    """Resolve credentials from explicit config first, then the environment."""
     if config.api_key:
         return config.api_key
     api_key = os.getenv("OPENAI_API_KEY", "")
@@ -24,6 +25,8 @@ def resolve_openai_api_key(config: OpenAIProviderConfig) -> str:
 
 
 class OpenAIBatchProvider(BatchProvider):
+    """Built-in provider that adapts `batchor` jobs to the OpenAI Batch API."""
+
     def __init__(self, config: OpenAIProviderConfig, client: Any | None = None) -> None:
         self.config = config
         self.client = client if client is not None else self._build_default_client()
@@ -43,6 +46,7 @@ class OpenAIBatchProvider(BatchProvider):
         prompt_parts: PromptParts,
         structured_output: StructuredOutputSchema | None = None,
     ) -> BatchRequestLine:
+        """Build one OpenAI batch JSONL request row for a logical item."""
         structured_output_json_schema = self._structured_output_json_schema(structured_output)
         if self.config.endpoint == "/v1/chat/completions":
             messages: list[dict[str, str]] = []
@@ -100,11 +104,13 @@ class OpenAIBatchProvider(BatchProvider):
         }
 
     def upload_input_file(self, input_path: str | Path) -> str:
+        """Upload a prepared local JSONL file to OpenAI and return the file id."""
         with Path(input_path).open("rb") as handle:
             uploaded = self.client.files.create(file=handle, purpose="batch")
         return uploaded.id
 
     def delete_input_file(self, file_id: str) -> None:
+        """Best-effort deletion of an uploaded input file."""
         self.client.files.delete(file_id)
 
     def create_batch(
@@ -113,6 +119,7 @@ class OpenAIBatchProvider(BatchProvider):
         input_file_id: str,
         metadata: dict[str, str] | None = None,
     ) -> BatchRemoteRecord:
+        """Create an OpenAI batch from a previously uploaded input file."""
         batch = self.client.batches.create(
             input_file_id=input_file_id,
             endpoint=self.config.endpoint,
@@ -122,10 +129,12 @@ class OpenAIBatchProvider(BatchProvider):
         return self._normalize(batch)
 
     def get_batch(self, batch_id: str) -> BatchRemoteRecord:
+        """Fetch the current remote state for one OpenAI batch."""
         batch = self.client.batches.retrieve(batch_id)
         return self._normalize(batch)
 
     def download_file_content(self, file_id: str) -> str:
+        """Download a provider file and normalize it to text."""
         content = self.client.files.content(file_id)
         if hasattr(content, "text"):
             return content.text
@@ -136,6 +145,7 @@ class OpenAIBatchProvider(BatchProvider):
 
     @staticmethod
     def parse_jsonl(content: str) -> list[JSONObject]:
+        """Parse provider JSONL payloads into JSON objects."""
         records: list[JSONObject] = []
         for raw_line in content.splitlines():
             line = raw_line.strip()
@@ -153,6 +163,7 @@ class OpenAIBatchProvider(BatchProvider):
         output_content: str | None,
         error_content: str | None,
     ) -> tuple[dict[str, JSONObject], dict[str, JSONObject], list[JSONObject]]:
+        """Split OpenAI output/error payloads into success and error maps."""
         raw_records: list[JSONObject] = []
         success: dict[str, JSONObject] = {}
         errors: dict[str, JSONObject] = {}
@@ -183,6 +194,7 @@ class OpenAIBatchProvider(BatchProvider):
         *,
         chars_per_token: int,
     ) -> int:
+        """Estimate submitted tokens for one provider request line."""
         return estimate_request_tokens(
             request_line,
             chars_per_token=chars_per_token,

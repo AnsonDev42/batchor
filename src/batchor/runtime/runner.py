@@ -46,6 +46,8 @@ from batchor.storage.state import (
 
 
 class BatchRunner:
+    """Durable orchestrator for creating, resuming, and inspecting batch runs."""
+
     _refresh_run = _refresh_run
     _submit_pending_items = _submit_pending_items
 
@@ -87,6 +89,7 @@ class BatchRunner:
         *,
         run_id: str | None = None,
     ) -> Run:
+        """Create or resume a durable run for the given job."""
         resolved_run_id = run_id or generate_run_id()
         config = self._persisted_config_for_job(job)
         context = self._context_for_config(config=config, output_model=job.structured_output)
@@ -140,10 +143,12 @@ class BatchRunner:
         *,
         run_id: str | None = None,
     ) -> Run:
+        """Start a run and block until it reaches a terminal state."""
         run = self.start(job, run_id=run_id)
         return run.wait()
 
     def get_run(self, run_id: str) -> Run:
+        """Rehydrate an existing durable run handle from storage."""
         self.state.requeue_local_items(run_id=run_id)
         context = self._contexts.get(run_id)
         if context is None:
@@ -164,6 +169,7 @@ class BatchRunner:
         *,
         destination_dir: str | Path,
     ) -> ArtifactExportResult:
+        """Export retained run artifacts and a results manifest for a terminal run."""
         summary = self.state.get_run_summary(run_id=run_id)
         self._require_artifact_terminal_status(run_id=run_id, status=summary.status)
         destination_root = Path(destination_dir).expanduser().resolve()
@@ -217,6 +223,7 @@ class BatchRunner:
         *,
         include_raw_output_artifacts: bool = False,
     ) -> ArtifactPruneResult:
+        """Remove retained artifacts for a terminal run and clear stored pointers."""
         summary = self.state.get_run_summary(run_id=run_id)
         self._require_artifact_terminal_status(run_id=run_id, status=summary.status)
         inventory = self.state.get_artifact_inventory(run_id=run_id)

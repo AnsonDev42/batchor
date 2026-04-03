@@ -2,45 +2,95 @@
 
 This document describes the OpenAI-specific behavior inside `batchor`.
 
-## Current Behavior
+`batchor` is not a generic batch abstraction with many first-party providers yet. The OpenAI path is the primary implemented path, so a lot of runtime behavior is defined around OpenAI Batch semantics.
 
-### Request Construction
+## Current behavior
 
-`batchor` builds JSONL request rows for the OpenAI Batch API and supports the OpenAI endpoints currently implemented by the provider layer.
+## Request construction
 
-Structured-output jobs derive JSON Schema from a Pydantic v2 model and send strict schema instructions in the request body. Text jobs omit structured output configuration.
+The built-in provider converts each prepared item into one OpenAI Batch JSONL request row.
 
-`OpenAIProviderConfig.api_key` stays in the public API, but durable storage persists only the public provider config. Runtime auth resolution prefers the explicit config value and then falls back to `OPENAI_API_KEY`.
+Current endpoint support:
+
+- Responses API
+- Chat Completions API
+
+Behavior by mode:
+
+- text jobs omit structured-output schema instructions
+- structured-output jobs derive JSON Schema from a Pydantic v2 model
+- Responses API requests place strict schema instructions under `body.text.format`
+- Chat Completions requests place strict schema instructions under `response_format`
+- Responses API requests forward `reasoning_effort` when configured
+
+Authentication resolution is:
+
+1. explicit `OpenAIProviderConfig(api_key=...)`
+2. `OPENAI_API_KEY`
 
 `OpenAIProviderConfig.model` accepts either raw strings or the exported `OpenAIModel` enum for IDE-friendly model selection.
 
-For Responses API requests, `OpenAIProviderConfig.reasoning_effort` is forwarded as `body.reasoning.effort` when provided.
+## Durable request artifacts
 
-### Durable Request Artifacts
+Prepared request rows are written to durable JSONL artifacts before upload. The runner records, per item:
 
-Prepared OpenAI request rows are written to durable JSONL artifacts before upload. `batchor` stores per-item pointers to the artifact key, line number, and request hash in the control-plane store.
+- artifact path
+- line number within the artifact
+- request hash
 
-This lets retry/resume replay the prepared request body without rebuilding the prompt from the original CSV/JSONL source after the request artifact already exists.
+That enables retry and fresh-process resume to replay the exact prepared request body without rebuilding the prompt from the original item payload or source file.
 
-The runner now owns request JSONL serialization and stages a local copy from the artifact store for provider upload. The provider contract builds request rows and uploads local files, but it no longer owns durable request-file writes.
+Important consequences:
 
-Within a single refresh/submission cycle, replay now caches shared request-artifact file contents so multiple items that point at the same JSONL artifact do not reread that file from disk line-by-line.
+- the runner owns durable request-file writes
+- the provider uploads local files staged from the artifact store
+- retries can survive failures that happen after artifact persistence but before durable batch registration
+- shared request-artifact contents are cached within one refresh/submission cycle to avoid repeated rereads
 
-After a run reaches a terminal state, users can call `Run.prune_artifacts()` to delete those replay files and clear their SQLite pointers. That preserves terminal results while reclaiming the request-side disk footprint.
+Before request artifacts exist, built-in CSV and JSONL sources can resume ingestion from a persisted source checkpoint when the caller re-enters `start(job, run_id=...)` with the same file and config.
 
-Before request artifacts exist, built-in CSV and JSONL sources can now resume ingestion from a persisted source checkpoint when the caller re-enters `start(job, run_id=...)` with the same file and config.
+## Raw output retention
 
-Raw OpenAI batch output and error file contents are also persisted locally as artifacts when they are downloaded. Those files are intended for audit/export workflows and are only prunable after `Run.export_artifacts(...)` has been called.
-Terminal OpenAI runs may end as either `completed` or `completed_with_failures`. Both states are considered exportable/prunable terminal outcomes.
+When OpenAI output or error files are downloaded, `batchor` persists them as raw artifacts.
 
-### Response Parsing
+These files are meant to support:
 
-`batchor` treats provider output parsing as a compatibility surface:
+- audit trails
+- export bundles
+- debugging partial failures
 
-- Responses API output can be reconstructed from multiple text/content blocks
-- Chat Completions output can be reconstructed from either string content or content-part lists
-- empty text is only treated as a parse error after all supported text locations have been checked
-### Token Estimation
+Raw artifacts are retained by default. They are not deleted automatically at terminal completion.
+
+Terminal runs may end as either:
+
+- `completed`
+- `completed_with_failures`
+
+Both are considered exportable and prunable terminal outcomes.
+
+## Response parsing
+
+`batchor` treats OpenAI response parsing as a compatibility surface rather than assuming one rigid payload shape.
+
+For text extraction it currently handles:
+
+- Responses API `output` content blocks
+- Responses API `output_text`
+- Chat Completions `choices[].message.content`
+- content-part lists as well as direct strings
+
+Only after those supported locations are checked does empty text become a parse failure for structured-output runs.
+
+For structured outputs:
+
+- text is extracted first
+- Markdown JSON fences are stripped when present
+- the payload is parsed as JSON
+- the result is validated through the declared Pydantic model
+
+Validation failures consume item attempts because they represent item-level response failure, not a transient provider control-plane problem.
+
+## Token estimation
 
 Token estimation is `tiktoken`-first:
 
@@ -48,9 +98,9 @@ Token estimation is `tiktoken`-first:
 2. estimate prompt/request tokens from encoded text when possible
 3. fall back to `chars_per_token` heuristics only if tokenizer resolution fails
 
-This matches the practical path already used in the parent application and is important for enqueue-limit accuracy.
+This matters because OpenAI enqueue-limit behavior is based on estimated submitted tokens, not just request count or file size.
 
-### Enqueue-Limit Controls
+## Enqueue-limit controls
 
 OpenAI-specific enqueue settings live on `OpenAIProviderConfig.enqueue_limits`:
 
@@ -59,36 +109,54 @@ OpenAI-specific enqueue settings live on `OpenAIProviderConfig.enqueue_limits`:
 - `headroom`
 - `max_batch_enqueued_tokens`
 
-Effective inflight budget is derived from those settings, and batch submission is constrained by both:
+From those settings, `batchor` derives:
 
-- per-batch request/file limits from `ChunkPolicy`
-- effective OpenAI token budget from `enqueue_limits`
+- an effective inflight token budget
+- an effective per-batch token limit
 
-### Batch Splitting
+Submission is constrained by both token budget and generic chunking rules such as max request count and max request file size.
+
+## Batch splitting
 
 `batchor` automatically splits large logical jobs into multiple provider batches when needed.
 
-Splitting currently considers:
+Splitting considers:
 
 - request count
 - request file bytes
 - estimated request tokens
 
-Submission now claims a bounded pending-item window per refresh instead of materializing the entire pending queue up front. That keeps large durable backlogs from paying full prompt-build and token-estimation cost before there is provider capacity to submit them.
+Submission claims only a bounded pending-item window per refresh. This is intentional: large backlogs should not pay full prompt-build and token-estimation cost long before provider capacity exists to send them.
 
-If a single request exceeds the allowed OpenAI token limit by itself, that item is marked as a permanent failure with an OpenAI-specific error instead of aborting the whole run.
+If a single request exceeds the allowed OpenAI token limit by itself, that item is marked as a permanent item failure instead of aborting the whole run.
 
-### Provider Errors
+## Error handling and retry behavior
 
-Transient provider errors and enqueue-capacity failures do not consume item attempts. Validation failures and parse failures do consume item attempts.
+Not all failures are treated the same way.
 
-If a retryable control-plane failure happens after a request artifact has been written but before the batch is registered, the item can still be retried from the stored request artifact on the next refresh/resume cycle.
+Control-plane failures:
 
-If the failure happens after the input file upload but before successful batch creation, `batchor` makes a best-effort attempt to delete the uploaded input file so retries do not accumulate orphaned uploads.
+- transient upload/create/poll failures are treated as retryable batch-control-plane failures
+- retryable control-plane failures do not consume item attempts
+- batch submit failures can trigger batch-level backoff
+- transient poll failures do not stall unrelated submissions when other capacity remains
 
-If a process dies after local item claim and artifact persistence but before batch registration, fresh-process resume requeues those `queued_local` items and resubmits from the stored request artifact.
+Item-level failures:
 
-Batch polling uses bounded concurrency when multiple active provider batches exist. Transient `get_batch(...)` failures now emit retry observability but do not apply the run-level submission backoff gate, so one flaky poll does not stall unrelated pending submissions.
+- structured-output parse failures consume attempts
+- validation failures consume attempts
+- oversized requests become permanent item failures
+
+Cleanup behavior:
+
+- if upload succeeds but batch creation fails, `batchor` makes a best-effort attempt to delete the uploaded OpenAI input file
+- if a process dies after local artifact persistence but before durable batch registration, fresh-process resume requeues those items and resubmits from persisted request artifacts
+
+## Current limits
+
+- only the built-in OpenAI Batch provider path is implemented
+- the docs do not yet provide a full capability matrix across all OpenAI endpoint features
+- artifact storage is still local-filesystem-only
 
 ## TBD
 

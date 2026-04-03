@@ -69,6 +69,7 @@ nav:
   - Home: index.md
   - Getting Started:
       - Installation: getting-started/installation.md
+      - How It Works: getting-started/how-it-works.md
       - Python API: getting-started/python-api.md
       - CLI Usage: getting-started/cli.md
   - Reference:

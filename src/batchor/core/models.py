@@ -27,6 +27,8 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 
 @dataclass(frozen=True)
 class BatchItem(Generic[PayloadT]):
+    """One logical unit of work inside a batch run."""
+
     item_id: str
     payload: PayloadT
     metadata: JSONObject = field(default_factory=dict)
@@ -34,6 +36,8 @@ class BatchItem(Generic[PayloadT]):
 
 @dataclass(frozen=True)
 class PromptParts:
+    """Prompt text sent to the provider, with an optional system prompt."""
+
     prompt: str
     system_prompt: str | None = None
 
@@ -46,6 +50,8 @@ OpenAIReasoningLevel: TypeAlias = OpenAIReasoningEffort | str
 
 @dataclass(frozen=True)
 class OpenAIEnqueueLimitConfig:
+    """OpenAI-specific token budgeting controls for batch submission."""
+
     enqueued_token_limit: int = 0
     target_ratio: float = 0.7
     headroom: int = 0
@@ -112,6 +118,8 @@ class OpenAIEnqueueLimitConfig:
 
 @dataclass(frozen=True)
 class OpenAIProviderConfig(ProviderConfig):
+    """Configuration for the built-in OpenAI Batch provider."""
+
     model: OpenAIModelName
     api_key: str = ""
     endpoint: OpenAIEndpoint = OpenAIEndpoint.RESPONSES
@@ -190,6 +198,8 @@ class OpenAIProviderConfig(ProviderConfig):
 
 @dataclass(frozen=True)
 class ChunkPolicy:
+    """Submission chunking limits applied before provider batches are created."""
+
     max_requests: int = 50_000
     max_file_bytes: int = 150 * 1024 * 1024
     chars_per_token: int = 4
@@ -205,6 +215,8 @@ class ChunkPolicy:
 
 @dataclass(frozen=True)
 class RetryPolicy:
+    """Retry limits for item-level and batch-control-plane recovery."""
+
     max_attempts: int = 3
     base_backoff_sec: float = 1.0
     max_backoff_sec: float = 300.0
@@ -220,6 +232,8 @@ class RetryPolicy:
 
 @dataclass(frozen=True)
 class BatchJob(Generic[PayloadT, ModelT]):
+    """Declarative description of a batch run."""
+
     items: BatchItems[PayloadT]
     build_prompt: PromptBuilder[PayloadT]
     provider_config: ProviderConfig
@@ -232,6 +246,8 @@ class BatchJob(Generic[PayloadT, ModelT]):
 
 @dataclass(frozen=True)
 class ItemFailure:
+    """Structured failure payload attached to a terminal item result."""
+
     error_class: str
     message: str
     retryable: bool
@@ -240,6 +256,8 @@ class ItemFailure:
 
 @dataclass(frozen=True)
 class StructuredItemResult(Generic[ModelT]):
+    """Terminal result for one structured-output item."""
+
     item_id: str
     status: ItemStatus
     attempt_count: int
@@ -252,6 +270,8 @@ class StructuredItemResult(Generic[ModelT]):
 
 @dataclass(frozen=True)
 class TextItemResult:
+    """Terminal result for one text-output item."""
+
     item_id: str
     status: ItemStatus
     attempt_count: int
@@ -266,6 +286,8 @@ type BatchResultItem = StructuredItemResult[BaseModel] | TextItemResult
 
 @dataclass(frozen=True)
 class RunSummary:
+    """Aggregated durable run state without item payload expansion."""
+
     run_id: str
     status: RunLifecycleStatus
     total_items: int
@@ -278,6 +300,8 @@ class RunSummary:
 
 @dataclass(frozen=True)
 class RunEvent:
+    """Observer event emitted by the runner during lifecycle transitions."""
+
     event_type: str
     run_id: str
     provider_kind: ProviderKind | None = None
@@ -286,6 +310,8 @@ class RunEvent:
 
 @dataclass(frozen=True)
 class RunSnapshot:
+    """Expanded durable run state including current terminal item payloads."""
+
     run_id: str
     status: RunLifecycleStatus
     total_items: int
@@ -299,6 +325,8 @@ class RunSnapshot:
 
 @dataclass(frozen=True)
 class ArtifactPruneResult:
+    """Result returned after pruning retained artifacts for a terminal run."""
+
     run_id: str
     removed_artifact_paths: list[str]
     missing_artifact_paths: list[str]
@@ -308,6 +336,8 @@ class ArtifactPruneResult:
 
 @dataclass(frozen=True)
 class ArtifactExportResult:
+    """Result returned after exporting retained artifacts for a terminal run."""
+
     run_id: str
     destination_dir: str
     manifest_path: str
