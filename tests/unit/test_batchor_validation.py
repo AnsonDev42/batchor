@@ -17,6 +17,14 @@ class _ClassificationResult(BaseModel):
     score: float
 
 
+class NestedPayload(BaseModel):
+    label: str
+
+
+class EnvelopeResult(BaseModel):
+    payload: NestedPayload
+
+
 def _responses_record(text: str) -> dict[str, object]:
     return {
         "response": {
@@ -43,7 +51,34 @@ def test_model_output_schema_uses_default_schema_name() -> None:
     schema_name, schema = model_output_schema(_ClassificationResult)
     assert schema_name == "classification_result"
     assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
     assert "label" in schema["properties"]
+
+
+def test_model_output_schema_marks_nested_objects_as_closed() -> None:
+    _, schema = model_output_schema(EnvelopeResult)
+
+    def _collect_object_schemas(value: object) -> list[dict[str, object]]:
+        if isinstance(value, list):
+            results: list[dict[str, object]] = []
+            for item in value:
+                results.extend(_collect_object_schemas(item))
+            return results
+        if not isinstance(value, dict):
+            return []
+        results = []
+        schema_type = value.get("type")
+        if schema_type == "object" or (
+            isinstance(schema_type, list) and "object" in schema_type
+        ):
+            results.append(value)
+        for item in value.values():
+            results.extend(_collect_object_schemas(item))
+        return results
+
+    object_schemas = _collect_object_schemas(schema)
+    assert object_schemas != []
+    assert all(item.get("additionalProperties") is False for item in object_schemas)
 
 
 def test_parse_structured_response_returns_model_instance() -> None:

@@ -1,0 +1,11 @@
+{
+  "run_id": "live_structured_workaround_947493e98c",
+  "request_artifact_paths": [
+    "live_structured_workaround_947493e98c/requests/requests_594c158c2cf545578f69fcb2a10dc725.jsonl"
+  ],
+  "output_artifact_paths": [
+    "live_structured_workaround_947493e98c/outputs/batch_69cff9cb71b08190a24d62ece0e22121_output.jsonl"
+  ],
+  "error_artifact_paths": [],
+  "results_path": "results.jsonl"
+}

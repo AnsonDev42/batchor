@@ -35,7 +35,36 @@ def model_output_schema(
     schema_name: str | None = None,
 ) -> tuple[str, JSONObject]:
     resolved_schema_name = schema_name or default_schema_name(model)
-    return resolved_schema_name, cast(JSONObject, model.model_json_schema())
+    return resolved_schema_name, _strict_json_schema(
+        cast(JSONObject, model.model_json_schema())
+    )
+
+
+def _strict_json_schema(schema: JSONObject) -> JSONObject:
+    normalized = cast(JSONObject, _normalize_json_schema_value(schema))
+    schema_type = normalized.get("type")
+    if schema_type == "object" or (
+        isinstance(schema_type, list) and "object" in schema_type
+    ):
+        normalized.setdefault("additionalProperties", False)
+    return normalized
+
+
+def _normalize_json_schema_value(value: JSONValue) -> JSONValue:
+    if isinstance(value, list):
+        return [_normalize_json_schema_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    normalized = cast(
+        JSONObject,
+        {key: _normalize_json_schema_value(item) for key, item in value.items()},
+    )
+    schema_type = normalized.get("type")
+    if schema_type == "object" or (
+        isinstance(schema_type, list) and "object" in schema_type
+    ):
+        normalized.setdefault("additionalProperties", False)
+    return normalized
 
 
 def _extract_content_text(content: Any) -> list[str]:

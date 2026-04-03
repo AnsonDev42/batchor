@@ -1,0 +1,11 @@
+{
+  "run_id": "live_structured_default_41c584f59d",
+  "request_artifact_paths": [
+    "live_structured_default_41c584f59d/requests/requests_944d0268aaa4461cb2108fe203fbce81.jsonl"
+  ],
+  "output_artifact_paths": [
+    "live_structured_default_41c584f59d/outputs/batch_69cffa54ce88819093894a8ddbae1513_output.jsonl"
+  ],
+  "error_artifact_paths": [],
+  "results_path": "results.jsonl"
+}
