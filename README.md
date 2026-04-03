@@ -83,6 +83,7 @@ This repo now includes local AI-agent scaffolding so a contributor agent can pic
 - repo-local skill: `.agents/skills/batchor-dev/`
 - repo-local plugin marketplace: `.agents/plugins/marketplace.json`
 - repo-local MCP plugin: `plugins/batchor-agent-tools/`
+- VS Code workspace MCP config: `.vscode/mcp.json`
 
 The skill captures repo-specific workflow and validation guidance. The MCP plugin exposes a small repo-aware guide for project overview, docs entry points, and validation commands.
 

@@ -33,4 +33,5 @@
 - Repo-local skill: `.agents/skills/batchor-dev/`
 - Repo-local plugin marketplace: `.agents/plugins/marketplace.json`
 - Repo-local MCP plugin: `plugins/batchor-agent-tools/`
+- VS Code workspace MCP config: `.vscode/mcp.json`
 - Prefer these when an agent needs quick orientation on repo structure, docs, or validation commands.
