@@ -49,7 +49,7 @@ Expected:
 - file-backed ingestion can resume from a persisted checkpoint when rerun with the same `run_id`
 - retry/resume from persisted request artifacts still works for SQLite-backed runs
 - raw output/error artifacts can be exported and require export before raw pruning
-- terminal runs can prune request artifacts without losing persisted results
+- terminal runs, including `completed_with_failures`, can prune request artifacts without losing persisted results
 - OpenAI request splitting and enqueue-limit logic still behave as expected
 - structured-output parsing remains stable
 

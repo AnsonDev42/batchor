@@ -19,6 +19,7 @@ The public handle exposes:
 - `prune_artifacts()`
 
 `results()` and `prune_artifacts()` are intentionally terminal-only.
+Today terminal means either `completed` or `completed_with_failures`.
 
 ## Current Durable Backend
 
@@ -65,7 +66,7 @@ Once an item has a durable request artifact pointer, `batchor` may prune large i
 
 Once the whole run is terminal, users may explicitly call `Run.prune_artifacts()` or `BatchRunner.prune_artifacts(run_id)` to remove replayable request files and clear their storage pointers. This is a manual lifecycle step today; `batchor` does not auto-delete artifacts behind the user's back.
 
-Raw output/error artifacts follow a stricter rule: users must call `Run.export_artifacts(...)` first, and only then may they call `Run.prune_artifacts(include_raw_output_artifacts=True)`. This keeps raw provider payload retention explicit.
+Raw output/error artifacts follow a stricter rule: users must call `Run.export_artifacts(...)` first, and only then may they call `Run.prune_artifacts(include_raw_output_artifacts=True)`. This keeps raw provider payload retention explicit for both terminal success and terminal partial-failure runs.
 
 ## Current Gaps
 

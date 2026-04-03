@@ -9,7 +9,7 @@
 - library-first, OpenAI-first, SQLite-first
 - durable `Run` handles with rehydration through local storage
 - typed structured-output parsing for Python API users
-- replayable request artifacts plus explicit export/prune lifecycle
+- replayable request artifacts plus explicit export/prune lifecycle for terminal runs, including partial-failure runs
 - Typer-based CLI for CSV/JSONL text jobs and run operations
 
 The current built-in implementations are:
@@ -188,12 +188,34 @@ batchor start \
 
 Start a run from CSV using a prompt template:
 
+<<<<<<< HEAD
 ```bash
 batchor start \
   --input input/items.csv \
   --id-field id \
   --prompt-template "Summarize: {text}" \
   --model gpt-4.1
+||||||| parent of d539c5d (Handle completed-with-failures terminal runs)
+## Raw Output Export And Retention
+
+For completed batches, `batchor` also persists raw provider output and error JSONL beside the run artifacts. Those raw files are treated as user-facing evidence, not just replay state.
+
+```python
+export = run.export_artifacts("exports")
+print(export.manifest_path)
+
+run.prune_artifacts(include_raw_output_artifacts=True)
+=======
+## Raw Output Export And Retention
+
+For terminal batches, `batchor` also persists raw provider output and error JSONL beside the run artifacts. Those raw files are treated as user-facing evidence, not just replay state.
+
+```python
+export = run.export_artifacts("exports")
+print(export.manifest_path)
+
+run.prune_artifacts(include_raw_output_artifacts=True)
+>>>>>>> d539c5d (Handle completed-with-failures terminal runs)
 ```
 
 Start a structured-output run:

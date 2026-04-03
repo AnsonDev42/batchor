@@ -162,8 +162,7 @@ class BatchRunner:
         destination_dir: str | Path,
     ) -> ArtifactExportResult:
         summary = self.state.get_run_summary(run_id=run_id)
-        if summary.status is not RunLifecycleStatus.COMPLETED:
-            raise RunNotFinishedError(run_id)
+        self._require_artifact_terminal_status(run_id=run_id, status=summary.status)
         destination_root = Path(destination_dir).expanduser().resolve()
         export_root = destination_root / run_id
         export_root.mkdir(parents=True, exist_ok=True)
@@ -221,8 +220,7 @@ class BatchRunner:
         include_raw_output_artifacts: bool = False,
     ) -> ArtifactPruneResult:
         summary = self.state.get_run_summary(run_id=run_id)
-        if summary.status is not RunLifecycleStatus.COMPLETED:
-            raise RunNotFinishedError(run_id)
+        self._require_artifact_terminal_status(run_id=run_id, status=summary.status)
         inventory = self.state.get_artifact_inventory(run_id=run_id)
         removed: list[str] = []
         missing: list[str] = []
@@ -268,6 +266,18 @@ class BatchRunner:
             cleared_item_pointers=cleared_item_pointers,
             cleared_batch_pointers=cleared_batch_pointers,
         )
+
+    @staticmethod
+    def _require_artifact_terminal_status(
+        *,
+        run_id: str,
+        status: RunLifecycleStatus,
+    ) -> None:
+        if status not in (
+            RunLifecycleStatus.COMPLETED,
+            RunLifecycleStatus.COMPLETED_WITH_FAILURES,
+        ):
+            raise RunNotFinishedError(run_id)
 
     @staticmethod
     def make_custom_id(item_id: str, attempt: int) -> str:

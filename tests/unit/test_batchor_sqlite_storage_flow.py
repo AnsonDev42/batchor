@@ -159,7 +159,7 @@ def test_sqlite_storage_submission_and_terminal_summary(tmp_path: Path) -> None:
     assert records[1].error.error_class == "invalid_json"
 
     summary = storage.get_run_summary(run_id="run_1")
-    assert summary.status is RunLifecycleStatus.COMPLETED
+    assert summary.status is RunLifecycleStatus.COMPLETED_WITH_FAILURES
     assert summary.completed_items == 1
     assert summary.failed_items == 1
     config = storage.get_run_config(run_id="run_1")
