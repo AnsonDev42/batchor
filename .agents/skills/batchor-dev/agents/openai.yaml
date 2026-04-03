@@ -1,0 +1,7 @@
+interface:
+  display_name: "Batchor Dev"
+  short_description: "Repo guidance for batchor code, docs, and validation"
+  default_prompt: "Use $batchor-dev to work in this batchor repository, follow AGENTS.md, and keep validation plus docs aligned with the change."
+
+policy:
+  allow_implicit_invocation: true

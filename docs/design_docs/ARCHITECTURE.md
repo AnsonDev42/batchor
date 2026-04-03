@@ -8,7 +8,9 @@ Status: reflects the current public-package implementation.
 
 ```text
 batchor/
+  .agents/
   docs/
+  plugins/
   src/batchor/
     artifacts/
     cli.py
@@ -19,6 +21,14 @@ batchor/
     storage/
   tests/
 ```
+
+Repo-local contributor tooling also lives outside the shipped Python package:
+
+- `.agents/skills/batchor-dev/` contains the repo skill for AI-agent onboarding
+- `.agents/plugins/marketplace.json` registers repo-local plugins for Codex-style discovery
+- `plugins/batchor-agent-tools/` contains the repo-local MCP server and plugin manifest
+
+These directories are contributor tooling only and are not part of the published `src/batchor` package.
 
 The package is organized around one core concern: durable batch execution. Most modules exist to support one of five responsibilities:
 
