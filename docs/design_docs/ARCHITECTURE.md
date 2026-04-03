@@ -168,13 +168,19 @@ sequenceDiagram
             Provider-->>BatchRunner: BatchRemoteRecord
 
             alt status == "completed"
-                BatchRunner->>Provider: download_file_content(output_file_id)
-                Provider-->>BatchRunner: JSONL content
-                BatchRunner->>ArtifactStore: write_text(output_artifact)
-                BatchRunner->>StateStore: mark_items_completed(completions)
+                BatchRunner->>Provider: download_file_content(output_file_id, error_file_id)
+                Provider-->>BatchRunner: output/error JSONL
+                BatchRunner->>ArtifactStore: write_text(output/error artifacts)
+                BatchRunner->>Provider: parse_batch_output()
+                Provider-->>BatchRunner: successes + errors
+                BatchRunner->>StateStore: mark_items_completed(successes)
+                BatchRunner->>StateStore: mark_items_failed(errors)
             else status in {failed, cancelled, expired}
-                BatchRunner->>StateStore: reset_batch_items_to_pending()
+                BatchRunner->>Provider: download_file_content(output_file_id, error_file_id)
+                Provider-->>BatchRunner: output/error JSONL
+                BatchRunner->>ArtifactStore: write_text(output/error artifacts)
                 BatchRunner->>StateStore: record_batch_retry_failure()
+                BatchRunner->>StateStore: reset_batch_items_to_pending()
             end
         end
 
