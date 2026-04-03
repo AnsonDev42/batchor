@@ -499,11 +499,11 @@ The live OpenAI smoke remains manual-only and is not part of required CI.
 Manual live OpenAI smoke:
 
 ```bash
-export OPENAI_API_KEY=sk-...
 export BATCHOR_RUN_LIVE_TESTS=1
 uv run pytest tests/integration/test_batchor_live_openai.py --no-cov -q
 ```
 
+`OPENAI_API_KEY` may come from the shell environment or a local `.env` file.
 If `BATCHOR_LIVE_OPENAI_MODEL` is unset, the harness defaults to `gpt-5-nano`.
 If `BATCHOR_LIVE_OPENAI_REASONING_EFFORT` is unset, no reasoning field is sent.
 The live smoke also requires an OpenAI account with Batch API access and available billing quota.

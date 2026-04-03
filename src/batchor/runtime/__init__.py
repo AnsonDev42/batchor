@@ -1,1 +1,1 @@
-"""Execution engine, validation, retry, and token utilities."""
+"""Runtime layers for context creation, ingestion, submission, polling, and results."""
