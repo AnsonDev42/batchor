@@ -18,9 +18,11 @@ For Responses API requests, `OpenAIProviderConfig.reasoning_effort` is forwarded
 
 ### Durable Request Artifacts
 
-For SQLite-backed runs, prepared OpenAI request rows are written to durable JSONL artifacts before upload. `batchor` stores per-item pointers to the artifact path, line number, and request hash in SQLite.
+Prepared OpenAI request rows are written to durable JSONL artifacts before upload. `batchor` stores per-item pointers to the artifact key, line number, and request hash in the control-plane store.
 
 This lets retry/resume replay the prepared request body without rebuilding the prompt from the original CSV/JSONL source after the request artifact already exists.
+
+The runner now owns request JSONL serialization and stages a local copy from the artifact store for provider upload. The provider contract builds request rows and uploads local files, but it no longer owns durable request-file writes.
 
 After a run reaches a terminal state, users can call `Run.prune_artifacts()` to delete those replay files and clear their SQLite pointers. That preserves terminal results while reclaiming the request-side disk footprint.
 
@@ -80,8 +82,11 @@ If a retryable control-plane failure happens after a request artifact has been w
 
 If the failure happens after the input file upload but before successful batch creation, `batchor` makes a best-effort attempt to delete the uploaded input file so retries do not accumulate orphaned uploads.
 
+If a process dies after local item claim and artifact persistence but before batch registration, fresh-process resume requeues those `queued_local` items and resubmits from the stored request artifact.
+
 ## TBD
 
 - exact behavior doc for provider-specific retry classification
 - multi-endpoint OpenAI capability matrix
+- remote/object-store artifact backend
 - richer metrics/export integrations beyond the current callback-based observability hooks
