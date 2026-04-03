@@ -604,11 +604,18 @@ class MemoryStateStore(StateStore):
             for batch in run.batches.values()
         )
         backoff_remaining = self.get_batch_retry_backoff_remaining_sec(run_id=run.run_id)
-        run.status = (
-            RunLifecycleStatus.COMPLETED
-            if all_terminal and not active_batches and backoff_remaining <= 0
-            else RunLifecycleStatus.RUNNING
-        )
+        if all_terminal and not active_batches and backoff_remaining <= 0:
+            failed_items = sum(
+                1 for item_id in run.item_ids
+                if run.items[item_id].status == ItemStatus.FAILED_PERMANENT
+            )
+            run.status = (
+                RunLifecycleStatus.COMPLETED_WITH_FAILURES
+                if failed_items > 0
+                else RunLifecycleStatus.COMPLETED
+            )
+        else:
+            run.status = RunLifecycleStatus.RUNNING
 
     @staticmethod
     def _failed_status(

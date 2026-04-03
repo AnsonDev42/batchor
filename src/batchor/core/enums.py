@@ -15,6 +15,7 @@ class ItemStatus(StrEnum):
 class RunLifecycleStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
+    COMPLETED_WITH_FAILURES = "completed_with_failures"
 
 
 class ProviderKind(StrEnum):

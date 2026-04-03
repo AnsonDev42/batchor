@@ -67,7 +67,7 @@ class Run:
 
     @property
     def is_finished(self) -> bool:
-        return self.status is RunLifecycleStatus.COMPLETED
+        return self.status in (RunLifecycleStatus.COMPLETED, RunLifecycleStatus.COMPLETED_WITH_FAILURES)
 
     def refresh(self) -> RunSummary:
         self._summary = self._runner._refresh_run(self.run_id, self._context)

@@ -92,8 +92,9 @@ Durable and ephemeral state backends:
 8. `Run.prune_artifacts()` is explicit and terminal-only; it is not automatic garbage collection.
 9. File-backed source resume requires a caller-supplied `run_id` plus a stable source fingerprint.
 10. Raw output/error artifacts persist by default and require export before raw-artifact pruning.
-11. Provider secrets may exist in in-memory config objects, but durable storage persists public provider config only.
-12. CLI `.env` loading is a CLI-only convenience and not part of library runtime behavior.
+11. A terminal run may be either `completed` or `completed_with_failures`; both statuses allow artifact export/prune and final result access.
+12. Provider secrets may exist in in-memory config objects, but durable storage persists public provider config only.
+13. CLI `.env` loading is a CLI-only convenience and not part of library runtime behavior.
 
 ## Extension Seams
 

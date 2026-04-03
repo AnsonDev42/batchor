@@ -314,11 +314,15 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
             ).scalar_one()
         )
         backoff_remaining_sec = self._backoff_remaining(conn, run_id)
-        status: RunLifecycleStatus = (
-            RunLifecycleStatus.COMPLETED
-            if terminal_items == total_items and active_batches == 0 and backoff_remaining_sec <= 0
-            else RunLifecycleStatus.RUNNING
-        )
+        failed_items = status_counts.get(ItemStatus.FAILED_PERMANENT, 0)
+        if terminal_items == total_items and active_batches == 0 and backoff_remaining_sec <= 0:
+            status: RunLifecycleStatus = (
+                RunLifecycleStatus.COMPLETED_WITH_FAILURES
+                if failed_items > 0
+                else RunLifecycleStatus.COMPLETED
+            )
+        else:
+            status = RunLifecycleStatus.RUNNING
         if persist:
             conn.execute(
                 update(RUNS_TABLE)
@@ -330,7 +334,7 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
             status=status,
             total_items=total_items,
             completed_items=status_counts.get(ItemStatus.COMPLETED, 0),
-            failed_items=status_counts.get(ItemStatus.FAILED_PERMANENT, 0),
+            failed_items=failed_items,
             status_counts=status_counts,
             active_batches=active_batches,
             backoff_remaining_sec=backoff_remaining_sec,

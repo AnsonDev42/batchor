@@ -723,6 +723,7 @@ def test_oversized_request_becomes_permanent_failure_instead_of_aborting_run(tmp
             ),
         )
     )
+    assert run.status is RunLifecycleStatus.COMPLETED_WITH_FAILURES
     results = run.results()
     assert results[0].status is ItemStatus.FAILED_PERMANENT
     assert results[0].error is not None
@@ -730,6 +731,86 @@ def test_oversized_request_becomes_permanent_failure_instead_of_aborting_run(tmp
     assert results[0].attempt_count == 0
     assert results[1].status is ItemStatus.COMPLETED
     assert len(provider.created_batches) == 1
+
+
+def test_completed_with_failures_run_can_export_and_prune_artifacts(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    storage = SQLiteStorage(path=tmp_path / "artifact_export_with_failures.sqlite3")
+    runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+    )
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[
+                BatchItem(item_id="row1", payload={"text": "abcdef"}),
+                BatchItem(item_id="row2", payload={"text": "ok"}),
+            ],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(
+                api_key="k",
+                model="gpt-4.1",
+                enqueue_limits=OpenAIEnqueueLimitConfig(max_batch_enqueued_tokens=5),
+            ),
+        )
+    )
+
+    assert run.status is RunLifecycleStatus.COMPLETED_WITH_FAILURES
+    inventory = storage.get_artifact_inventory(run_id=run.run_id)
+    assert len(inventory.request_artifact_paths) == 1
+    assert len(inventory.output_artifact_paths) == 1
+    assert inventory.error_artifact_paths == []
+
+    export = run.export_artifacts(str(tmp_path / "exports"))
+    assert Path(export.manifest_path).exists()
+    assert Path(export.results_path).exists()
+    manifest = json.loads(Path(export.manifest_path).read_text(encoding="utf-8"))
+    assert manifest["run_id"] == run.run_id
+    assert manifest["output_artifact_paths"] == inventory.output_artifact_paths
+
+    report = run.prune_artifacts(include_raw_output_artifacts=True)
+    assert sorted(report.removed_artifact_paths) == sorted(
+        inventory.request_artifact_paths + inventory.output_artifact_paths
+    )
+    assert report.missing_artifact_paths == []
+    assert report.cleared_item_pointers == 1
+    assert report.cleared_batch_pointers == 1
+    updated_inventory = storage.get_artifact_inventory(run_id=run.run_id)
+    assert updated_inventory.request_artifact_paths == []
+    assert updated_inventory.output_artifact_paths == []
+    assert run.results()[0].status is ItemStatus.FAILED_PERMANENT
+    assert run.results()[1].status is ItemStatus.COMPLETED
+
+
+def test_all_items_succeed_gives_completed_status(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(
+            json.dumps({"label": custom_id.split(":")[0], "score": 0.9})
+        )
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path,
+    )
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[
+                BatchItem(item_id="row1", payload={"text": "a"}),
+                BatchItem(item_id="row2", payload={"text": "b"}),
+            ],
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        )
+    )
+    assert run.status is RunLifecycleStatus.COMPLETED
+    assert run.is_finished is True
 
 
 def test_file_backed_jsonl_job_matches_in_memory_results(tmp_path: Path) -> None:

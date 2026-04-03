@@ -27,6 +27,7 @@ After a run reaches a terminal state, users can call `Run.prune_artifacts()` to 
 Before request artifacts exist, built-in CSV and JSONL sources can now resume ingestion from a persisted source checkpoint when the caller re-enters `start(job, run_id=...)` with the same file and config.
 
 Raw OpenAI batch output and error file contents are also persisted locally as artifacts when they are downloaded. Those files are intended for audit/export workflows and are only prunable after `Run.export_artifacts(...)` has been called.
+Terminal OpenAI runs may end as either `completed` or `completed_with_failures`. Both states are considered exportable/prunable terminal outcomes.
 
 ### Response Parsing
 
@@ -35,7 +36,6 @@ Raw OpenAI batch output and error file contents are also persisted locally as ar
 - Responses API output can be reconstructed from multiple text/content blocks
 - Chat Completions output can be reconstructed from either string content or content-part lists
 - empty text is only treated as a parse error after all supported text locations have been checked
-
 ### Token Estimation
 
 Token estimation is `tiktoken`-first:
