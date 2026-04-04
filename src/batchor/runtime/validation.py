@@ -184,6 +184,8 @@ def _validate_json_schema_value(value: JSONValue, *, path: str) -> None:
         return
     if not isinstance(value, dict):
         return
+    if "anyOf" in value:
+        raise StructuredOutputSchemaError(f"{path}: anyOf is not allowed in strict structured output schemas")
     if _schema_type_includes(value.get("type"), "object"):
         additional_properties = value.get("additionalProperties")
         if additional_properties is not False:
@@ -308,7 +310,7 @@ def strip_json_fence(text: str) -> str:
         The content inside the fence, or *text* unchanged if no fence is found.
     """
     stripped = text.strip()
-    match = re.match(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", stripped, re.DOTALL)
+    match = re.match(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", stripped, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
     return stripped
