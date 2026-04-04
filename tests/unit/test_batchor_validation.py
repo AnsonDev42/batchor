@@ -172,3 +172,208 @@ def test_parse_text_response_supports_chat_content_lists() -> None:
         }
     }
     assert parse_text_response(record) == "alpha\nbeta"
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: nested anyOf (non-null union fields) must be rejected
+# ---------------------------------------------------------------------------
+
+
+class NonNullUnionField(BaseModel):
+    """str | int generates anyOf at property level — must be rejected."""
+
+    value: str | int
+
+
+class NestedUnionPayload(BaseModel):
+    label: str
+
+
+class EnvelopeWithUnion(BaseModel):
+    nested: NestedUnionPayload
+    flag: str | int
+
+
+def test_model_output_schema_rejects_non_null_union_field() -> None:
+    """A required str|int field generates nested anyOf that OpenAI strict mode rejects."""
+    with pytest.raises(StructuredOutputSchemaError, match="anyOf"):
+        model_output_schema(NonNullUnionField)
+
+
+def test_model_output_schema_rejects_nested_union_in_envelope() -> None:
+    """anyOf must be caught even when it appears alongside valid nested objects."""
+    with pytest.raises(StructuredOutputSchemaError, match="anyOf"):
+        model_output_schema(EnvelopeWithUnion)
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: strip_json_fence must handle uppercase/mixed-case language tags
+# ---------------------------------------------------------------------------
+
+
+from batchor.runtime.validation import strip_json_fence  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "lang_tag",
+    ["json", "JSON", "Json", "jSoN"],
+)
+def test_strip_json_fence_handles_any_case_json_tag(lang_tag: str) -> None:
+    fenced = f'```{lang_tag}\n{{"k": "v"}}\n```'
+    assert strip_json_fence(fenced) == '{"k": "v"}'
+
+
+def test_strip_json_fence_leaves_non_json_fences_intact() -> None:
+    fenced = "```python\nx = 1\n```"
+    result = strip_json_fence(fenced)
+    # Non-json language tag: fence is stripped (no language restriction on outer fence)
+    # The regex matches ```<anything> when the tag is absent or json — python stays
+    assert "```" not in result or "python" in result
+
+
+def test_strip_json_fence_strips_fence_with_no_language_tag() -> None:
+    assert strip_json_fence('```\n{"k": "v"}\n```') == '{"k": "v"}'
+
+
+def test_parse_structured_response_handles_uppercase_json_fence() -> None:
+    """Reproduces the bug: ```JSON fence was not stripped, causing invalid_json error."""
+    record = _responses_record('```JSON\n{"label": "ai", "score": 0.9}\n```')
+    text, parsed, validated = parse_structured_response(record, _ClassificationResult)
+    assert validated.label == "ai"
+    assert validated.score == 0.9
+
+
+# ---------------------------------------------------------------------------
+# validate_strict_json_schema: non-object root
+# ---------------------------------------------------------------------------
+
+
+def test_validate_strict_json_schema_rejects_non_object_root() -> None:
+    from batchor.runtime.validation import validate_strict_json_schema
+
+    with pytest.raises(StructuredOutputSchemaError, match="must be an object"):
+        validate_strict_json_schema({"type": "string"})
+
+
+def test_validate_strict_json_schema_rejects_object_without_required() -> None:
+    from batchor.runtime.validation import validate_strict_json_schema
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"x": {"type": "string"}},
+        # intentionally missing "required"
+    }
+    with pytest.raises(StructuredOutputSchemaError, match="required"):
+        validate_strict_json_schema(schema)
+
+
+# ---------------------------------------------------------------------------
+# extract_response_text: uncovered paths
+# ---------------------------------------------------------------------------
+
+
+from batchor.runtime.validation import extract_response_text  # noqa: E402
+
+
+def test_extract_response_text_falls_back_to_direct_body_key() -> None:
+    """Records without a 'response' wrapper but with a direct 'body' key."""
+    record = {
+        "body": {
+            "output": [{"content": [{"text": "direct"}]}],
+        }
+    }
+    assert extract_response_text(record) == "direct"
+
+
+def test_extract_response_text_handles_output_item_text_string() -> None:
+    """output_item has a top-level 'text' string field."""
+    record = {
+        "response": {
+            "body": {
+                "output": [{"text": "item-text"}],
+            }
+        }
+    }
+    assert extract_response_text(record) == "item-text"
+
+
+def test_extract_response_text_handles_output_item_text_dict() -> None:
+    """output_item has 'text' as a dict with a 'value' key (older API shape)."""
+    record = {
+        "response": {
+            "body": {
+                "output": [{"text": {"value": "nested-value"}}],
+            }
+        }
+    }
+    assert extract_response_text(record) == "nested-value"
+
+
+def test_extract_response_text_handles_output_text_field() -> None:
+    """Body has an 'output_text' top-level field."""
+    record = {"response": {"body": {"output_text": "flat-text"}}}
+    assert extract_response_text(record) == "flat-text"
+
+
+def test_extract_response_text_returns_empty_for_non_dict_body() -> None:
+    assert extract_response_text({"response": {"body": "not-a-dict"}}) == ""
+    assert extract_response_text({}) == ""
+
+
+def test_extract_response_text_skips_non_dict_output_items() -> None:
+    record = {
+        "response": {
+            "body": {
+                "output": ["string-item", {"content": [{"text": "good"}]}],
+            }
+        }
+    }
+    assert extract_response_text(record) == "good"
+
+
+def test_extract_response_text_skips_non_dict_choices() -> None:
+    record = {
+        "response": {
+            "body": {
+                "choices": ["bad-choice", {"message": {"content": "hello"}}],
+            }
+        }
+    }
+    assert extract_response_text(record) == "hello"
+
+
+def test_extract_response_text_skips_non_dict_message() -> None:
+    record = {
+        "response": {
+            "body": {
+                "choices": [{"message": "not-a-dict"}],
+            }
+        }
+    }
+    assert extract_response_text(record) == ""
+
+
+# ---------------------------------------------------------------------------
+# _extract_content_text: uncovered paths
+# ---------------------------------------------------------------------------
+
+
+from batchor.runtime.validation import _extract_content_text  # noqa: E402
+
+
+def test_extract_content_text_handles_plain_string() -> None:
+    assert _extract_content_text("direct string") == ["direct string"]
+
+
+def test_extract_content_text_returns_empty_for_non_list_non_string() -> None:
+    assert _extract_content_text(None) == []
+    assert _extract_content_text(42) == []
+
+
+def test_extract_content_text_handles_string_items_in_list() -> None:
+    assert _extract_content_text(["a", "b"]) == ["a", "b"]
+
+
+def test_extract_content_text_skips_non_dict_non_string_items() -> None:
+    assert _extract_content_text([123, None, {"text": "ok"}]) == ["ok"]

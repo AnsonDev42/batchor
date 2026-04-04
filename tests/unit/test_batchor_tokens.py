@@ -4,6 +4,7 @@ import pytest
 
 from batchor.core.models import ChunkPolicy, OpenAIEnqueueLimitConfig
 from batchor.runtime.tokens import (
+    chunk_by_request_limits,
     chunk_request_rows,
     effective_inflight_token_budget,
     estimate_request_tokens,
@@ -117,6 +118,91 @@ def test_chunk_request_rows_rejects_invalid_limits_and_estimates() -> None:
             token_limit=0,
             token_field="submission_tokens",
         )
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        ({"max_requests": 0, "max_bytes": 10}, "max_requests must be > 0"),
+        ({"max_requests": 1, "max_bytes": 0}, "max_bytes must be > 0"),
+        ({"max_requests": 1, "max_bytes": 10, "max_tokens": 0}, "max_tokens must be > 0"),
+    ],
+)
+def test_chunk_by_request_limits_rejects_invalid_limits(kwargs: dict, match: str) -> None:
+    """chunk_by_request_limits itself (not via ChunkPolicy) rejects bad limits."""
+    base: dict = {"max_requests": 1, "max_bytes": 10}
+    base.update(kwargs)
+    with pytest.raises(ValueError, match=match):
+        chunk_by_request_limits(
+            [{"size": 1, "tokens": 1}],
+            estimate_row_bytes=lambda r: int(r["size"]),
+            estimate_row_tokens=lambda r: int(r["tokens"]),
+            **dict(base),
+        )
+
+
+def test_chunk_by_request_limits_rejects_missing_token_estimator() -> None:
+    """max_tokens without estimate_row_tokens must raise."""
+    with pytest.raises(ValueError, match="estimate_row_tokens is required"):
+        chunk_by_request_limits(
+            [{"size": 1}],
+            max_requests=1,
+            max_bytes=10,
+            max_tokens=5,
+            estimate_row_bytes=lambda r: int(r["size"]),
+            estimate_row_tokens=None,
+        )
+
+
+def test_chunk_by_request_limits_creates_token_singleton_chunk() -> None:
+    """A single row exceeding max_tokens is placed in its own singleton chunk."""
+    rows = [{"size": 1, "tokens": 10}, {"size": 1, "tokens": 2}]
+    chunks = chunk_by_request_limits(
+        rows,
+        max_requests=10,
+        max_bytes=100,
+        max_tokens=5,
+        estimate_row_bytes=lambda r: int(r["size"]),
+        estimate_row_tokens=lambda r: int(r["tokens"]),
+    )
+    # First row (tokens=10 > max_tokens=5) gets its own singleton chunk
+    assert len(chunks) == 2
+    assert len(chunks[0]) == 1 and chunks[0][0]["tokens"] == 10
+    assert len(chunks[1]) == 1 and chunks[1][0]["tokens"] == 2
+
+
+def test_chunk_by_request_limits_flushes_on_max_requests_exactly() -> None:
+    """When len(current) hits max_requests exactly inside the loop, flush immediately."""
+    rows = [{"size": 1, "tokens": 1} for _ in range(4)]
+    for i, r in enumerate(rows):
+        r["id"] = str(i)
+    chunks = chunk_by_request_limits(
+        rows,
+        max_requests=2,
+        max_bytes=1000,
+        estimate_row_bytes=lambda r: int(r["size"]),
+        estimate_row_tokens=lambda r: int(r["tokens"]),
+    )
+    # 4 rows, max_requests=2 → 2 chunks of 2
+    assert len(chunks) == 2
+    assert len(chunks[0]) == 2
+    assert len(chunks[1]) == 2
+
+
+def test_estimate_text_tokens_uses_tiktoken_when_available() -> None:
+    """When use_tiktoken=True, tiktoken is used and returns a non-negative count."""
+    count = estimate_text_tokens("hello world", use_tiktoken=True)
+    assert count > 0
+
+
+def test_estimate_text_tokens_tiktoken_falls_back_on_unknown_model() -> None:
+    """An unrecognized model name falls back to cl100k_base without error."""
+    count = estimate_text_tokens("hello", model="gpt-unknown-xxxx", use_tiktoken=True)
+    assert count > 0
+
+
+def test_estimate_text_tokens_tiktoken_returns_zero_for_empty_string() -> None:
+    assert estimate_text_tokens("", use_tiktoken=True) == 0
 
 
 def test_chunk_request_rows_keeps_progress_for_pathological_single_row() -> None:
