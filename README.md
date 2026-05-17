@@ -2,7 +2,7 @@
 
 `batchor` grew out of a recurring problem in academic research: running large datasets through LLMs in batch — reliably, reproducibly, and without reinventing the same glue code across every project. The patterns that kept emerging (durable state, typed results, safe resume after failure) were extracted into this library so they do not have to be rebuilt each time.
 
-`batchor` is a durable OpenAI Batch runner for Python teams that want:
+`batchor` is a durable provider Batch runner for Python teams that want:
 
 - typed Pydantic results
 - resumable durable runs
@@ -12,7 +12,7 @@
 - library-first run controls
 - a small operator CLI for CSV and JSONL jobs
 
-It is intentionally narrow today: OpenAI-first, SQLite-first, and library-first.
+It is intentionally narrow today: OpenAI-first for the CLI, SQLite-first for local durability, and library-first for provider selection beyond the default OpenAI path.
 
 ## What problem it solves
 
@@ -37,6 +37,7 @@ Most OpenAI Batch examples stop at "upload a JSONL file and poll until it finish
 Built-in implementations:
 
 - `OpenAIProviderConfig` + `OpenAIBatchProvider`
+- `GeminiProviderConfig` + `GeminiBatchProvider` for text-only Gemini Batch jobs in the Python API
 - `SQLiteStorage`
 - `PostgresStorage` as an opt-in durable control-plane backend
 - `MemoryStateStore`
@@ -52,6 +53,8 @@ Important constraints:
 - the CLI supports file-backed inputs only
 - users still own selecting and ordering input files or partitions
 - the built-in CLI uses SQLite durability only
+- the built-in CLI is OpenAI-only today; Gemini is exposed through the Python API
+- Gemini support is text-only for now and does not build multimodal requests
 - structured-output rehydration requires an importable module-level Pydantic model
 - raw output artifacts are retained by default and must be exported before raw pruning
 - pause/resume/cancel and incremental terminal-result APIs are library-first today
@@ -88,6 +91,7 @@ graph LR
 
     subgraph providers["providers/"]
         OpenAI["OpenAIBatchProvider"]
+        Gemini["GeminiBatchProvider"]
     end
 
     subgraph sources["sources/"]
@@ -107,6 +111,7 @@ graph LR
     User -->|"start() / run_and_wait()"| BatchRunner
     BatchRunner --> Run
     BatchRunner --> OpenAI
+    BatchRunner --> Gemini
     BatchRunner --> SQLite
     BatchRunner --> LocalFS
     Files -->|"BatchItem stream"| BatchRunner
@@ -142,6 +147,12 @@ Operational semantics for resume, run control, and artifact retention live in
 pip install batchor
 ```
 
+For Gemini Batch support, install the optional extra:
+
+```bash
+pip install "batchor[gemini]"
+```
+
 ## Repo Agent Setup
 
 This repo now includes local AI-agent scaffolding so a contributor agent can pick up repo conventions without extra global setup:
@@ -163,8 +174,8 @@ Supported Python versions:
 
 For Python API usage, auth resolution is:
 
-1. explicit `OpenAIProviderConfig(api_key=...)`
-2. ambient `OPENAI_API_KEY`
+1. explicit provider config credentials such as `OpenAIProviderConfig(api_key=...)` or `GeminiProviderConfig(api_key=...)`
+2. ambient provider environment variables, currently `OPENAI_API_KEY` or `GEMINI_API_KEY`
 
 The Python library does not auto-load `.env`.
 
@@ -192,6 +203,29 @@ run = runner.run_and_wait(
 
 print(run.results()[0].output_text)
 ```
+
+### Gemini text job
+
+```python
+from batchor import BatchItem, BatchJob, BatchRunner, GeminiProviderConfig, PromptParts
+
+
+runner = BatchRunner(storage="memory")
+run = runner.run_and_wait(
+    BatchJob(
+        items=[BatchItem(item_id="row1", payload="Summarize this text")],
+        build_prompt=lambda item: PromptParts(prompt=item.payload),
+        provider_config=GeminiProviderConfig(
+            model="gemini-2.5-flash",
+            api_key="YOUR_GEMINI_API_KEY",
+        ),
+    )
+)
+
+print(run.results()[0].output_text)
+```
+
+Gemini support currently builds text-only `GenerateContent` batch requests. It uses Gemini JSONL `key` values internally while keeping `batchor`'s durable item and attempt tracking unchanged.
 
 ### Structured output
 
@@ -243,6 +277,8 @@ Structured-output models are validated up front against the OpenAI strict-schema
 - object properties must all be listed in `required`
 
 If you need a field to be optional in Python, model it as nullable in the schema shape OpenAI accepts rather than relying on omitted required fields.
+
+The same `structured_output=` API is available with `GeminiProviderConfig`; batchor sends the schema through Gemini `generation_config.response_json_schema` and validates the returned JSON text with the same Pydantic model.
 
 ### Rehydrate a durable run
 

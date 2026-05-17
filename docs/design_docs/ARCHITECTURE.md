@@ -58,6 +58,7 @@ graph TB
     subgraph providers["providers/"]
         BatchProvider["BatchProvider (ABC)"]
         OpenAIProvider["OpenAIBatchProvider"]
+        GeminiProvider["GeminiBatchProvider"]
         ProviderRegistry
     end
 
@@ -91,6 +92,7 @@ graph TB
     MemoryStateStore -.->|implements| StateStore
     BatchRunner -->|submits/polls| BatchProvider
     OpenAIProvider -.->|implements| BatchProvider
+    GeminiProvider -.->|implements| BatchProvider
     BatchRunner -->|stores artifacts| ArtifactStore
     LocalArtifactStore -.->|implements| ArtifactStore
     BatchRunner -->|creates via| ProviderRegistry
@@ -120,6 +122,10 @@ The public runtime model centers on four types:
 one logical source, while callers remain responsible for selecting and ordering
 the child sources up front.
 
+Provider adaptation is intentionally concentrated behind `BatchProvider`.
+The runtime stores one durable internal custom identifier per item attempt, while each provider maps that identifier to its own request JSONL field. OpenAI uses `custom_id`; Gemini uses `key`.
+Provider hooks also own response-text extraction so structured-output parsing can stay generic across provider payload shapes.
+
 ## Main user-facing flow
 
 The normal public flow is:
@@ -136,7 +142,7 @@ Internally that expands to:
 3. Claim a bounded submission window from pending items.
 4. Build or replay request JSONL rows.
 5. Persist request artifacts before upload.
-6. Submit one or more OpenAI batch files.
+6. Submit one or more provider batch files.
 7. Poll active batches.
 8. Download output/error files.
 9. Parse terminal item results back into the state store.
@@ -190,7 +196,7 @@ sequenceDiagram
         BatchRunner->>Provider: upload_input_file(local_path)
         Provider-->>BatchRunner: remote_file_id
         BatchRunner->>Provider: create_batch(remote_file_id)
-        Provider-->>BatchRunner: BatchRemoteRecord (status=validating)
+        Provider-->>BatchRunner: BatchRemoteRecord (status=submitted/validating)
         BatchRunner->>StateStore: register_batch()
         BatchRunner->>StateStore: mark_items_submitted()
     end

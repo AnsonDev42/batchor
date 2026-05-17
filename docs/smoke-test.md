@@ -8,6 +8,7 @@ This guide defines the minimum validation bar for `batchor`.
 - verify durable run handling and SQLite persistence still work
 - verify artifact-store wiring still supports replay, export, and prune
 - verify OpenAI-specific batching logic through fake-provider integration tests
+- verify Gemini provider wiring through fake-client integration tests
 - verify the documentation site still builds cleanly in strict mode
 
 ## Prerequisites
@@ -66,6 +67,7 @@ uv run ty check src
 uv run pytest tests/unit/test_batchor_tokens.py tests/unit/test_batchor_sqlite_storage_flow.py tests/unit/test_batchor_validation.py --no-cov -q
 uv run pytest tests/unit/test_batchor_artifacts.py tests/unit/test_batchor_storage_contracts.py --no-cov -q
 uv run pytest tests/integration/test_batchor_runner.py --no-cov -q
+uv run pytest tests/unit/test_batchor_gemini_provider.py tests/integration/test_batchor_gemini_runner.py --no-cov -q
 ```
 
 Expected:
@@ -86,6 +88,7 @@ Expected:
 - terminal runs, including `completed_with_failures`, can prune request artifacts without losing persisted results
 - shared storage-contract behavior remains aligned across SQLite and opt-in Postgres
 - OpenAI request splitting and enqueue-limit logic still behave as expected
+- Gemini text-only request construction, batch polling normalization, response parsing, and structured-output validation still behave as expected
 - structured-output parsing remains stable
 
 Notes:

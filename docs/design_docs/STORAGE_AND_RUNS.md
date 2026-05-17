@@ -72,7 +72,7 @@ Postgres is also implemented for shared control-plane state when callers explici
 
 In-memory storage exists for tests and short-lived local runs.
 
-The SQLite/OpenAI path is covered by the default smoke test. Postgres storage compatibility is validated in a dedicated storage-contract CI job and requires `BATCHOR_TEST_POSTGRES_DSN` for equivalent local coverage.
+The SQLite/OpenAI path is covered by the default smoke test. Gemini provider wiring is covered with fake-client integration tests. Postgres storage compatibility is validated in a dedicated storage-contract CI job and requires `BATCHOR_TEST_POSTGRES_DSN` for equivalent local coverage.
 
 ## Storage responsibilities
 
@@ -164,7 +164,7 @@ Successful rehydration depends on:
 
 Fresh-process resume also requeues any `queued_local` items back to `pending` before submission resumes.
 
-Resume compatibility intentionally ignores non-persisted secret fields such as provider API keys.
+Resume compatibility intentionally ignores non-persisted secret fields such as provider API keys. Rehydrated OpenAI runs need `OPENAI_API_KEY` when no explicit in-memory config is supplied; rehydrated Gemini runs need `GEMINI_API_KEY`.
 
 For deterministic-source resume, the caller must also reuse the same `run_id` and provide the same source identity/fingerprint.
 For composite sources, that includes the same ordered child identities; changing the child order or swapping one file changes the logical source identity.
@@ -177,6 +177,7 @@ Built-in deterministic sources currently include:
 - `ParquetItemSource`
 
 Once an item has a durable request artifact pointer, `batchor` prunes large inline request-building fields from the control-plane store and relies on the artifact for later retries.
+Provider-specific request rows are preserved in those artifacts. During replay, OpenAI updates `custom_id`; Gemini updates `key`; both still map back to the same internal durable attempt identifier.
 
 ## Artifact lifecycle
 
