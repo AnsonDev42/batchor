@@ -59,18 +59,21 @@ class BatchRemoteRecord(TypedDict, total=False):
     errors: JSONValue
 
 
-class BatchRequestLine(TypedDict):
-    """One JSONL line in an OpenAI Batch input file.
+class BatchRequestLine(TypedDict, total=False):
+    """One JSONL line in a provider batch input file.
 
     Attributes:
-        custom_id: Caller-assigned unique identifier for this request, used to
-            correlate responses back to items.
-        method: HTTP method (always ``"POST"`` for OpenAI Batch).
-        url: Endpoint path (e.g. ``"/v1/chat/completions"``).
-        body: Request body as a JSON object.
+        custom_id: OpenAI caller-assigned correlation identifier.
+        key: Gemini caller-assigned correlation identifier.
+        method: HTTP method for providers that batch HTTP-style requests.
+        url: Endpoint path for providers that batch HTTP-style requests.
+        body: Request body for providers that batch HTTP-style requests.
+        request: Gemini ``GenerateContentRequest`` payload.
     """
 
     custom_id: str
+    key: str
     method: str
     url: str
     body: JSONObject
+    request: JSONObject

@@ -68,9 +68,11 @@ class ProviderKind(StrEnum):
 
     Attributes:
         OPENAI: The built-in OpenAI Batch API provider.
+        GEMINI: The built-in Gemini Batch API provider.
     """
 
     OPENAI = "openai"
+    GEMINI = "gemini"
 
 
 class StorageKind(StrEnum):

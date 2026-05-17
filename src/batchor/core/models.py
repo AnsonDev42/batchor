@@ -16,8 +16,9 @@ Contains the primary configuration and result types consumed by
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Generic, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Callable, Generic, TypeAlias, TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -80,6 +81,17 @@ PromptBuilder: TypeAlias = Callable[[BatchItem[PayloadT]], PromptParts | str]
 BatchItems: TypeAlias = "Iterable[BatchItem[PayloadT]] | ItemSource[PayloadT]"
 OpenAIModelName: TypeAlias = OpenAIModel | str
 OpenAIReasoningLevel: TypeAlias = OpenAIReasoningEffort | str
+
+
+def _json_object_copy(value: object, *, label: str) -> JSONObject:
+    """Return a JSON-normalised object copy or raise a type error."""
+    try:
+        normalized = json.loads(json.dumps(value, ensure_ascii=False))
+    except TypeError as exc:
+        raise TypeError(f"{label} must be JSON-serializable") from exc
+    if not isinstance(normalized, dict):
+        raise TypeError(f"{label} must be a JSON object")
+    return cast(JSONObject, normalized)
 
 
 @dataclass(frozen=True)
@@ -221,6 +233,87 @@ class OpenAIEnqueueLimitConfig:
             target_ratio=float(target_ratio),
             headroom=headroom,
             max_batch_enqueued_tokens=max_batch_enqueued_tokens,
+        )
+
+
+@dataclass(frozen=True)
+class GeminiProviderConfig(ProviderConfig):
+    """Configuration for the built-in Gemini Batch provider.
+
+    Attributes:
+        model: Gemini model name, e.g. ``"gemini-2.5-flash"``.
+        api_key: Gemini API key.  When empty the runner falls back to the
+            ``GEMINI_API_KEY`` environment variable.
+        poll_interval_sec: Seconds to sleep between polling cycles when
+            :meth:`~batchor.Run.wait` is used without a custom interval.
+        generation_config: Gemini generation configuration merged into every
+            request.  Structured-output jobs add or override the structured
+            response format fields in this payload.
+        display_name_prefix: Prefix used when creating Gemini batch jobs.
+    """
+
+    model: str
+    api_key: str = ""
+    poll_interval_sec: float = 1.0
+    generation_config: JSONObject = field(default_factory=dict)
+    display_name_prefix: str = "batchor"
+
+    def __post_init__(self) -> None:
+        if not self.model.strip():
+            raise ValueError("model must be a non-empty string")
+        if self.poll_interval_sec <= 0:
+            raise ValueError("poll_interval_sec must be > 0")
+        if not self.display_name_prefix.strip():
+            raise ValueError("display_name_prefix must be a non-empty string")
+        normalized_generation_config = _json_object_copy(
+            self.generation_config,
+            label="generation_config",
+        )
+        object.__setattr__(self, "generation_config", normalized_generation_config)
+
+    @property
+    def provider_kind(self) -> ProviderKind:
+        return ProviderKind.GEMINI
+
+    def to_payload(self) -> JSONObject:
+        return {
+            "api_key": self.api_key,
+            "model": self.model,
+            "poll_interval_sec": self.poll_interval_sec,
+            "generation_config": dict(self.generation_config),
+            "display_name_prefix": self.display_name_prefix,
+        }
+
+    def to_public_payload(self) -> JSONObject:
+        """Serialise the config without secret material."""
+        payload = self.to_payload()
+        payload.pop("api_key", None)
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: JSONObject) -> GeminiProviderConfig:
+        """Deserialise a previously persisted Gemini provider config payload."""
+        api_key = payload.get("api_key", "")
+        model = payload.get("model")
+        poll_interval_sec = payload.get("poll_interval_sec", 1.0)
+        generation_config = payload.get("generation_config", {})
+        display_name_prefix = payload.get("display_name_prefix", "batchor")
+        if not isinstance(api_key, str):
+            raise TypeError("api_key must be a string")
+        if not isinstance(model, str):
+            raise TypeError("model must be a string")
+        if not isinstance(poll_interval_sec, int | float):
+            raise TypeError("poll_interval_sec must be numeric")
+        if not isinstance(generation_config, dict):
+            raise TypeError("generation_config must be a JSON object")
+        if not isinstance(display_name_prefix, str):
+            raise TypeError("display_name_prefix must be a string")
+        return cls(
+            api_key=api_key,
+            model=model,
+            poll_interval_sec=float(poll_interval_sec),
+            generation_config=cast(JSONObject, generation_config),
+            display_name_prefix=display_name_prefix,
         )
 
 

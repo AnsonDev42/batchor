@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -331,6 +331,8 @@ def parse_text_response(response_record: JSONObject) -> str:
 def parse_structured_response(
     response_record: JSONObject,
     output_model: type[BaseModel],
+    *,
+    text_extractor: Callable[[JSONObject], str] | None = None,
 ) -> tuple[str, JSONValue, BaseModel]:
     """Parse and validate a structured JSON response from the provider.
 
@@ -347,7 +349,7 @@ def parse_structured_response(
         StructuredOutputError: If the response text is empty, is not valid
             JSON, or fails Pydantic validation.
     """
-    text = extract_response_text(response_record)
+    text = text_extractor(response_record) if text_extractor is not None else extract_response_text(response_record)
     if not text:
         raise StructuredOutputError(
             "empty_response_text",

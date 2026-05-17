@@ -16,7 +16,7 @@ from batchor.core.types import JSONObject
 from batchor.providers.base import BatchProvider, ProviderConfig
 
 if TYPE_CHECKING:
-    from batchor.core.models import OpenAIProviderConfig
+    from batchor.core.models import GeminiProviderConfig, OpenAIProviderConfig
 
 type ProviderFactory = Callable[[ProviderConfig], BatchProvider]
 type ProviderConfigLoader = Callable[[JSONObject], ProviderConfig]
@@ -26,8 +26,8 @@ class ProviderRegistry:
     """Dispatch table mapping provider kinds to factory and loader callables.
 
     Use :func:`build_default_provider_registry` to obtain a registry pre-loaded
-    with the built-in OpenAI provider, or construct one manually to register
-    custom providers.
+    with the built-in providers, or construct one manually to register custom
+    providers.
     """
 
     def __init__(self) -> None:
@@ -128,13 +128,13 @@ class ProviderRegistry:
 
 
 def build_default_provider_registry() -> ProviderRegistry:
-    """Create a :class:`ProviderRegistry` pre-loaded with the OpenAI provider.
+    """Create a registry pre-loaded with built-in providers.
 
     Returns:
-        A :class:`ProviderRegistry` with :attr:`~batchor.ProviderKind.OPENAI`
-        registered.
+        A :class:`ProviderRegistry` with OpenAI and Gemini registered.
     """
-    from batchor.core.models import OpenAIProviderConfig
+    from batchor.core.models import GeminiProviderConfig, OpenAIProviderConfig
+    from batchor.providers.gemini import GeminiBatchProvider
     from batchor.providers.openai import OpenAIBatchProvider
 
     registry = ProviderRegistry()
@@ -142,6 +142,11 @@ def build_default_provider_registry() -> ProviderRegistry:
         kind=ProviderKind.OPENAI,
         factory=lambda config: OpenAIBatchProvider(_require_openai_config(config)),
         loader=OpenAIProviderConfig.from_payload,
+    )
+    registry.register(
+        kind=ProviderKind.GEMINI,
+        factory=lambda config: GeminiBatchProvider(_require_gemini_config(config)),
+        loader=GeminiProviderConfig.from_payload,
     )
     return registry
 
@@ -151,4 +156,12 @@ def _require_openai_config(config: ProviderConfig) -> OpenAIProviderConfig:
 
     if not isinstance(config, OpenAIProviderConfig):
         raise TypeError(f"expected {ProviderKind.OPENAI.value} config, got {type(config).__name__}")
+    return config
+
+
+def _require_gemini_config(config: ProviderConfig) -> GeminiProviderConfig:
+    from batchor.core.models import GeminiProviderConfig
+
+    if not isinstance(config, GeminiProviderConfig):
+        raise TypeError(f"expected {ProviderKind.GEMINI.value} config, got {type(config).__name__}")
     return config

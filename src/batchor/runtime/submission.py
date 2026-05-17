@@ -319,14 +319,20 @@ def prepare_claimed_item(
     if item.request_artifact_path is not None:
         if item.request_artifact_line is None or item.request_sha256 is None:
             raise ValueError(f"incomplete request artifact pointer for item {item.item_id}")
-        request_line = load_request_artifact_line(
-            artifact_store=artifact_store,
-            artifact_path=item.request_artifact_path,
-            line_number=item.request_artifact_line,
-            expected_sha256=item.request_sha256,
-            artifact_cache=artifact_cache,
+        request_line = with_provider_request_correlation_id(
+            context.provider,
+            cast(
+                BatchRequestLine,
+                load_request_artifact_line(
+                    artifact_store=artifact_store,
+                    artifact_path=item.request_artifact_path,
+                    line_number=item.request_artifact_line,
+                    expected_sha256=item.request_sha256,
+                    artifact_cache=artifact_cache,
+                ),
+            ),
+            custom_id,
         )
-        request_line["custom_id"] = custom_id
     else:
         request_line = context.provider.build_request_line(
             custom_id=custom_id,
@@ -336,7 +342,6 @@ def prepare_claimed_item(
             ),
             structured_output=context.structured_output,
         )
-    request_line = cast(BatchRequestLine, request_line)
     request_bytes = len((json.dumps(request_line, ensure_ascii=False) + "\n").encode("utf-8"))
     submission_tokens = context.provider.estimate_request_tokens(
         request_line,
@@ -344,7 +349,7 @@ def prepare_claimed_item(
     )
     return PreparedRequest(
         item_id=item.item_id,
-        custom_id=str(request_line["custom_id"]),
+        custom_id=provider_request_correlation_id(context.provider, request_line),
         request_line=cast(JSONObject, request_line),
         request_bytes=request_bytes,
         submission_tokens=submission_tokens,
@@ -367,6 +372,31 @@ def prepared_request_row(item: PreparedRequest) -> dict[str, Any]:
         "request_bytes": item.request_bytes,
         "submission_tokens": item.submission_tokens,
     }
+
+
+def provider_request_correlation_id(provider: object, request_line: BatchRequestLine) -> str:
+    """Return provider-facing request correlation id with OpenAI-compatible fallback."""
+    getter = getattr(provider, "request_correlation_id", None)
+    if callable(getter):
+        return str(getter(request_line))
+    custom_id = request_line.get("custom_id")
+    if not isinstance(custom_id, str) or not custom_id:
+        raise ValueError("request line is missing custom_id")
+    return custom_id
+
+
+def with_provider_request_correlation_id(
+    provider: object,
+    request_line: BatchRequestLine,
+    custom_id: str,
+) -> BatchRequestLine:
+    """Return request line with the provider-facing correlation id replaced."""
+    replacer = getattr(provider, "with_request_correlation_id", None)
+    if callable(replacer):
+        return cast(BatchRequestLine, replacer(request_line, custom_id))
+    updated = dict(request_line)
+    updated["custom_id"] = custom_id
+    return cast(BatchRequestLine, updated)
 
 
 def make_custom_id(item_id: str, attempt: int) -> str:
