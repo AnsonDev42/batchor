@@ -93,6 +93,7 @@ class SQLiteStorageProtocol(Protocol):
         *,
         run_id: str,
         control_state: RunControlState,
+        control_reason: str | None = None,
     ) -> None: ...
 
     def get_request_artifact_paths(self, *, run_id: str) -> list[str]: ...

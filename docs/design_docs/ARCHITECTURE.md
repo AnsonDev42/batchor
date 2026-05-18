@@ -182,6 +182,11 @@ sequenceDiagram
                 BatchRunner->>StateStore: record_batch_retry_failure()
                 BatchRunner->>StateStore: reset_batch_items_to_pending()
             end
+
+            opt OpenAI insufficient quota detected
+                BatchRunner->>StateStore: set_run_control_state(paused, control_reason)
+                BatchRunner-->>User: RunPausedError / run_auto_paused event
+            end
         end
 
         BatchRunner->>StateStore: claim_items_for_submission(limit)
@@ -243,7 +248,7 @@ stateDiagram-v2
 
     state "Control State" as cs {
         [*] --> RUNNING2 : run created
-        RUNNING2 --> PAUSED : pause_run() called
+        RUNNING2 --> PAUSED : pause_run() or quota auto-pause
         PAUSED --> RUNNING2 : resume_run() called
         RUNNING2 --> CANCEL_REQUESTED : cancel_run() called
 
@@ -257,6 +262,10 @@ stateDiagram-v2
 
 Detailed storage, resume, and artifact-retention semantics live in
 [`STORAGE_AND_RUNS.md`](STORAGE_AND_RUNS.md).
+
+Paused runs may include a durable `control_reason`. Manual pauses use
+`"manual"`; OpenAI quota/billing exhaustion uses
+`"openai_insufficient_quota"` and preserves retryable work for later resume.
 
 ## Module boundaries
 
@@ -302,6 +311,7 @@ Owns execution behavior:
 - `Run`
 - Typer CLI entrypoint for operator workflows
 - persisted run control state with `pause`, `resume`, and drain-style `cancel`
+- automatic OpenAI insufficient-quota pause with durable `control_reason`
 - optional observer callback for provider lifecycle events
 - token estimation and request chunking
 - bounded pending-item claim windows before submission
@@ -355,6 +365,7 @@ The storage layer persists:
 
 - run config
 - run control state
+- run control reason
 - item state and attempts
 - active batch metadata
 - ingest checkpoints

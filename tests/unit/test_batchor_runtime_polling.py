@@ -15,6 +15,7 @@ from batchor import (
     OpenAIProviderConfig,
     PromptParts,
     RetryPolicy,
+    RunControlState,
 )
 from batchor.providers.openai import OpenAIBatchProvider
 from batchor.runtime.context import RunContext, build_persisted_config, build_run_context
@@ -175,6 +176,36 @@ def test_poll_once_emits_retry_event_for_transient_poll_errors(tmp_path: Path) -
     assert storage.get_item_records(run_id=run_id)[0].status is ItemStatus.SUBMITTED
 
 
+def test_poll_once_auto_pauses_on_insufficient_quota_poll_error(tmp_path: Path) -> None:
+    provider = _FakePollingProvider(
+        poll_exception=RuntimeError(
+            {
+                "response": {"status_code": 429},
+                "error": {"code": "insufficient_quota", "message": "billing quota exhausted"},
+            }
+        ),
+    )
+    storage, _artifact_store, deps, context, run_id = _polling_setup(
+        tmp_path,
+        provider=provider,
+    )
+    events: list[tuple[str, dict[str, object]]] = []
+    deps = PollingDeps(
+        state=storage,
+        artifact_store=deps.artifact_store,
+        emit_event=lambda event_type, **kwargs: events.append((event_type, kwargs)),
+    )
+
+    poll_once(deps, run_id=run_id, context=context)
+
+    summary = storage.get_run_summary(run_id=run_id)
+    assert summary.control_state is RunControlState.PAUSED
+    assert summary.control_reason == "openai_insufficient_quota"
+    assert storage.get_item_records(run_id=run_id)[0].status is ItemStatus.SUBMITTED
+    assert len(storage.get_active_batches(run_id=run_id)) == 1
+    assert events[-1][0] == "run_auto_paused"
+
+
 def test_poll_once_resets_failed_batches_to_pending_and_records_backoff(tmp_path: Path) -> None:
     provider = _FakePollingProvider(
         batch_factory=lambda batch_id: {
@@ -195,6 +226,38 @@ def test_poll_once_resets_failed_batches_to_pending_and_records_backoff(tmp_path
     record = storage.get_item_records(run_id=run_id)[0]
     assert record.status is ItemStatus.PENDING
     assert storage.get_run_summary(run_id=run_id).backoff_remaining_sec > 0
+
+
+def test_poll_once_auto_pauses_failed_batch_with_insufficient_quota(tmp_path: Path) -> None:
+    provider = _FakePollingProvider(
+        batch_factory=lambda batch_id: {
+            "id": batch_id,
+            "status": "failed",
+            "errors": {
+                "status_code": 429,
+                "code": "insufficient_quota",
+                "message": "You exceeded your current quota",
+            },
+            "output_file_id": None,
+            "error_file_id": None,
+        }
+    )
+    storage, _artifact_store, deps, context, run_id = _polling_setup(
+        tmp_path,
+        provider=provider,
+    )
+
+    poll_once(deps, run_id=run_id, context=context)
+
+    record = storage.get_item_records(run_id=run_id)[0]
+    summary = storage.get_run_summary(run_id=run_id)
+    assert record.status is ItemStatus.PENDING
+    assert record.attempt_count == 0
+    assert record.error is not None
+    assert record.error.error_class == "openai_insufficient_quota"
+    assert summary.control_state is RunControlState.PAUSED
+    assert summary.control_reason == "openai_insufficient_quota"
+    assert summary.backoff_remaining_sec == 0.0
 
 
 def test_consume_completed_batch_marks_structured_validation_failures(tmp_path: Path) -> None:
@@ -245,3 +308,43 @@ def test_consume_completed_batch_retries_missing_output_rows_without_consuming_a
     assert record.attempt_count == 0
     assert record.error is not None
     assert record.error.error_class == "batch_output_missing_row"
+
+
+def test_consume_completed_batch_auto_pauses_item_level_insufficient_quota(tmp_path: Path) -> None:
+    quota_record = {
+        "custom_id": "row1:a1",
+        "response": {
+            "status_code": 429,
+            "body": {
+                "error": {
+                    "code": "insufficient_quota",
+                    "message": "You exceeded your current quota",
+                }
+            },
+        },
+    }
+    provider = _FakePollingProvider(output_content=json.dumps(quota_record) + "\n")
+    storage, _artifact_store, deps, context, run_id = _polling_setup(
+        tmp_path,
+        provider=provider,
+        retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=0.0, max_backoff_sec=0.0),
+    )
+
+    quota_paused = consume_completed_batch(
+        deps,
+        run_id=run_id,
+        context=context,
+        provider_batch_id="batch_0",
+        output_file_id="output_batch_0",
+        error_file_id=None,
+    )
+
+    record = storage.get_item_records(run_id=run_id)[0]
+    summary = storage.get_run_summary(run_id=run_id)
+    assert quota_paused is True
+    assert record.status is ItemStatus.FAILED_RETRYABLE
+    assert record.attempt_count == 0
+    assert record.error is not None
+    assert record.error.error_class == "openai_insufficient_quota"
+    assert summary.control_state is RunControlState.PAUSED
+    assert summary.control_reason == "openai_insufficient_quota"

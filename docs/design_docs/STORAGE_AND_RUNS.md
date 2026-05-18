@@ -18,6 +18,7 @@ The public handle exposes:
 - `run_id`
 - cached `status`
 - cached `control_state`
+- cached `control_reason`
 - `is_finished`
 - `refresh()`
 - `wait()`
@@ -49,6 +50,7 @@ The control plane is the state store:
 
 - run config
 - run control state
+- run control reason
 - item rows and attempts
 - active batch rows
 - parsed outputs and failure records
@@ -80,6 +82,7 @@ Current storage responsibilities include:
 
 - persisting public run config
 - persisting run control state
+- persisting run control reason
 - persisting deterministic-source ingest checkpoints when available
 - persisting item state and attempts
 - persisting terminal result sequence metadata for incremental reads
@@ -222,7 +225,9 @@ Semantics:
 - `resume` restarts those local activities from persisted state
 - `cancel` stops new ingestion/submission, keeps polling active provider batches, and then permanently fails remaining local non-terminal items with `error_class="run_cancelled"`
 
-`wait()` fails fast on paused runs instead of sleeping indefinitely.
+Manual pauses record `control_reason="manual"`. OpenAI insufficient-quota pauses record `control_reason="openai_insufficient_quota"`, clear batch-control-plane backoff, and preserve affected items for later retry without consuming attempts.
+
+`wait()` fails fast on paused runs instead of sleeping indefinitely. The raised `RunPausedError` carries the same `control_reason` as the summary.
 Provider-side remote cancellation is still `TBD`.
 
 ## Python API versus CLI

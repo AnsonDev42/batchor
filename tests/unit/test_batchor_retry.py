@@ -6,6 +6,7 @@ from batchor.runtime.retry import (
     classify_batch_error,
     compute_backoff_delay,
     is_enqueue_token_limit_error,
+    is_insufficient_quota_error,
     is_retryable_batch_control_plane_error,
 )
 
@@ -23,6 +24,24 @@ def test_classify_batch_error_prefers_enqueue_limit() -> None:
     assert classify_batch_error(RuntimeError("enqueue token limit reached")) == "enqueue_token_limit"
     assert classify_batch_error(RuntimeError("timeout talking to API")) == "control_plane_transient"
     assert classify_batch_error(RuntimeError("boom")) == "batch_error"
+
+
+def test_classify_batch_error_detects_openai_insufficient_quota() -> None:
+    payload = {
+        "response": {"status_code": 429},
+        "error": {"code": "insufficient_quota", "message": "You exceeded your current quota"},
+    }
+    assert is_insufficient_quota_error(payload) is True
+    assert classify_batch_error(payload) == "openai_insufficient_quota"
+
+
+def test_insufficient_quota_detector_distinguishes_ordinary_rate_limits() -> None:
+    payload = {
+        "response": {"status_code": 429},
+        "error": {"message": "Rate limit reached for requests per minute"},
+    }
+    assert is_insufficient_quota_error(payload) is False
+    assert classify_batch_error(payload) == "control_plane_transient"
 
 
 def test_compute_backoff_delay_uses_exponential_growth() -> None:

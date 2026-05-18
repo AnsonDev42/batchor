@@ -121,7 +121,7 @@ class Run:
             if self.is_finished:
                 return self
             if self.control_state is RunControlState.PAUSED:
-                raise RunPausedError(self.run_id)
+                raise RunPausedError(self.run_id, self._summary.control_reason)
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(f"timed out waiting for run {self.run_id}")
             context = self._runner._context_for_run(self.run_id)
@@ -160,6 +160,7 @@ class Run:
             status_counts=dict(self._summary.status_counts),
             active_batches=self._summary.active_batches,
             backoff_remaining_sec=self._summary.backoff_remaining_sec,
+            control_reason=self._summary.control_reason,
             items=self._runner._results_for_run(self.run_id),
         )
 

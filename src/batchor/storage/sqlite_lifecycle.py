@@ -49,6 +49,7 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                         "run_id": run_id,
                         "status": RunLifecycleStatus.RUNNING,
                         "control_state": RunControlState.RUNNING,
+                        "control_reason": None,
                         "created_at": _encode_datetime(self._now()),
                         "provider_config_json": _encode_json(
                             self.provider_registry.dump_config(
@@ -148,9 +149,17 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
         *,
         run_id: str,
         control_state: RunControlState,
+        control_reason: str | None = None,
     ) -> None:
         with self.engine.begin() as conn:
-            conn.execute(update(RUNS_TABLE).where(RUNS_TABLE.c.run_id == run_id).values(control_state=control_state))
+            conn.execute(
+                update(RUNS_TABLE)
+                .where(RUNS_TABLE.c.run_id == run_id)
+                .values(
+                    control_state=control_state,
+                    control_reason=control_reason,
+                )
+            )
 
     def claim_items_for_submission(
         self,

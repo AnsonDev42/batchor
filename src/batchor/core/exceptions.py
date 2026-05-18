@@ -52,16 +52,22 @@ class RunPausedError(RuntimeError):
 
     Attributes:
         run_id: The identifier of the paused run.
+        control_reason: Optional machine-readable reason the run is paused.
     """
 
-    def __init__(self, run_id: str) -> None:
+    def __init__(self, run_id: str, control_reason: str | None = None) -> None:
         """Initialise the error with the paused run's identifier.
 
         Args:
             run_id: Identifier of the run that is in a paused control state.
+            control_reason: Optional machine-readable pause reason.
         """
-        super().__init__(f"run {run_id} is paused")
+        message = f"run {run_id} is paused"
+        if control_reason:
+            message = f"{message}: {control_reason}"
+        super().__init__(message)
         self.run_id = run_id
+        self.control_reason = control_reason
 
 
 class StructuredOutputSchemaError(ValueError):
