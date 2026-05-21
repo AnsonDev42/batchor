@@ -40,7 +40,7 @@ from batchor.runtime.ingestion import (
     ingest_job_items,
     resume_existing_run,
 )
-from batchor.runtime.polling import PollingDeps, refresh_run
+from batchor.runtime.polling import PollingDeps, poll_once, refresh_run
 from batchor.runtime.results import result_from_record, results_for_records, serialize_result, write_results_export
 from batchor.runtime.run_handle import Run, generate_run_id
 from batchor.runtime.submission import SubmissionDeps, submit_pending_items
@@ -110,6 +110,7 @@ class BatchRunner:
             emit_event=self._emit_event,
             submit_pending_items=self._submit_pending_items,
             configs_match_for_resume=self._configs_match_for_resume,
+            poll_active_batches=self._poll_active_batches,
         )
 
     def start(
@@ -551,6 +552,17 @@ class BatchRunner:
             run_id=run_id,
             context=self._context_for_run(run_id),
             submit_pending_items=self._submit_pending_items,
+        )
+
+    def _poll_active_batches(
+        self,
+        run_id: str,
+        context: RunContext,
+    ) -> None:
+        poll_once(
+            self._polling_deps,
+            run_id=run_id,
+            context=context,
         )
 
     def _results_for_run(self, run_id: str) -> list[BatchResultItem]:

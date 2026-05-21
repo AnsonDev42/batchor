@@ -150,6 +150,23 @@ class MemoryStateStore(StateStore):
             )
         self._refresh_run_status(run)
 
+    def append_items_with_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        items: list[MaterializedItem],
+        next_item_index: int,
+        checkpoint_payload: JSONValue | None = None,
+        ingestion_complete: bool,
+    ) -> None:
+        self.append_items(run_id=run_id, items=items)
+        self.update_ingest_checkpoint(
+            run_id=run_id,
+            next_item_index=next_item_index,
+            checkpoint_payload=checkpoint_payload,
+            ingestion_complete=ingestion_complete,
+        )
+
     def set_ingest_checkpoint(
         self,
         *,

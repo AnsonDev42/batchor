@@ -93,6 +93,44 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
         with self.engine.begin() as conn:
             conn.execute(ITEMS_TABLE.insert(), self._item_rows(run_id=run_id, items=items))
 
+    def append_items_with_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        items: list[MaterializedItem],
+        next_item_index: int,
+        checkpoint_payload: JSONValue | None = None,
+        ingestion_complete: bool,
+    ) -> None:
+        rows = self._item_rows(run_id=run_id, items=items)
+        with self.engine.begin() as conn:
+            if rows:
+                item_ids = [str(row["item_id"]) for row in rows]
+                existing_ids = set(
+                    conn.execute(
+                        select(ITEMS_TABLE.c.item_id).where(
+                            and_(
+                                ITEMS_TABLE.c.run_id == run_id,
+                                ITEMS_TABLE.c.item_id.in_(item_ids),
+                            )
+                        )
+                    ).scalars()
+                )
+                rows_to_insert = [row for row in rows if str(row["item_id"]) not in existing_ids]
+                if rows_to_insert:
+                    conn.execute(ITEMS_TABLE.insert(), rows_to_insert)
+            conn.execute(
+                update(RUN_INGEST_STATE_TABLE)
+                .where(RUN_INGEST_STATE_TABLE.c.run_id == run_id)
+                .values(
+                    next_item_index=next_item_index,
+                    checkpoint_payload_json=_encode_json(checkpoint_payload)
+                    if checkpoint_payload is not None
+                    else None,
+                    ingestion_complete=1 if ingestion_complete else 0,
+                )
+            )
+
     def set_ingest_checkpoint(
         self,
         *,
