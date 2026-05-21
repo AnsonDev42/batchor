@@ -225,7 +225,13 @@ Semantics:
 - `resume` restarts those local activities from persisted state
 - `cancel` stops new ingestion/submission, keeps polling active provider batches, and then permanently fails remaining local non-terminal items with `error_class="run_cancelled"`
 
-Manual pauses record `control_reason="manual"`. OpenAI insufficient-quota pauses record `control_reason="openai_insufficient_quota"`, clear batch-control-plane backoff, and preserve affected items for later retry without consuming attempts.
+Manual pauses record `control_reason="manual"`. OpenAI upload/create/polling and batch-level insufficient-quota pauses record `control_reason="openai_insufficient_quota"`, clear batch-control-plane backoff, and preserve affected items for later retry without consuming attempts.
+
+Row-level insufficient-quota records inside completed batch outputs do not pause the run. Those items are stored as `failed_retryable` with `error_class="openai_insufficient_quota"`, do not consume attempts, and rely on retry backoff before they are submitted again.
+
+Auto-pause must not overwrite `cancel_requested`. Cancellation is non-reversible, so quota errors observed while draining already-submitted batches leave the run in cancel flow.
+
+For non-checkpointed finite iterables, ingestion continues materializing remaining items after an auto-pause so `resume()` cannot silently lose input rows that were not yet persisted. Checkpointed sources may stop on pause because their stored checkpoint can resume materialization later.
 
 `wait()` fails fast on paused runs instead of sleeping indefinitely. The raised `RunPausedError` carries the same `control_reason` as the summary.
 Provider-side remote cancellation is still `TBD`.

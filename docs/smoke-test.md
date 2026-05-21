@@ -79,7 +79,9 @@ Expected:
 - retry/resume from persisted request artifacts still works for SQLite-backed runs
 - transient batch-poll failures do not block unrelated pending submissions from being sent when capacity remains
 - paused runs stop polling/submission until resumed
-- OpenAI insufficient-quota provider failures auto-pause with a durable `control_reason` and do not consume item attempts
+- OpenAI control-plane and batch-level insufficient-quota provider failures auto-pause with a durable `control_reason` and do not consume item attempts
+- OpenAI row-level insufficient-quota records in completed batch output remain retryable, do not consume attempts, and back off without pausing the run
+- quota auto-pause preserves `cancel_requested` and does not strand non-checkpointed input rows during initial ingestion
 - cancelled runs drain already-submitted work and mark remaining local items as `run_cancelled`
 - incremental terminal-result reads/exports remain sequence-based and idempotent across repeated calls
 - raw output/error artifacts can be exported and require export before raw pruning

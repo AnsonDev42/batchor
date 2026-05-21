@@ -55,7 +55,7 @@ Important constraints:
 - structured-output rehydration requires an importable module-level Pydantic model
 - raw output artifacts are retained by default and must be exported before raw pruning
 - pause/resume/cancel and incremental terminal-result APIs are library-first today
-- OpenAI 429 quota/billing exhaustion auto-pauses the run instead of burning attempts across the remaining backlog
+- OpenAI control-plane or batch-level 429 quota/billing exhaustion auto-pauses the run instead of burning attempts across the remaining backlog
 
 ## Mental model
 
@@ -382,7 +382,7 @@ run.cancel()
 
 Run control and incremental terminal-result APIs are Python-first in this release. The CLI does not yet expose `pause`, `resume`, `cancel`, or incremental terminal-result export commands.
 
-OpenAI insufficient-quota failures are treated as an automatic pause with `summary().control_reason == "openai_insufficient_quota"`. Resolve billing/quota outside `batchor`, then call `resume()` to continue from persisted pending/retryable state.
+OpenAI insufficient-quota failures during upload/create/polling, or as a batch-level terminal error, are treated as an automatic pause with `summary().control_reason == "openai_insufficient_quota"`. Row-level insufficient-quota records inside a completed batch output stay item-scoped: those rows become retryable without consuming attempts, emit `openai_insufficient_quota` failure telemetry, and use retry backoff before resubmission. Auto-pause does not replace an in-progress cancellation.
 
 ## CLI quickstart
 

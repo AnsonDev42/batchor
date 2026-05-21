@@ -354,7 +354,9 @@ def pause_run_for_insufficient_quota(
     context: RunContext,
     error: object,
     phase: str,
-) -> None:
+) -> bool:
+    if deps.state.get_run_control_state(run_id=run_id) is RunControlState.CANCEL_REQUESTED:
+        return False
     deps.state.clear_batch_retry_backoff(run_id=run_id)
     deps.state.set_run_control_state(
         run_id=run_id,
@@ -371,6 +373,7 @@ def pause_run_for_insufficient_quota(
             "phase": phase,
         },
     )
+    return True
 
 
 def prepare_claimed_item(

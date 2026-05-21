@@ -79,6 +79,15 @@ class Run:
         return self._summary.control_state
 
     @property
+    def control_reason(self) -> str | None:
+        """Return the cached operator control reason for the run.
+
+        Returns:
+            Cached machine-readable control reason, if one is set.
+        """
+        return self._summary.control_reason
+
+    @property
     def is_finished(self) -> bool:
         """Return whether the run is in a terminal lifecycle state.
 

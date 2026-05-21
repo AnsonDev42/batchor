@@ -42,6 +42,13 @@ class PollingDeps:
     emit_event: Callable[..., None]
 
 
+@dataclass(frozen=True)
+class CompletedBatchConsumeResult:
+    """Summary of completed-batch row processing."""
+
+    quota_error_count: int = 0
+
+
 def refresh_run(
     deps: PollingDeps,
     *,
@@ -121,19 +128,21 @@ def poll_once(
                 except Exception as exc:  # noqa: BLE001
                     poll_errors[provider_batch_id] = exc
 
+    row_quota_backoff_recorded = False
     for batch in batches:
         if batch.provider_batch_id in poll_errors:
             exc = poll_errors[batch.provider_batch_id]
             if is_insufficient_quota_error(exc):
-                pause_run_for_insufficient_quota(
+                if pause_run_for_insufficient_quota(
                     deps,
                     run_id=run_id,
                     context=context,
                     error=exc,
                     phase="batch_poll",
                     provider_batch_id=batch.provider_batch_id,
-                )
-                return
+                ):
+                    return
+                continue
             if not is_retryable_batch_control_plane_error(exc):
                 raise exc
             deps.emit_event(
@@ -166,7 +175,7 @@ def poll_once(
             error_file_id=remote.get("error_file_id"),
         )
         if status == "completed":
-            quota_paused = consume_completed_batch(
+            consume_result = consume_completed_batch(
                 deps,
                 run_id=run_id,
                 context=context,
@@ -174,15 +183,16 @@ def poll_once(
                 output_file_id=remote.get("output_file_id"),
                 error_file_id=remote.get("error_file_id"),
             )
-            if quota_paused:
-                deps.emit_event(
-                    "batch_completed",
+            if consume_result.quota_error_count > 0 and not row_quota_backoff_recorded:
+                row_quota_backoff_recorded = True
+                deps.state.record_batch_retry_failure(
                     run_id=run_id,
-                    provider_kind=context.config.provider_config.provider_kind,
-                    data={"provider_batch_id": batch.provider_batch_id},
+                    error_class="row_insufficient_quota",
+                    base_delay_sec=context.config.retry_policy.base_backoff_sec,
+                    max_delay_sec=context.config.retry_policy.max_backoff_sec,
                 )
-                return
-            deps.state.clear_batch_retry_backoff(run_id=run_id)
+            if not row_quota_backoff_recorded:
+                deps.state.clear_batch_retry_backoff(run_id=run_id)
             deps.emit_event(
                 "batch_completed",
                 run_id=run_id,
@@ -230,14 +240,15 @@ def poll_once(
                 },
             )
             if error.error_class == "openai_insufficient_quota":
-                pause_run_for_insufficient_quota(
+                if pause_run_for_insufficient_quota(
                     deps,
                     run_id=run_id,
                     context=context,
                     error=error.raw_error,
                     phase="batch_terminal",
                     provider_batch_id=batch.provider_batch_id,
-                )
+                ):
+                    return
                 return
             deps.state.record_batch_retry_failure(
                 run_id=run_id,
@@ -288,7 +299,7 @@ def consume_completed_batch(
     provider_batch_id: str,
     output_file_id: object,
     error_file_id: object,
-) -> bool:
+) -> CompletedBatchConsumeResult:
     """Download, persist, and parse a completed provider batch.
 
     Args:
@@ -298,6 +309,10 @@ def consume_completed_batch(
         provider_batch_id: Provider batch identifier being consumed.
         output_file_id: Provider output file identifier, if any.
         error_file_id: Provider error file identifier, if any.
+
+    Returns:
+        Summary of row-level processing signals observed while consuming the
+        completed batch.
     """
     output_content, error_content = download_batch_file_contents(
         context=context,
@@ -337,7 +352,7 @@ def consume_completed_batch(
     completions: list[CompletedItemRecord] = []
     failures: list[ItemFailureRecord] = []
     processed_custom_ids: set[str] = set()
-    quota_error_seen = False
+    quota_error_count = 0
 
     for custom_id, record in successes.items():
         processed_custom_ids.add(custom_id)
@@ -385,7 +400,8 @@ def consume_completed_batch(
     for custom_id, error_record in errors.items():
         processed_custom_ids.add(custom_id)
         quota_error = is_insufficient_quota_error(error_record)
-        quota_error_seen = quota_error_seen or quota_error
+        if quota_error:
+            quota_error_count += 1
         enqueue_limit_error = is_enqueue_token_limit_error(error_record)
         failures.append(
             ItemFailureRecord(
@@ -435,23 +451,19 @@ def consume_completed_batch(
             failures=failures,
             max_attempts=context.config.retry_policy.max_attempts,
         )
+        error_class_counts: dict[str, int] = {}
+        for failure in failures:
+            error_class_counts[failure.error.error_class] = error_class_counts.get(failure.error.error_class, 0) + 1
         deps.emit_event(
             "items_failed",
             run_id=run_id,
             provider_kind=context.config.provider_config.provider_kind,
-            data={"failed_item_count": len(failures)},
+            data={
+                "failed_item_count": len(failures),
+                "error_class_counts": error_class_counts,
+            },
         )
-    if quota_error_seen:
-        pause_run_for_insufficient_quota(
-            deps,
-            run_id=run_id,
-            context=context,
-            error={"provider_batch_id": provider_batch_id},
-            phase="batch_item_error",
-            provider_batch_id=provider_batch_id,
-        )
-        return True
-    return False
+    return CompletedBatchConsumeResult(quota_error_count=quota_error_count)
 
 
 def item_failure(
@@ -514,7 +526,9 @@ def pause_run_for_insufficient_quota(
     error: object,
     phase: str,
     provider_batch_id: str | None = None,
-) -> None:
+) -> bool:
+    if deps.state.get_run_control_state(run_id=run_id) is RunControlState.CANCEL_REQUESTED:
+        return False
     deps.state.clear_batch_retry_backoff(run_id=run_id)
     deps.state.set_run_control_state(
         run_id=run_id,
@@ -534,3 +548,4 @@ def pause_run_for_insufficient_quota(
         provider_kind=context.config.provider_config.provider_kind,
         data=data,
     )
+    return True

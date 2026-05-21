@@ -175,6 +175,9 @@ sequenceDiagram
                 Provider-->>BatchRunner: successes + errors
                 BatchRunner->>StateStore: mark_items_completed(successes)
                 BatchRunner->>StateStore: mark_items_failed(errors)
+                opt row-level insufficient quota
+                    BatchRunner->>StateStore: record_batch_retry_failure(row_insufficient_quota)
+                end
             else status in {failed, cancelled, expired}
                 BatchRunner->>Provider: download_file_content(output_file_id, error_file_id)
                 Provider-->>BatchRunner: output/error JSONL
@@ -183,7 +186,7 @@ sequenceDiagram
                 BatchRunner->>StateStore: reset_batch_items_to_pending()
             end
 
-            opt OpenAI insufficient quota detected
+            opt control-plane or batch-level OpenAI insufficient quota detected
                 BatchRunner->>StateStore: set_run_control_state(paused, control_reason)
                 BatchRunner-->>User: RunPausedError / run_auto_paused event
             end
@@ -264,8 +267,13 @@ Detailed storage, resume, and artifact-retention semantics live in
 [`STORAGE_AND_RUNS.md`](STORAGE_AND_RUNS.md).
 
 Paused runs may include a durable `control_reason`. Manual pauses use
-`"manual"`; OpenAI quota/billing exhaustion uses
+`"manual"`; control-plane or batch-level OpenAI quota/billing exhaustion uses
 `"openai_insufficient_quota"` and preserves retryable work for later resume.
+Row-level quota records inside completed batch output remain item-level
+retryable failures and use retry backoff without pausing the run.
+Quota auto-pause never replaces `cancel_requested`, and non-checkpointed
+finite iterables continue materializing after auto-pause so unpersisted input
+rows are not lost.
 
 ## Module boundaries
 
@@ -311,7 +319,8 @@ Owns execution behavior:
 - `Run`
 - Typer CLI entrypoint for operator workflows
 - persisted run control state with `pause`, `resume`, and drain-style `cancel`
-- automatic OpenAI insufficient-quota pause with durable `control_reason`
+- automatic OpenAI control-plane/batch-level insufficient-quota pause with durable `control_reason`
+- item-level insufficient-quota retries with backoff and no attempt consumption
 - optional observer callback for provider lifecycle events
 - token estimation and request chunking
 - bounded pending-item claim windows before submission
