@@ -126,6 +126,7 @@ From those settings, `batchor` derives:
 - an effective per-batch token limit
 
 Submission is constrained by both token budget and generic chunking rules such as max request count and max request file size.
+During `Run.wait()`, each drain cycle polls active batches before submitting new work, so capacity freed by completed batches is visible before the next submit attempt. If that cycle makes durable progress, the wait loop immediately runs another cycle instead of sleeping.
 
 ## Batch splitting
 
@@ -138,6 +139,7 @@ Splitting considers:
 - estimated request tokens
 
 Submission claims only a bounded pending-item window per refresh. This is intentional: large backlogs should not pay full prompt-build and token-estimation cost long before provider capacity exists to send them.
+The default claim window is still large enough to prepare multiple provider batches per cycle, so runs with high remote enqueue headroom can keep filling capacity without waiting for one local batch at a time.
 
 If a single request exceeds the allowed OpenAI token limit by itself, that item is marked as a permanent item failure instead of aborting the whole run.
 

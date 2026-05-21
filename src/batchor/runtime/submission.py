@@ -487,7 +487,7 @@ def submission_claim_limit(config: Any) -> int:
         Claim limit used for one submission cycle.
     """
     max_requests = int(config.chunk_policy.max_requests)
-    return max(1, min(max_requests * 4, 8_192))
+    return max(1, min(max_requests * 5, 8_192))
 
 
 def inflight_budget_for_provider(provider_config: Any) -> int | None:

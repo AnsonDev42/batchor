@@ -420,6 +420,7 @@ def test_transient_poll_failures_do_not_block_new_submissions(tmp_path: Path) ->
                 BatchItem(item_id="row3", payload="c"),
                 BatchItem(item_id="row4", payload="d"),
                 BatchItem(item_id="row5", payload="e"),
+                BatchItem(item_id="row6", payload="f"),
             ],
             build_prompt=lambda item: PromptParts(prompt=item.payload),
             provider_config=OpenAIProviderConfig(
@@ -437,14 +438,47 @@ def test_transient_poll_failures_do_not_block_new_submissions(tmp_path: Path) ->
         )
     )
 
-    assert provider.created_batches == ["batch_0", "batch_1", "batch_2", "batch_3"]
+    assert provider.created_batches == ["batch_0", "batch_1", "batch_2", "batch_3", "batch_4"]
 
     run.refresh()
 
-    assert provider.created_batches == ["batch_0", "batch_1", "batch_2", "batch_3", "batch_4"]
+    assert provider.created_batches == ["batch_0", "batch_1", "batch_2", "batch_3", "batch_4", "batch_5"]
     summary = run.summary()
-    assert summary.completed_items == 3
+    assert summary.completed_items == 4
     assert summary.status_counts[ItemStatus.SUBMITTED] == 2
+
+
+def test_wait_keeps_draining_after_progress_without_idle_sleep(tmp_path: Path) -> None:
+    clock = _FakeClock()
+    provider = _FakeBatchProvider(record_factory=lambda custom_id: _success_record(f"text:{custom_id}"))
+    runner = BatchRunner(
+        storage=MemoryStateStore(now=clock.now),
+        provider_factory=lambda _cfg: provider,
+        sleep=clock.sleep,
+        temp_root=tmp_path,
+    )
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[BatchItem(item_id=f"row{index}", payload="x") for index in range(12)],
+            build_prompt=lambda item: PromptParts(prompt=item.payload),
+            provider_config=OpenAIProviderConfig(
+                api_key="k",
+                model="gpt-4.1",
+                poll_interval_sec=1.0,
+                enqueue_limits=OpenAIEnqueueLimitConfig(
+                    enqueued_token_limit=5,
+                    target_ratio=1.0,
+                    headroom=0,
+                    max_batch_enqueued_tokens=1,
+                ),
+            ),
+            chunk_policy=ChunkPolicy(max_requests=1, max_file_bytes=1024),
+        )
+    )
+
+    assert run.status is RunLifecycleStatus.COMPLETED
+    assert len(provider.created_batches) == 12
+    assert clock.sleeps == []
 
 
 def test_pause_blocks_polling_and_wait_raises_paused_error(tmp_path: Path) -> None:

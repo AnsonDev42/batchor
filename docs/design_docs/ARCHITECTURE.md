@@ -142,6 +142,8 @@ Internally that expands to:
 9. Download output/error files.
 10. Parse terminal item results back into the state store.
 
+When a caller uses `Run.wait()`, the runtime repeats that poll-and-submit pass until the run is terminal. A pass that changes durable work state, such as consuming completed batches or submitting more items, immediately triggers the next pass rather than sleeping for the configured poll interval.
+
 ## Execution Sequence
 
 ```mermaid
