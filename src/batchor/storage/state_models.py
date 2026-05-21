@@ -462,12 +462,15 @@ class StateStore(ABC):
         *,
         run_id: str,
         control_state: RunControlState,
+        control_reason: str | None = None,
     ) -> None:
         """Persist a new operator control state for a run.
 
         Args:
             run_id: Run identifier.
             control_state: The new control state to set.
+            control_reason: Optional machine-readable reason for the control
+                state. Cleared by callers when returning to ``RUNNING``.
         """
         ...
 

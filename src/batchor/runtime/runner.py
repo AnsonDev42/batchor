@@ -221,6 +221,7 @@ class BatchRunner:
         self.state.set_run_control_state(
             run_id=run_id,
             control_state=RunControlState.PAUSED,
+            control_reason="manual",
         )
         return self.get_run(run_id)
 
@@ -242,6 +243,7 @@ class BatchRunner:
         self.state.set_run_control_state(
             run_id=run_id,
             control_state=RunControlState.RUNNING,
+            control_reason=None,
         )
         return self.get_run(run_id)
 
@@ -257,6 +259,7 @@ class BatchRunner:
         self.state.set_run_control_state(
             run_id=run_id,
             control_state=RunControlState.CANCEL_REQUESTED,
+            control_reason=None,
         )
         return self.get_run(run_id)
 

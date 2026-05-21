@@ -152,16 +152,21 @@ Control-plane failures:
 - batch submit failures can trigger batch-level backoff
 - transient poll failures do not stall unrelated submissions when other capacity remains
 - resume honors existing batch backoff before materializing more source rows
+- OpenAI 429 insufficient-quota or billing exhaustion during upload/create/polling auto-pauses the run with `control_reason="openai_insufficient_quota"` instead of continuing through the backlog
+- batch-level terminal insufficient-quota failures also auto-pause after submitted rows are reset to pending
 
 Item-level failures:
 
 - structured-output parse failures consume attempts
 - validation failures consume attempts
 - oversized requests become permanent item failures
+- item-level insufficient-quota records inside completed batch output are retryable without consuming attempts
+- row-level insufficient-quota records emit `openai_insufficient_quota` failure telemetry and record retry backoff before resubmission instead of pausing the whole run
 
 Cleanup behavior:
 
 - if upload succeeds but batch creation fails, `batchor` makes a best-effort attempt to delete the uploaded OpenAI input file
+- if upload or batch creation fails because OpenAI reports insufficient quota, local queued items are released back to pending before the run is paused
 - if a process dies after local artifact persistence but before durable batch registration, fresh-process resume requeues those items and resubmits from persisted request artifacts
 
 ## Run control
@@ -171,6 +176,8 @@ Run control is local control-plane state, not a separate OpenAI provider feature
 - `pause` stops new ingestion, new submission, and provider polling
 - `resume` restarts those local activities
 - `cancel` stops new ingestion/submission, continues polling already-submitted batches, and then marks any remaining local non-terminal items as `run_cancelled`
+- automatic quota pause uses the same `paused` control state as manual pause for control-plane and batch-level quota failures, but records `control_reason="openai_insufficient_quota"` so operators can tell why `wait()` exited
+- automatic quota pause is ignored once `cancel_requested` is set, because cancellation is not reversible
 
 Provider-side remote batch cancellation is not implemented in v1.
 

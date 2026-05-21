@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
 
-from sqlalchemy import and_, create_engine, select, text, update
+from sqlalchemy import and_, create_engine, inspect, select, text, update
 from sqlalchemy.engine import Engine
 
 from batchor.core.enums import ItemStatus
@@ -19,6 +19,7 @@ from batchor.storage.sqlite_results import SQLiteResultsMixin
 from batchor.storage.sqlite_schema import (
     ITEMS_TABLE,
     METADATA,
+    RUNS_TABLE,
     SQLITE_SCHEMA_VERSION,
     STORAGE_METADATA_TABLE,
 )
@@ -74,6 +75,11 @@ class PostgresStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin
 
     def _ensure_schema(self) -> None:
         with self.engine.begin() as conn:
+            run_columns = {
+                str(column["name"]) for column in inspect(conn).get_columns(RUNS_TABLE.name, schema=self.schema)
+            }
+            if "control_reason" not in run_columns:
+                conn.execute(text(f'ALTER TABLE "{self.schema}"."runs" ADD COLUMN control_reason VARCHAR'))
             existing_schema_row = conn.execute(
                 select(STORAGE_METADATA_TABLE.c.value).where(STORAGE_METADATA_TABLE.c.key == "schema_version")
             ).first()

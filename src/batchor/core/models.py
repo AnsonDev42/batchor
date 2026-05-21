@@ -525,6 +525,9 @@ class RunSummary:
         active_batches: Number of provider batches currently in-flight.
         backoff_remaining_sec: Seconds until the next submission attempt is
             permitted (``0.0`` when not in backoff).
+        control_reason: Optional machine-readable reason for the current
+            control state, e.g. ``"manual"`` or
+            ``"openai_insufficient_quota"``.
     """
 
     run_id: str
@@ -536,6 +539,7 @@ class RunSummary:
     status_counts: dict[ItemStatus, int]
     active_batches: int
     backoff_remaining_sec: float
+    control_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -578,6 +582,8 @@ class RunSnapshot:
         status_counts: Full per-status item count breakdown.
         active_batches: Number of provider batches currently in-flight.
         backoff_remaining_sec: Seconds until the next submission is permitted.
+        control_reason: Optional machine-readable reason for the current
+            control state.
         items: All terminal item results available at query time.
     """
 
@@ -591,6 +597,7 @@ class RunSnapshot:
     active_batches: int
     backoff_remaining_sec: float
     items: list[BatchResultItem]
+    control_reason: str | None = None
 
 
 @dataclass(frozen=True)

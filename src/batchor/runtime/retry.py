@@ -21,10 +21,14 @@ def classify_batch_error(error: object) -> str:
 
         * ``"enqueue_token_limit"`` — the account's enqueued-token budget was
           exceeded.
+        * ``"openai_insufficient_quota"`` — the OpenAI account has exhausted
+          quota, billing credits, or a configured spend limit.
         * ``"control_plane_transient"`` — a retryable transient error such as
           a rate limit or timeout.
         * ``"batch_error"`` — a non-retryable or unrecognised error.
     """
+    if is_insufficient_quota_error(error):
+        return "openai_insufficient_quota"
     if is_enqueue_token_limit_error(error):
         return "enqueue_token_limit"
     if is_retryable_batch_control_plane_error(error):
@@ -101,6 +105,8 @@ def is_retryable_batch_control_plane_error(error: Any) -> bool:
     """
     if is_enqueue_token_limit_error(error):
         return True
+    if is_insufficient_quota_error(error):
+        return True
     class_name = type(error).__name__.lower()
     if any(
         name in class_name
@@ -132,6 +138,59 @@ def is_retryable_batch_control_plane_error(error: Any) -> bool:
     return False
 
 
+def is_insufficient_quota_error(error: Any) -> bool:
+    """Return ``True`` if *error* indicates exhausted OpenAI quota or billing.
+
+    OpenAI reports both ordinary rate limiting and quota exhaustion as 429s.
+    Ordinary rate limits remain retryable with backoff, but insufficient quota
+    should pause the run because retrying immediately cannot make progress.
+    """
+    has_429 = _has_status_code(error, 429)
+    for message in _iter_error_messages(error):
+        normalized = " ".join(message.lower().replace("-", "_").split())
+        if "insufficient_quota" in normalized:
+            return True
+        if has_429 and (
+            "exceeded your current quota" in normalized
+            or "current quota" in normalized
+            or "billing" in normalized
+            or "credits" in normalized
+            or "buy more credits" in normalized
+            or "monthly spend" in normalized
+            or "spend limit" in normalized
+            or ("quota" in normalized and "plan" in normalized)
+        ):
+            return True
+    return False
+
+
+def _has_status_code(error: Any, status_code: int) -> bool:
+    if error is None:
+        return False
+    if isinstance(error, BaseException):
+        if getattr(error, "status_code", None) == status_code:
+            return True
+        for arg in getattr(error, "args", ()):
+            if _has_status_code(arg, status_code):
+                return True
+        body = getattr(error, "body", None)
+        if _has_status_code(body, status_code):
+            return True
+        response = getattr(error, "response", None)
+        return _has_status_code(response, status_code)
+    if isinstance(error, dict):
+        for key in ("status_code", "status", "code"):
+            value = error.get(key)
+            if isinstance(value, int) and value == status_code:
+                return True
+            if isinstance(value, str) and value.isdigit() and int(value) == status_code:
+                return True
+        return any(_has_status_code(value, status_code) for value in error.values())
+    if isinstance(error, (list, tuple, set)):
+        return any(_has_status_code(item, status_code) for item in error)
+    return getattr(error, "status_code", None) == status_code
+
+
 def _iter_error_messages(error: Any) -> Iterable[str]:
     """Recursively yield text fragments from an arbitrary error value.
 
@@ -155,6 +214,10 @@ def _iter_error_messages(error: Any) -> Iterable[str]:
         body = getattr(error, "body", None)
         if body is not None:
             yield from _iter_error_messages(body)
+        for attr in ("code", "type", "param"):
+            value = getattr(error, attr, None)
+            if value is not None:
+                yield from _iter_error_messages(value)
         response = getattr(error, "response", None)
         if response is not None:
             yield from _iter_error_messages(response)

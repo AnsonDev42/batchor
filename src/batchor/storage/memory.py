@@ -80,6 +80,7 @@ class _StoredRun:
     config: PersistedRunConfig
     status: RunLifecycleStatus = RunLifecycleStatus.RUNNING
     control_state: RunControlState = RunControlState.RUNNING
+    control_reason: str | None = None
     item_ids: list[str] = field(default_factory=list)
     items: dict[str, _StoredItem] = field(default_factory=dict)
     batches: dict[str, _StoredBatch] = field(default_factory=dict)
@@ -211,9 +212,11 @@ class MemoryStateStore(StateStore):
         *,
         run_id: str,
         control_state: RunControlState,
+        control_reason: str | None = None,
     ) -> None:
         run = self._get_run(run_id)
         run.control_state = control_state
+        run.control_reason = control_reason
         self._refresh_run_status(run)
 
     def claim_items_for_submission(
@@ -613,6 +616,7 @@ class MemoryStateStore(StateStore):
             run_id=run_id,
             status=run.status,
             control_state=run.control_state,
+            control_reason=run.control_reason,
             total_items=len(run.item_ids),
             completed_items=status_counts.get(ItemStatus.COMPLETED, 0),
             failed_items=status_counts.get(ItemStatus.FAILED_PERMANENT, 0),
