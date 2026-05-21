@@ -138,7 +138,10 @@ def ingest_job_items(
             break
         deps.submit_pending_items(run_id, context)
         control_state = deps.state.get_run_control_state(run_id=run_id)
-        if control_state is not RunControlState.RUNNING:
+        if control_state is RunControlState.CANCEL_REQUESTED:
+            ingestion_complete = False
+            break
+        if checkpointed and control_state is not RunControlState.RUNNING:
             ingestion_complete = False
             break
     if checkpointed:

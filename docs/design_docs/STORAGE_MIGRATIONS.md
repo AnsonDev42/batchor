@@ -7,7 +7,8 @@ This document describes the current SQLite schema-versioning story for `batchor`
 - SQLite remains the default durable backend
 - the SQLite schema is additive and self-healing for supported columns/tables
 - storage metadata now persists a `schema_version`
-- the current published schema version is `1`
+- the current published schema version is `4`
+- schema version `4` adds the nullable `runs.control_reason` column for durable pause reasons
 
 ## Compatibility Rules
 

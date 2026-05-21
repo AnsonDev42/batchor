@@ -134,6 +134,8 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
             run_columns = {str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(runs)").fetchall()}
             if "control_state" not in run_columns:
                 conn.exec_driver_sql("ALTER TABLE runs ADD COLUMN control_state TEXT NOT NULL DEFAULT 'running'")
+            if "control_reason" not in run_columns:
+                conn.exec_driver_sql("ALTER TABLE runs ADD COLUMN control_reason TEXT")
             if "artifact_policy_json" not in run_columns:
                 conn.exec_driver_sql(
                     "ALTER TABLE runs ADD COLUMN artifact_policy_json TEXT NOT NULL DEFAULT '{\"persist_raw_output_artifacts\": true}'"
@@ -309,6 +311,7 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
             run_id=run_id,
             status=status,
             control_state=control_state,
+            control_reason=_nullable_str(run_row["control_reason"]),
             total_items=total_items,
             completed_items=status_counts.get(ItemStatus.COMPLETED, 0),
             failed_items=failed_items,

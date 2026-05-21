@@ -11,6 +11,7 @@ from batchor import (
     OpenAIEnqueueLimitConfig,
     OpenAIProviderConfig,
     ProviderKind,
+    RunControlState,
     SQLiteStorage,
 )
 from batchor.core.models import ChunkPolicy, RetryPolicy
@@ -129,6 +130,14 @@ def test_storage_contract_claim_release_requeue_and_retry_state(storage) -> None
     assert backoff.backoff_sec == 1.0
     storage.clear_batch_retry_backoff(run_id="run_1")
     assert storage.get_batch_retry_backoff_remaining_sec(run_id="run_1") == 0.0
+    storage.set_run_control_state(
+        run_id="run_1",
+        control_state=RunControlState.PAUSED,
+        control_reason="openai_insufficient_quota",
+    )
+    summary = storage.get_run_summary(run_id="run_1")
+    assert summary.control_state is RunControlState.PAUSED
+    assert summary.control_reason == "openai_insufficient_quota"
 
 
 def test_storage_contract_artifact_pointers_and_summary_rehydration(storage) -> None:

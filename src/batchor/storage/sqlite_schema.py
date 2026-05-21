@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Float, Index, Integer, MetaData, String, Table, Text
 
 METADATA = MetaData()
-SQLITE_SCHEMA_VERSION = 3
+SQLITE_SCHEMA_VERSION = 4
 
 STORAGE_METADATA_TABLE = Table(
     "storage_metadata",
@@ -16,6 +16,7 @@ RUNS_TABLE = Table(
     Column("run_id", String, primary_key=True),
     Column("status", String, nullable=False),
     Column("control_state", String, nullable=False),
+    Column("control_reason", String, nullable=True),
     Column("created_at", String, nullable=False),
     Column("provider_config_json", Text, nullable=False),
     Column("chunk_policy_json", Text, nullable=False),
