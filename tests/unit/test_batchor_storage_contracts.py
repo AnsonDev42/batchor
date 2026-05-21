@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import text
 
 from batchor import (
+    MemoryStateStore,
     OpenAIEnqueueLimitConfig,
     OpenAIProviderConfig,
     ProviderKind,
@@ -65,13 +66,17 @@ def _items() -> list[MaterializedItem]:
 
 
 _POSTGRES_DSN = os.getenv("BATCHOR_TEST_POSTGRES_DSN", "")
-_STORAGE_BACKENDS = ["sqlite"]
+_STORAGE_BACKENDS = ["memory", "sqlite"]
 if _POSTGRES_DSN:
     _STORAGE_BACKENDS.append("postgres")
 
 
 @pytest.fixture(params=_STORAGE_BACKENDS)
 def storage(request: pytest.FixtureRequest, tmp_path: Path):
+    if request.param == "memory":
+        yield MemoryStateStore()
+        return
+
     if request.param == "sqlite":
         store = SQLiteStorage(path=tmp_path / "contract.sqlite3")
         try:
@@ -138,6 +143,62 @@ def test_storage_contract_claim_release_requeue_and_retry_state(storage) -> None
     summary = storage.get_run_summary(run_id="run_1")
     assert summary.control_state is RunControlState.PAUSED
     assert summary.control_reason == "openai_insufficient_quota"
+
+
+def test_storage_contract_ingest_checkpoint_tolerates_only_exact_replay(storage) -> None:
+    storage.create_run(run_id="run_replay", config=_config(), items=_items()[:1])
+    storage.set_ingest_checkpoint(
+        run_id="run_replay",
+        checkpoint=IngestCheckpoint(
+            source_kind="jsonl",
+            source_ref="items.jsonl",
+            source_fingerprint="abc",
+        ),
+    )
+
+    storage.append_items_with_ingest_checkpoint(
+        run_id="run_replay",
+        items=_items()[:1],
+        next_item_index=1,
+        checkpoint_payload=1,
+        ingestion_complete=False,
+    )
+    checkpoint = storage.get_ingest_checkpoint(run_id="run_replay")
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1
+    assert [record.item_id for record in storage.get_item_records(run_id="run_replay")] == ["row1"]
+
+    with pytest.raises(ValueError, match="duplicate item_id: row1"):
+        storage.append_items_with_ingest_checkpoint(
+            run_id="run_replay",
+            items=_items()[:1],
+            next_item_index=2,
+            checkpoint_payload=2,
+            ingestion_complete=False,
+        )
+    checkpoint = storage.get_ingest_checkpoint(run_id="run_replay")
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1
+
+    with pytest.raises(ValueError, match="duplicate item_id: row1"):
+        storage.append_items_with_ingest_checkpoint(
+            run_id="run_replay",
+            items=[
+                MaterializedItem(
+                    item_id="row1",
+                    item_index=1,
+                    payload={"text": "different"},
+                    metadata={"source": "different"},
+                    prompt="different prompt",
+                )
+            ],
+            next_item_index=2,
+            checkpoint_payload=2,
+            ingestion_complete=False,
+        )
+    checkpoint = storage.get_ingest_checkpoint(run_id="run_replay")
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1
 
 
 def test_storage_contract_artifact_pointers_and_summary_rehydration(storage) -> None:
