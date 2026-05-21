@@ -248,6 +248,41 @@ class _ControlledBatchProvider(_FakeBatchProvider):
         }
 
 
+class _ResumeQuotaFailureBatchProvider(_FakeBatchProvider):
+    def __init__(
+        self,
+        *,
+        record_factory: Callable[[str], dict[str, object] | None],
+    ) -> None:
+        super().__init__(record_factory=record_factory)
+        self.fail_active_batches = False
+        self.polled_batches: list[str] = []
+
+    def get_batch(self, batch_id: str) -> dict[str, object]:
+        self.polled_batches.append(batch_id)
+        if not self.fail_active_batches:
+            return {
+                "id": batch_id,
+                "status": "submitted",
+                "output_file_id": None,
+                "error_file_id": None,
+            }
+        return {
+            "id": batch_id,
+            "status": "failed",
+            "output_file_id": None,
+            "error_file_id": None,
+            "errors": {
+                "data": [
+                    {
+                        "code": "insufficient_quota",
+                        "message": "quota exhausted",
+                    }
+                ]
+            },
+        }
+
+
 def test_sqlite_subprocess_resume_retries_from_persisted_request_artifact(
     tmp_path: Path,
 ) -> None:
@@ -1463,6 +1498,80 @@ def test_composite_item_source_namespaces_duplicate_ids_across_sources(
     assert [result.output.label if result.output is not None else None for result in results] == [
         result.item_id for result in results
     ]
+
+
+def test_resume_polls_active_batches_before_materializing_more_source(tmp_path: Path) -> None:
+    path = tmp_path / "items.jsonl"
+    records = [{"id": f"row{i}", "text": f"text-{i}"} for i in range(1002)]
+    path.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+    source = JsonlItemSource(
+        path,
+        item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+        payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+    )
+    provider = _ResumeQuotaFailureBatchProvider(
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
+    )
+    storage = SQLiteStorage(path=tmp_path / "resume_poll_first.sqlite3")
+    runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+    )
+    run_id = "resume_poll_first"
+
+    def crash_after_first_chunk(item: BatchItem[dict[str, str]]) -> PromptParts:
+        if item.item_id == "row1000":
+            raise RuntimeError("simulated crash after first materialized chunk")
+        return PromptParts(prompt=item.payload["text"])
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        runner.start(
+            BatchJob(
+                items=source,
+                build_prompt=crash_after_first_chunk,
+                structured_output=ClassificationResult,
+                provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+                retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=10.0, max_backoff_sec=10.0),
+            ),
+            run_id=run_id,
+        )
+
+    assert provider.created_batches == ["batch_0"]
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1000
+    assert checkpoint.ingestion_complete is False
+
+    provider.fail_active_batches = True
+
+    def fail_if_materialized(item: BatchItem[dict[str, str]]) -> PromptParts:
+        raise AssertionError(f"resume materialized before polling old batch: {item.item_id}")
+
+    resumed = runner.start(
+        BatchJob(
+            items=source,
+            build_prompt=fail_if_materialized,
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+            retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=10.0, max_backoff_sec=10.0),
+        ),
+        run_id=run_id,
+    )
+
+    assert resumed.run_id == run_id
+    assert provider.polled_batches == ["batch_0"]
+    assert provider.created_batches == ["batch_0"]
+    summary = resumed.summary()
+    assert summary.control_state is RunControlState.PAUSED
+    assert summary.control_reason == "openai_insufficient_quota"
+    assert summary.status_counts[ItemStatus.PENDING] == 1000
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1000
+    assert checkpoint.ingestion_complete is False
 
 
 def test_start_with_same_run_id_resumes_incomplete_jsonl_ingestion(tmp_path: Path) -> None:

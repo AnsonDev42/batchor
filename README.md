@@ -75,6 +75,7 @@ Durability is split on purpose:
 - the artifact store keeps replayable request JSONL and downloaded raw batch payloads
 
 That split is what allows retries and fresh-process resume without keeping every request inline in the control-plane store.
+On resume, existing active provider batches are polled before `batchor` materializes or submits new local work, so completed batches and retry backoff are reconciled first. Deterministic sources also use stored checkpoint completion metadata to avoid opening a fully materialized Parquet or composite source just to discover there are no rows left.
 
 ## Architecture
 

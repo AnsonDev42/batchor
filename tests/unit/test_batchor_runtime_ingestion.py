@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from batchor import (
     OpenAIProviderConfig,
     PromptParts,
 )
+from batchor.core.types import JSONValue
 from batchor.runtime.context import build_persisted_config, build_run_context
 from batchor.runtime.ingestion import (
     IngestionDeps,
@@ -20,11 +22,53 @@ from batchor.runtime.ingestion import (
     resume_existing_run,
     validate_checkpoint_source,
 )
+from batchor.sources.base import CheckpointedBatchItem, CheckpointedItemSource, SourceIdentity
 from batchor.storage.state import IngestCheckpoint, MaterializedItem
 
 
 class _NoopProvider:
     pass
+
+
+class _CompleteCheckpointSource(CheckpointedItemSource[dict[str, str]]):
+    def source_identity(self) -> SourceIdentity:
+        return SourceIdentity(
+            source_kind="complete",
+            source_ref="complete-source",
+            source_fingerprint="fingerprint-complete",
+        )
+
+    def initial_checkpoint(self) -> JSONValue:
+        return {"done": False}
+
+    def checkpoint_is_complete(self, checkpoint: JSONValue) -> bool:
+        return checkpoint == {"done": True}
+
+    def iter_from_checkpoint(
+        self,
+        checkpoint: JSONValue,
+    ) -> Iterator[CheckpointedBatchItem[dict[str, str]]]:
+        raise AssertionError(f"completed checkpoint should not be materialized: {checkpoint}")
+        yield from ()  # pragma: no cover
+
+
+class _ExplodingSource(CheckpointedItemSource[dict[str, str]]):
+    def source_identity(self) -> SourceIdentity:
+        return SourceIdentity(
+            source_kind="exploding",
+            source_ref="exploding-source",
+            source_fingerprint="fingerprint-exploding",
+        )
+
+    def initial_checkpoint(self) -> JSONValue:
+        return 0
+
+    def iter_from_checkpoint(
+        self,
+        checkpoint: JSONValue,
+    ) -> Iterator[CheckpointedBatchItem[dict[str, str]]]:
+        raise AssertionError(f"source should not be materialized before old batches are reconciled: {checkpoint}")
+        yield from ()  # pragma: no cover
 
 
 def test_materialize_item_chunks_rejects_duplicate_item_ids() -> None:
@@ -150,6 +194,139 @@ def test_resume_existing_run_continues_from_checkpointed_jsonl_source(tmp_path: 
     assert checkpoint.next_item_index == 2
     assert checkpoint.ingestion_complete is True
     assert submitted_runs == [run_id]
+
+
+def test_resume_existing_run_marks_complete_checkpoint_without_materializing() -> None:
+    source = _CompleteCheckpointSource()
+    job = BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    submitted_runs: list[str] = []
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda *args, **kwargs: None,
+        submit_pending_items=lambda run_id, context: submitted_runs.append(run_id) or 0,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+    )
+    context = build_run_context(
+        config=config,
+        output_model=None,
+        create_provider=lambda _cfg: _NoopProvider(),
+    )
+    run_id = "resume_complete_checkpoint_run"
+    storage.create_run(
+        run_id=run_id,
+        config=config,
+        items=[
+            MaterializedItem(
+                item_id="row0",
+                item_index=0,
+                payload={"text": "done"},
+                metadata={},
+                prompt="done",
+            )
+        ],
+    )
+    identity = source.source_identity()
+    storage.set_ingest_checkpoint(
+        run_id=run_id,
+        checkpoint=IngestCheckpoint(
+            source_kind=identity.source_kind,
+            source_ref=identity.source_ref,
+            source_fingerprint=identity.source_fingerprint,
+            next_item_index=1,
+            checkpoint_payload={"done": True},
+            ingestion_complete=False,
+        ),
+    )
+
+    resume_existing_run(
+        deps,
+        run_id=run_id,
+        job=job,
+        config=config,
+        context=context,
+    )
+
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.ingestion_complete is True
+    assert submitted_runs == [run_id]
+
+
+def test_resume_existing_run_polls_active_batches_before_materializing() -> None:
+    source = _ExplodingSource()
+    job = BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    poll_calls: list[str] = []
+    submitted_runs: list[str] = []
+
+    def poll_and_backoff(run_id: str, context: object) -> None:
+        del context
+        poll_calls.append(run_id)
+        storage.record_batch_retry_failure(
+            run_id=run_id,
+            error_class="enqueue_token_limit",
+            base_delay_sec=10.0,
+            max_delay_sec=10.0,
+        )
+
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda *args, **kwargs: None,
+        submit_pending_items=lambda run_id, context: submitted_runs.append(run_id) or 0,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+        poll_active_batches=poll_and_backoff,
+    )
+    context = build_run_context(
+        config=config,
+        output_model=None,
+        create_provider=lambda _cfg: _NoopProvider(),
+    )
+    run_id = "resume_poll_first_run"
+    storage.create_run(run_id=run_id, config=config, items=[])
+    identity = source.source_identity()
+    storage.set_ingest_checkpoint(
+        run_id=run_id,
+        checkpoint=IngestCheckpoint(
+            source_kind=identity.source_kind,
+            source_ref=identity.source_ref,
+            source_fingerprint=identity.source_fingerprint,
+            next_item_index=0,
+            checkpoint_payload=0,
+            ingestion_complete=False,
+        ),
+    )
+    storage.register_batch(
+        run_id=run_id,
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="submitted",
+        custom_ids=[],
+    )
+
+    resume_existing_run(
+        deps,
+        run_id=run_id,
+        job=job,
+        config=config,
+        context=context,
+    )
+
+    assert poll_calls == [run_id]
+    assert submitted_runs == []
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.ingestion_complete is False
 
 
 # ---------------------------------------------------------------------------

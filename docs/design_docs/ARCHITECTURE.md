@@ -133,13 +133,14 @@ Internally that expands to:
 
 1. Resolve provider and storage implementations.
 2. Persist run config and ingest items into durable state.
-3. Claim a bounded submission window from pending items.
-4. Build or replay request JSONL rows.
-5. Persist request artifacts before upload.
-6. Submit one or more OpenAI batch files.
-7. Poll active batches.
-8. Download output/error files.
-9. Parse terminal item results back into the state store.
+3. On resume, poll any already-active provider batches before ingesting or submitting new work.
+4. Claim a bounded submission window from pending items.
+5. Build or replay request JSONL rows.
+6. Persist request artifacts before upload.
+7. Submit one or more OpenAI batch files.
+8. Poll active batches.
+9. Download output/error files.
+10. Parse terminal item results back into the state store.
 
 ## Execution Sequence
 

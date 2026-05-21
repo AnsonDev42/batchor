@@ -31,6 +31,7 @@ uv run pytest -q
 This path uses the default pytest configuration, which:
 
 - runs in parallel
+- collects this package's `tests/` directory by default, so local reference checkouts are not treated as part of the smoke suite
 - enforces strict pytest config/marker handling
 - enforces the `85%` coverage gate
 
@@ -77,6 +78,7 @@ Expected:
 - composite deterministic sources can namespace duplicate row IDs across explicit inputs and resume across source boundaries
 - Parquet source adapters can resume from opaque checkpoints and project only required columns
 - retry/resume from persisted request artifacts still works for SQLite-backed runs
+- resumed runs reconcile existing active batches and persisted backoff before materializing more source rows
 - transient batch-poll failures do not block unrelated pending submissions from being sent when capacity remains
 - paused runs stop polling/submission until resumed
 - OpenAI control-plane and batch-level insufficient-quota provider failures auto-pause with a durable `control_reason` and do not consume item attempts

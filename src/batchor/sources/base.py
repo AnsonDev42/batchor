@@ -125,6 +125,16 @@ class CheckpointedItemSource(ItemSource[PayloadT], Generic[PayloadT]):
             :class:`CheckpointedBatchItem` instances in source order.
         """
 
+    def checkpoint_is_complete(self, checkpoint: JSONValue) -> bool:
+        """Return whether *checkpoint* is known to be at the end of the source.
+
+        Implementations can override this when they can answer from cheap
+        metadata. The default is conservative because arbitrary checkpoint
+        payloads may not encode source length.
+        """
+        del checkpoint
+        return False
+
     def __iter__(self) -> Iterator[BatchItem[PayloadT]]:
         for checkpointed_item in self.iter_from_checkpoint(self.initial_checkpoint()):
             yield checkpointed_item.item

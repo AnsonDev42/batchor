@@ -166,6 +166,7 @@ Successful rehydration depends on:
 - credentials being available when a refresh needs to talk to the provider
 
 Fresh-process resume also requeues any `queued_local` items back to `pending` before submission resumes.
+When `start(job, run_id=...)` resumes a run with active provider batches, it first performs a poll-only reconciliation pass. Terminal provider batches are consumed, failed batches update retry backoff, and any active backoff prevents new source materialization or submission until the backoff expires.
 
 Resume compatibility intentionally ignores non-persisted secret fields such as provider API keys.
 
@@ -178,6 +179,8 @@ Built-in deterministic sources currently include:
 - `CsvItemSource`
 - `JsonlItemSource`
 - `ParquetItemSource`
+
+For checkpointed ingestion, durable stores append materialized item chunks and advance the ingest checkpoint in one storage operation. Parquet and composite sources can also identify an end-of-source checkpoint from cheap metadata, so a resume after all rows were materialized but before the final completion flag was written can mark ingestion complete without re-reading the source data or re-rendering prompts.
 
 Once an item has a durable request artifact pointer, `batchor` prunes large inline request-building fields from the control-plane store and relies on the artifact for later retries.
 

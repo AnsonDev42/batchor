@@ -288,3 +288,19 @@ class ParquetItemSource(CheckpointedItemSource[PayloadT], Generic[PayloadT]):
                         ),
                     ),
                 )
+
+    def checkpoint_is_complete(self, checkpoint: JSONValue) -> bool:
+        """Return whether a Parquet checkpoint points beyond the last row group."""
+        if not isinstance(checkpoint, dict):
+            return False
+        row_group_index = checkpoint.get("row_group_index", 0)
+        row_index_within_group = checkpoint.get("row_index_within_group", 0)
+        if not isinstance(row_group_index, int) or not isinstance(row_index_within_group, int):
+            return False
+        if row_group_index < 0 or row_index_within_group < 0:
+            return False
+
+        import pyarrow.parquet as pq
+
+        parquet_file = pq.ParquetFile(self.path)
+        return row_group_index >= parquet_file.num_row_groups

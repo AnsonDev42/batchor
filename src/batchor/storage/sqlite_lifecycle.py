@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from sqlalchemy import and_, bindparam, select, update
+from sqlalchemy.engine import RowMapping
 
 from batchor.core.enums import ItemStatus, RunControlState, RunLifecycleStatus
 from batchor.core.types import JSONValue
 from batchor.storage.sqlite_codec import (
+    _decode_json,
     _decode_object,
     _encode_datetime,
     _encode_json,
@@ -93,6 +95,72 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
             return
         with self.engine.begin() as conn:
             conn.execute(ITEMS_TABLE.insert(), self._item_rows(run_id=run_id, items=items))
+
+    def append_items_with_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        items: list[MaterializedItem],
+        next_item_index: int,
+        checkpoint_payload: JSONValue | None = None,
+        ingestion_complete: bool,
+    ) -> None:
+        rows = self._item_rows(run_id=run_id, items=items)
+        with self.engine.begin() as conn:
+            checkpoint_row = conn.execute(
+                select(RUN_INGEST_STATE_TABLE.c.next_item_index).where(RUN_INGEST_STATE_TABLE.c.run_id == run_id)
+            ).first()
+            if checkpoint_row is None:
+                raise ValueError(f"run has no ingest checkpoint: {run_id}")
+            checkpoint_next_item_index = int(checkpoint_row[0])
+            if rows:
+                item_ids = [str(row["item_id"]) for row in rows]
+                existing_by_id = {
+                    str(row["item_id"]): row
+                    for row in conn.execute(
+                        select(
+                            ITEMS_TABLE.c.item_id,
+                            ITEMS_TABLE.c.item_index,
+                            ITEMS_TABLE.c.payload_json,
+                            ITEMS_TABLE.c.metadata_json,
+                            ITEMS_TABLE.c.prompt,
+                            ITEMS_TABLE.c.system_prompt,
+                        ).where(
+                            and_(
+                                ITEMS_TABLE.c.run_id == run_id,
+                                ITEMS_TABLE.c.item_id.in_(item_ids),
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                }
+                rows_to_insert = []
+                for row in rows:
+                    item_id = str(row["item_id"])
+                    existing_row = existing_by_id.get(item_id)
+                    if existing_row is None:
+                        rows_to_insert.append(row)
+                        continue
+                    if not _materialized_row_matches_existing(
+                        row,
+                        existing_row,
+                        min_replay_item_index=checkpoint_next_item_index,
+                    ):
+                        raise ValueError(f"duplicate item_id: {item_id}")
+                if rows_to_insert:
+                    conn.execute(ITEMS_TABLE.insert(), rows_to_insert)
+            conn.execute(
+                update(RUN_INGEST_STATE_TABLE)
+                .where(RUN_INGEST_STATE_TABLE.c.run_id == run_id)
+                .values(
+                    next_item_index=next_item_index,
+                    checkpoint_payload_json=_encode_json(checkpoint_payload)
+                    if checkpoint_payload is not None
+                    else None,
+                    ingestion_complete=1 if ingestion_complete else 0,
+                )
+            )
 
     def set_ingest_checkpoint(
         self,
@@ -581,3 +649,23 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
                 run_id=run_id,
                 provider_batch_id=provider_batch_id,
             )
+
+
+def _materialized_row_matches_existing(
+    materialized: dict[str, object | None],
+    existing: RowMapping,
+    *,
+    min_replay_item_index: int,
+) -> bool:
+    materialized_index = materialized["item_index"]
+    if not isinstance(materialized_index, int):
+        return False
+    if materialized_index < min_replay_item_index:
+        return False
+    return (
+        int(existing["item_index"]) == materialized_index
+        and _decode_json(existing["payload_json"]) == _decode_json(materialized["payload_json"])
+        and _decode_json(existing["metadata_json"]) == _decode_json(materialized["metadata_json"])
+        and str(existing["prompt"]) == materialized["prompt"]
+        and _nullable_str(existing["system_prompt"]) == materialized["system_prompt"]
+    )

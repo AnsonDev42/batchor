@@ -151,6 +151,43 @@ class MemoryStateStore(StateStore):
             )
         self._refresh_run_status(run)
 
+    def append_items_with_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        items: list[MaterializedItem],
+        next_item_index: int,
+        checkpoint_payload: JSONValue | None = None,
+        ingestion_complete: bool,
+    ) -> None:
+        run = self._get_run(run_id)
+        checkpoint = run.ingest_checkpoint
+        if checkpoint is None:
+            raise ValueError(f"run has no ingest checkpoint: {run_id}")
+        items_to_append: list[MaterializedItem] = []
+        seen_ids: set[str] = set()
+        for item in sorted(items, key=lambda entry: entry.item_index):
+            if item.item_id in seen_ids:
+                raise ValueError(f"duplicate item_id: {item.item_id}")
+            seen_ids.add(item.item_id)
+            stored = run.items.get(item.item_id)
+            if stored is None:
+                items_to_append.append(item)
+                continue
+            if not _stored_item_matches_materialized(
+                stored,
+                item,
+                min_replay_item_index=checkpoint.next_item_index,
+            ):
+                raise ValueError(f"duplicate item_id: {item.item_id}")
+        self.append_items(run_id=run_id, items=items_to_append)
+        self.update_ingest_checkpoint(
+            run_id=run_id,
+            next_item_index=next_item_index,
+            checkpoint_payload=checkpoint_payload,
+            ingestion_complete=ingestion_complete,
+        )
+
     def set_ingest_checkpoint(
         self,
         *,
@@ -734,3 +771,19 @@ class MemoryStateStore(StateStore):
 
 def serialize_item_failure(error: ItemFailure) -> JSONObject:
     return asdict(error)
+
+
+def _stored_item_matches_materialized(
+    stored: _StoredItem,
+    materialized: MaterializedItem,
+    *,
+    min_replay_item_index: int,
+) -> bool:
+    return (
+        materialized.item_index >= min_replay_item_index
+        and stored.item_index == materialized.item_index
+        and stored.payload == materialized.payload
+        and stored.metadata == materialized.metadata
+        and stored.prompt == materialized.prompt
+        and stored.system_prompt == materialized.system_prompt
+    )

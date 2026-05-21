@@ -129,6 +129,10 @@ class CompositeItemSource(CheckpointedItemSource[PayloadT], Generic[PayloadT]):
                 )
                 current = next_item
 
+    def checkpoint_is_complete(self, checkpoint: JSONValue) -> bool:
+        source_index, child_checkpoint = self._parse_checkpoint(checkpoint)
+        return source_index == len(self.sources) and child_checkpoint is None
+
     def _parse_checkpoint(self, checkpoint: JSONValue) -> tuple[int, JSONValue | None]:
         if not isinstance(checkpoint, dict):
             raise TypeError("composite checkpoint must be a JSON object")

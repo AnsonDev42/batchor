@@ -55,6 +55,7 @@ Before request artifacts exist, built-in deterministic sources can resume ingest
 That currently includes CSV, JSONL, Parquet, and `CompositeItemSource` for ordered composition of checkpointed sources.
 When `CompositeItemSource` is used, child-source row IDs are auto-namespaced into run-unique `item_id` values, while the original row ID is preserved in lineage metadata.
 Custom non-file sources must implement a durable checkpoint contract explicitly; arbitrary iterables and live DB cursors are still `TBD`.
+Before resumed ingestion continues, active OpenAI batches are polled once. If that poll consumes terminal batches or records enqueue/backoff failures, those state changes are applied before any new prompt rendering, request replay, or submission happens.
 
 ## Raw output retention
 
@@ -150,6 +151,7 @@ Control-plane failures:
 - retryable control-plane failures do not consume item attempts
 - batch submit failures can trigger batch-level backoff
 - transient poll failures do not stall unrelated submissions when other capacity remains
+- resume honors existing batch backoff before materializing more source rows
 - OpenAI 429 insufficient-quota or billing exhaustion during upload/create/polling auto-pauses the run with `control_reason="openai_insufficient_quota"` instead of continuing through the backlog
 - batch-level terminal insufficient-quota failures also auto-pause after submitted rows are reset to pending
 
