@@ -238,6 +238,8 @@ run.wait()
 print(run.results()[0].output)
 ```
 
+While waiting, `batchor` polls active batches before submitting more work. If a refresh consumes a completed batch, records terminal item state, or submits another provider batch, `Run.wait()` immediately continues draining instead of sleeping for the next poll interval.
+
 Structured-output models are validated up front against the OpenAI strict-schema subset used by `batchor`.
 
 - root schema must be an object

@@ -126,6 +126,7 @@ class Run:
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
+            previous_summary = self._summary
             self.refresh()
             if self.is_finished:
                 return self
@@ -133,6 +134,8 @@ class Run:
                 raise RunPausedError(self.run_id, self._summary.control_reason)
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError(f"timed out waiting for run {self.run_id}")
+            if _summary_made_progress(previous_summary, self._summary):
+                continue
             context = self._runner._context_for_run(self.run_id)
             sleep_for = poll_interval if poll_interval is not None else context.config.provider_config.poll_interval_sec
             if self._summary.backoff_remaining_sec > 0:
@@ -304,3 +307,13 @@ class Run:
             append=append,
             limit=limit,
         )
+
+
+def _summary_made_progress(before: RunSummary, after: RunSummary) -> bool:
+    """Return whether a refresh changed durable work state enough to keep draining."""
+    return (
+        after.completed_items > before.completed_items
+        or after.failed_items > before.failed_items
+        or after.active_batches != before.active_batches
+        or after.status_counts != before.status_counts
+    )

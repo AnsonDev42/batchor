@@ -37,7 +37,7 @@ Important semantics:
 
 - `status` is cached from the last summary read or refresh
 - `refresh()` performs one poll-and-submit pass
-- `wait()` repeatedly refreshes until the run is terminal
+- `wait()` repeatedly refreshes until the run is terminal, and skips the poll-interval sleep after refreshes that complete items, fail items, or submit additional batches
 - `results()` and artifact lifecycle operations are terminal-only
 - terminal currently means either `completed` or `completed_with_failures`
 - `read_terminal_results()` and `export_terminal_results()` are incremental APIs for already-terminal items and are safe to call before the whole run finishes
