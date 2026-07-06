@@ -100,6 +100,7 @@ For structured outputs:
 - the result is validated through the declared Pydantic model
 
 Validation failures consume item attempts because they represent item-level response failure, not a transient provider control-plane problem.
+Successful submitted responses also consume one item attempt. A successful first provider response is exported with `attempt_count == 1`; a counted retryable item failure followed by success is exported with the total consumed attempts.
 
 ## Token estimation
 
@@ -159,6 +160,7 @@ Control-plane failures:
 
 Item-level failures:
 
+- successful submitted responses consume attempts
 - structured-output parse failures consume attempts
 - validation failures consume attempts
 - oversized requests become permanent item failures

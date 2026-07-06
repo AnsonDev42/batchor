@@ -497,6 +497,7 @@ class MemoryStateStore(StateStore):
         run = self._get_run(run_id)
         for completion in completions:
             item = self._item_for_custom_id(run, completion.custom_id)
+            item.attempt_count += 1
             item.status = ItemStatus.COMPLETED
             item.terminal_result_sequence = self._next_terminal_sequence(run)
             item.terminalized_at = self._now()

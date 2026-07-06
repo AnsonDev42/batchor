@@ -90,6 +90,7 @@ Expected:
 - raw output/error artifact persistence can be disabled without breaking parsed terminal results or request-artifact replay
 - terminal runs, including `completed_with_failures`, can prune request artifacts without losing persisted results
 - shared storage-contract behavior remains aligned across SQLite and opt-in Postgres
+- completed submitted items report consumed attempts consistently across storage backends
 - OpenAI request splitting and enqueue-limit logic still behave as expected
 - wait-mode refresh cycles keep draining immediately after poll/submission progress, without introducing idle poll sleeps while more local work can be sent
 - structured-output parsing remains stable

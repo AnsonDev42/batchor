@@ -49,6 +49,7 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                 output_json=bindparam("b_output_json"),
                 raw_response_json=bindparam("b_raw_response_json"),
                 error_json=None,
+                attempt_count=ITEMS_TABLE.c.attempt_count + 1,
                 active_batch_id=None,
                 active_custom_id=None,
                 active_submission_tokens=0,
