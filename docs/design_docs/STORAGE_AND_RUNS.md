@@ -114,12 +114,23 @@ For SQLite-backed runs, the default artifact root is a sibling `*_artifacts/` di
 ## Postgres behavior
 
 Postgres exists as an opt-in control-plane backend for cases where SQLite is not enough, such as shared state across processes or hosts.
+`PostgresStorage` uses psycopg v3. Plain `postgresql://` and `postgres://` DSNs are normalized to `postgresql+psycopg://` before engine creation; explicit SQLAlchemy driver schemes are preserved.
 
 Important operational rule:
 
 - if you use Postgres across machines or fresh processes, provide a shared artifact root explicitly
 
 Postgres stores the control plane, not the large request/output files themselves.
+
+## Attempt accounting
+
+Item `attempt_count` records consumed provider attempts.
+
+- Successful submitted completions increment the counter once.
+- Counted item-level provider or parse failures increment the counter before retry/permanent-failure decisions.
+- Local pre-submission rejections, control-plane quota pauses, batch-level reset-to-pending paths, and missing output rows marked with `count_attempt=False` do not increment it.
+
+This keeps terminal exports aligned with audit expectations: a first-attempt success reports `attempt_count == 1`, and a retryable counted failure followed by success reports `attempt_count == 2`.
 
 ## File-source checkpoints
 

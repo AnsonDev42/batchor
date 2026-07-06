@@ -228,7 +228,7 @@ stateDiagram-v2
     QUEUED_LOCAL --> FAILED_PERMANENT : rejected pre-submission (e.g. token budget exceeded, max attempts)
     QUEUED_LOCAL --> SUBMITTED : batch created and registered with provider
 
-    SUBMITTED --> COMPLETED : batch completed, result parsed OK
+    SUBMITTED --> COMPLETED : batch completed, result parsed OK — attempt consumed
     SUBMITTED --> FAILED_RETRYABLE : batch error / item error — attempt count below max
     SUBMITTED --> FAILED_PERMANENT : batch error / item error — attempt count reached max
 

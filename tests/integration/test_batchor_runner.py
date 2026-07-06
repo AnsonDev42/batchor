@@ -665,7 +665,7 @@ def test_item_level_insufficient_quota_retries_without_pausing_or_consuming_atte
     assert summary.control_state is RunControlState.RUNNING
     assert summary.control_reason is None
     assert [record.status for record in records] == [ItemStatus.COMPLETED] * 3
-    assert [record.attempt_count for record in records] == [0, 0, 0]
+    assert [record.attempt_count for record in records] == [1, 1, 1]
     assert "run_auto_paused" not in {event.event_type for event in events}
     assert any(sleep >= 1.0 for sleep in clock.sleeps)
     assert seen_counts == {"row1:a1": 2, "row2:a1": 2, "row3:a1": 2}
@@ -900,7 +900,7 @@ def test_missing_output_record_retries_without_consuming_attempt(tmp_path: Path)
     )
     result = run.results()[0]
     assert result.status is ItemStatus.COMPLETED
-    assert result.attempt_count == 0
+    assert result.attempt_count == 1
     assert seen_counts["row1:a1"] == 2
 
 
@@ -931,7 +931,7 @@ def test_enqueue_limit_create_failure_recovers_without_consuming_attempts(tmp_pa
     )
     result = run.results()[0]
     assert result.status is ItemStatus.COMPLETED
-    assert result.attempt_count == 0
+    assert result.attempt_count == 1
     assert any(sleep >= 1.0 for sleep in clock.sleeps)
     assert provider.deleted_files == ["file_0"]
 
@@ -1292,7 +1292,7 @@ def test_inflight_limit_defers_later_submissions_without_consuming_attempts(tmp_
         )
     )
     assert len(provider.created_batches) == 2
-    assert [result.attempt_count for result in run.results()] == [0, 0, 0]
+    assert [result.attempt_count for result in run.results()] == [1, 1, 1]
 
 
 def test_oversized_request_becomes_permanent_failure_instead_of_aborting_run(tmp_path: Path) -> None:
@@ -1326,6 +1326,7 @@ def test_oversized_request_becomes_permanent_failure_instead_of_aborting_run(tmp
     assert results[0].error.error_class == "openai_request_exceeds_batch_token_limit"
     assert results[0].attempt_count == 0
     assert results[1].status is ItemStatus.COMPLETED
+    assert results[1].attempt_count == 1
     assert len(provider.created_batches) == 1
 
 

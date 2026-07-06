@@ -15,12 +15,14 @@ from batchor import (
     RunControlState,
     SQLiteStorage,
 )
-from batchor.core.models import ChunkPolicy, RetryPolicy
+from batchor.core.models import ChunkPolicy, ItemFailure, RetryPolicy
 from batchor.storage.postgres import PostgresStorage
+from batchor.storage.postgres_store import _normalize_postgres_dsn
 from batchor.storage.state import (
     BatchArtifactPointer,
     CompletedItemRecord,
     IngestCheckpoint,
+    ItemFailureRecord,
     MaterializedItem,
     PersistedRunConfig,
     PreparedSubmission,
@@ -268,4 +270,169 @@ def test_storage_contract_artifact_pointers_and_summary_rehydration(storage) -> 
     summary = storage.get_run_summary(run_id="run_2")
     assert summary.completed_items == 1
     assert summary.failed_items == 0
+    records = storage.get_item_records(run_id="run_2")
+    assert records[0].attempt_count == 1
     assert storage.get_run_config(run_id="run_2").provider_config.provider_kind is ProviderKind.OPENAI
+
+
+def test_storage_contract_completion_counts_consumed_attempts(storage) -> None:
+    storage.create_run(run_id="run_attempts", config=_config(), items=_items()[:1])
+    claimed = storage.claim_items_for_submission(run_id="run_attempts", max_attempts=2)
+    storage.register_batch(
+        run_id="run_attempts",
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="completed",
+        custom_ids=["row1:a1"],
+    )
+    storage.mark_items_submitted(
+        run_id="run_attempts",
+        provider_batch_id="provider_1",
+        submissions=[PreparedSubmission(item_id=claimed[0].item_id, custom_id="row1:a1", submission_tokens=10)],
+    )
+    storage.mark_items_completed(
+        run_id="run_attempts",
+        completions=[
+            CompletedItemRecord(
+                custom_id="row1:a1",
+                output_text="ok",
+                output_json=None,
+                raw_response={"response": {"status_code": 200}},
+            )
+        ],
+    )
+
+    records = storage.get_item_records(run_id="run_attempts")
+    assert records[0].attempt_count == 1
+
+
+def test_storage_contract_retry_then_completion_counts_all_consumed_attempts(storage) -> None:
+    storage.create_run(run_id="run_retry_then_success", config=_config(), items=_items()[:1])
+    claimed = storage.claim_items_for_submission(run_id="run_retry_then_success", max_attempts=2)
+    storage.register_batch(
+        run_id="run_retry_then_success",
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="completed",
+        custom_ids=["row1:a1"],
+    )
+    storage.mark_items_submitted(
+        run_id="run_retry_then_success",
+        provider_batch_id="provider_1",
+        submissions=[PreparedSubmission(item_id=claimed[0].item_id, custom_id="row1:a1", submission_tokens=10)],
+    )
+    storage.mark_items_failed(
+        run_id="run_retry_then_success",
+        failures=[
+            ItemFailureRecord(
+                custom_id="row1:a1",
+                error=ItemFailure(
+                    error_class="provider_item_error",
+                    message="retryable provider error",
+                    retryable=True,
+                    raw_error={"status": 500},
+                ),
+                count_attempt=True,
+            )
+        ],
+        max_attempts=2,
+    )
+
+    claimed_retry = storage.claim_items_for_submission(run_id="run_retry_then_success", max_attempts=2)
+    assert claimed_retry[0].attempt_count == 1
+    storage.register_batch(
+        run_id="run_retry_then_success",
+        local_batch_id="local_2",
+        provider_batch_id="provider_2",
+        status="completed",
+        custom_ids=["row1:a2"],
+    )
+    storage.mark_items_submitted(
+        run_id="run_retry_then_success",
+        provider_batch_id="provider_2",
+        submissions=[PreparedSubmission(item_id=claimed_retry[0].item_id, custom_id="row1:a2", submission_tokens=10)],
+    )
+    storage.mark_items_completed(
+        run_id="run_retry_then_success",
+        completions=[
+            CompletedItemRecord(
+                custom_id="row1:a2",
+                output_text="ok",
+                output_json=None,
+                raw_response={"response": {"status_code": 200}},
+            )
+        ],
+    )
+
+    records = storage.get_item_records(run_id="run_retry_then_success")
+    assert records[0].attempt_count == 2
+
+
+def test_storage_contract_batch_reset_does_not_count_until_later_completion(storage) -> None:
+    storage.create_run(run_id="run_batch_reset", config=_config(), items=_items()[:1])
+    claimed = storage.claim_items_for_submission(run_id="run_batch_reset", max_attempts=2)
+    storage.register_batch(
+        run_id="run_batch_reset",
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="failed",
+        custom_ids=["row1:a1"],
+    )
+    storage.mark_items_submitted(
+        run_id="run_batch_reset",
+        provider_batch_id="provider_1",
+        submissions=[PreparedSubmission(item_id=claimed[0].item_id, custom_id="row1:a1", submission_tokens=10)],
+    )
+    storage.reset_batch_items_to_pending(
+        run_id="run_batch_reset",
+        provider_batch_id="provider_1",
+        error=ItemFailure(
+            error_class="batch_terminal_failed",
+            message="batch failed before item result",
+            retryable=True,
+            raw_error={"status": "failed"},
+        ),
+    )
+    records_after_reset = storage.get_item_records(run_id="run_batch_reset")
+    assert records_after_reset[0].attempt_count == 0
+
+    claimed_retry = storage.claim_items_for_submission(run_id="run_batch_reset", max_attempts=2)
+    assert claimed_retry[0].attempt_count == 0
+    storage.register_batch(
+        run_id="run_batch_reset",
+        local_batch_id="local_2",
+        provider_batch_id="provider_2",
+        status="completed",
+        custom_ids=["row1:a1"],
+    )
+    storage.mark_items_submitted(
+        run_id="run_batch_reset",
+        provider_batch_id="provider_2",
+        submissions=[PreparedSubmission(item_id=claimed_retry[0].item_id, custom_id="row1:a1", submission_tokens=10)],
+    )
+    storage.mark_items_completed(
+        run_id="run_batch_reset",
+        completions=[
+            CompletedItemRecord(
+                custom_id="row1:a1",
+                output_text="ok",
+                output_json=None,
+                raw_response={"response": {"status_code": 200}},
+            )
+        ],
+    )
+
+    records = storage.get_item_records(run_id="run_batch_reset")
+    assert records[0].attempt_count == 1
+
+
+def test_postgres_dsn_normalization_uses_psycopg3_driver() -> None:
+    assert _normalize_postgres_dsn("postgresql://user:pass@localhost/db") == (
+        "postgresql+psycopg://user:pass@localhost/db"
+    )
+    assert _normalize_postgres_dsn("postgres://user:pass@localhost/db") == (
+        "postgresql+psycopg://user:pass@localhost/db"
+    )
+    assert _normalize_postgres_dsn("postgresql+psycopg://user:pass@localhost/db") == (
+        "postgresql+psycopg://user:pass@localhost/db"
+    )
