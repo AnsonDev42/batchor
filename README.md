@@ -452,7 +452,7 @@ Current events include run creation/resume, automatic quota pause, item ingestio
 ## Storage notes
 
 - SQLite remains the default durable backend.
-- `PostgresStorage` is available for shared control-plane state, but the CLI remains SQLite-only today.
+- `PostgresStorage` is available for shared control-plane state, but the CLI remains SQLite-only today. Plain `postgresql://` and `postgres://` DSNs are normalized to the package's psycopg v3 driver URL.
 - Item `attempt_count` means consumed provider attempts: successful submitted completions increment it, counted item-level failures increment it, and local or batch-level retry/reset paths that did not consume an item attempt leave it unchanged.
 - Durable artifacts now go through an `ArtifactStore` seam. The built-in implementation is `LocalArtifactStore`, intended for local disk or a shared mounted volume.
 - Fresh-process resume requeues any locally claimed but not yet submitted items before continuing, so a process crash after request-artifact persistence does not strand work in `queued_local`.

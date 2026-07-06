@@ -17,6 +17,7 @@ from batchor import (
 )
 from batchor.core.models import ChunkPolicy, ItemFailure, RetryPolicy
 from batchor.storage.postgres import PostgresStorage
+from batchor.storage.postgres_store import _normalize_postgres_dsn
 from batchor.storage.state import (
     BatchArtifactPointer,
     CompletedItemRecord,
@@ -423,3 +424,15 @@ def test_storage_contract_batch_reset_does_not_count_until_later_completion(stor
 
     records = storage.get_item_records(run_id="run_batch_reset")
     assert records[0].attempt_count == 1
+
+
+def test_postgres_dsn_normalization_uses_psycopg3_driver() -> None:
+    assert _normalize_postgres_dsn("postgresql://user:pass@localhost/db") == (
+        "postgresql+psycopg://user:pass@localhost/db"
+    )
+    assert _normalize_postgres_dsn("postgres://user:pass@localhost/db") == (
+        "postgresql+psycopg://user:pass@localhost/db"
+    )
+    assert _normalize_postgres_dsn("postgresql+psycopg://user:pass@localhost/db") == (
+        "postgresql+psycopg://user:pass@localhost/db"
+    )

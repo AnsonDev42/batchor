@@ -114,6 +114,7 @@ For SQLite-backed runs, the default artifact root is a sibling `*_artifacts/` di
 ## Postgres behavior
 
 Postgres exists as an opt-in control-plane backend for cases where SQLite is not enough, such as shared state across processes or hosts.
+`PostgresStorage` uses psycopg v3. Plain `postgresql://` and `postgres://` DSNs are normalized to `postgresql+psycopg://` before engine creation; explicit SQLAlchemy driver schemes are preserved.
 
 Important operational rule:
 
