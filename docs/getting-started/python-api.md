@@ -39,6 +39,31 @@ print(run.results()[0].output_text)
 
 Use `storage="memory"` only for tests or short-lived local experiments. For durable runs, use the default SQLite storage or an explicit backend.
 
+## Anthropic text job
+
+Install `batchor[anthropic]`, then use the same runner lifecycle with an Anthropic provider config:
+
+```python
+from batchor import AnthropicProviderConfig, BatchItem, BatchJob, BatchRunner, PromptParts
+
+
+runner = BatchRunner(storage="memory")
+run = runner.run_and_wait(
+    BatchJob(
+        items=[BatchItem(item_id="row1", payload="Summarize this text")],
+        build_prompt=lambda item: PromptParts(prompt=item.payload),
+        provider_config=AnthropicProviderConfig(
+            model="claude-sonnet-4-5",
+            max_tokens=1024,
+        ),
+    )
+)
+
+print(run.results()[0].output_text)
+```
+
+If `api_key` is omitted, the provider resolves `ANTHROPIC_API_KEY`. Extra Messages API parameters such as `temperature` can be supplied through `message_params`; Batchor reserves the fields it constructs itself.
+
 ## Gemini text job
 
 Gemini Batch support is available through the Python API after installing `batchor[gemini]`.
@@ -131,6 +156,7 @@ Notes:
 - `output` is the parsed Pydantic object
 - `output_text` preserves the raw text that was parsed
 - with `GeminiProviderConfig`, the same `structured_output=` argument is sent through Gemini `generation_config.response_json_schema`
+- with `AnthropicProviderConfig`, it is sent through Anthropic `output_config.format`
 
 ## Durable run lifecycle
 
