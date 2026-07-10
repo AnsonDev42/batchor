@@ -352,7 +352,7 @@ This is where the durable lifecycle lives. It bridges the domain models, provide
 
 The public facade is still `BatchRunner` plus `Run`. A deep internal
 `RunExecutor` module owns execution attachment and the ordered advance cycle,
-returning a structured outcome with durable progress and the halt reason.
+returning a structured outcome that reports durable progress.
 The supporting implementation under `runtime/` remains split by concern:
 
 - `execution.py`: claim recovery on execution attachment, source-availability checks, and ordered ingest/poll/cancel/submit advancement
@@ -456,7 +456,8 @@ That split gives `batchor`:
 19. Built-in deterministic-source resume currently covers CSV, JSONL, and Parquet; arbitrary iterables still do not become durable by magic.
 20. An incomplete ingest checkpoint prevents terminal lifecycle status. A fresh
     process must reattach the source with `start(job, run_id=...)` before execution
-    can advance.
+    can advance, unless cancellation intentionally abandons the unmaterialized
+    source tail and finalizes the checkpoint.
 21. `BatchItem.metadata["batchor_lineage"]` is reserved for lightweight source/join metadata when provided by built-in adapters or callers.
 
 ## Extension seams

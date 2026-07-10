@@ -60,7 +60,7 @@ Custom non-file sources must implement a durable checkpoint contract explicitly;
 Before resumed ingestion continues, active OpenAI batches are polled once. If that poll consumes terminal batches or records enqueue/backoff failures, those state changes are applied before any new prompt rendering, request replay, or submission happens.
 The execution cycle reports durable progress explicitly to `Run.wait()`, so the
 wait loop immediately drains productive poll/submission cycles and sleeps only
-when the executor reports an idle or backoff halt.
+when a cycle makes no durable progress, respecting any persisted retry backoff.
 
 ## Raw output retention
 

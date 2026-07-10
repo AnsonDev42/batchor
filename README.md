@@ -84,6 +84,9 @@ started the job, `Run.resume()` can continue from the attached source. After a
 fresh-process rehydration, call `start(job, run_id=...)`; `refresh()` otherwise
 raises `RunIngestionSourceRequiredError` instead of silently completing only the
 already-materialized rows.
+Cancelling an incompletely ingested checkpointed source abandons its
+unmaterialized tail and finalizes the checkpoint after active batches drain, so
+the cancelled run can still reach a terminal lifecycle state.
 
 ## Architecture
 

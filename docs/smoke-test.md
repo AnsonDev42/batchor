@@ -98,6 +98,7 @@ Expected:
 - OpenAI row-level insufficient-quota records in completed batch output remain retryable, do not consume attempts, and back off without pausing the run
 - quota auto-pause preserves `cancel_requested` and does not strand non-checkpointed input rows during initial ingestion
 - cancelled runs drain already-submitted work and mark remaining local items as `run_cancelled`
+- cancelling incomplete checkpointed ingestion finalizes the checkpoint and reaches a terminal state without materializing the source tail
 - incremental terminal-result reads/exports remain sequence-based and idempotent across repeated calls
 - raw output/error artifacts can be exported and require export before raw pruning
 - raw output/error artifact persistence can be disabled without breaking parsed terminal results or request-artifact replay

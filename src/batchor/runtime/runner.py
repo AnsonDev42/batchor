@@ -19,7 +19,6 @@ from batchor.core.models import (
     BatchJob,
     BatchResultItem,
     RunEvent,
-    RunSummary,
     TerminalResultsExportResult,
     TerminalResultsPage,
 )
@@ -558,9 +557,6 @@ class BatchRunner:
             run_id=run_id,
             context=context or self._context_for_run(run_id),
         )
-
-    def _refresh_run(self, run_id: str) -> RunSummary:
-        return self._advance_run(run_id).summary
 
     def _advance_run(self, run_id: str) -> CycleOutcome:
         return self._executor.advance(run_id)

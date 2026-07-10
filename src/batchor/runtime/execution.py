@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any, Callable
 
 from pydantic import BaseModel
 
-from batchor.core.enums import RunControlState, RunLifecycleStatus
+from batchor.core.enums import RunControlState
 from batchor.core.exceptions import RunIngestionSourceRequiredError
 from batchor.core.models import BatchJob, RunSummary
 from batchor.runtime.context import RunContext, build_persisted_config
@@ -17,23 +16,12 @@ from batchor.runtime.polling import PollingDeps, refresh_run
 from batchor.storage.state import StateStore
 
 
-class CycleHaltReason(StrEnum):
-    """Reason an execution cycle returned control to its caller."""
-
-    TERMINAL = "terminal"
-    PAUSED = "paused"
-    RETRY_BACKOFF = "retry_backoff"
-    IDLE = "idle"
-    PROGRESSED = "progressed"
-
-
 @dataclass(frozen=True)
 class CycleOutcome:
     """Observable result of one durable execution cycle."""
 
     summary: RunSummary
     progressed: bool
-    halt_reason: CycleHaltReason
 
 
 class RunExecutor:
@@ -93,7 +81,7 @@ class RunExecutor:
         control_state = self._state.get_run_control_state(run_id=run_id)
         if control_state is RunControlState.PAUSED:
             summary = self._state.get_run_summary(run_id=run_id)
-            return CycleOutcome(summary=summary, progressed=False, halt_reason=CycleHaltReason.PAUSED)
+            return CycleOutcome(summary=summary, progressed=False)
         if control_state is not RunControlState.CANCEL_REQUESTED:
             self.require_attached_source(run_id)
             self.resume_attached_ingestion(run_id)
@@ -105,17 +93,7 @@ class RunExecutor:
             submit_pending_items=self._submit_pending_items,
         )
         progressed = _summary_made_progress(before, summary)
-        if summary.status in (RunLifecycleStatus.COMPLETED, RunLifecycleStatus.COMPLETED_WITH_FAILURES):
-            halt_reason = CycleHaltReason.TERMINAL
-        elif summary.control_state is RunControlState.PAUSED:
-            halt_reason = CycleHaltReason.PAUSED
-        elif summary.backoff_remaining_sec > 0:
-            halt_reason = CycleHaltReason.RETRY_BACKOFF
-        elif progressed:
-            halt_reason = CycleHaltReason.PROGRESSED
-        else:
-            halt_reason = CycleHaltReason.IDLE
-        return CycleOutcome(summary=summary, progressed=progressed, halt_reason=halt_reason)
+        return CycleOutcome(summary=summary, progressed=progressed)
 
 
 def _summary_made_progress(before: RunSummary, after: RunSummary) -> bool:

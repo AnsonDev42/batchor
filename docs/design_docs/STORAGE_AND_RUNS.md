@@ -247,6 +247,12 @@ Semantics:
 - `resume` restarts those local activities from persisted state
 - `cancel` stops new ingestion/submission, keeps polling active provider batches, and then permanently fails remaining local non-terminal items with `error_class="run_cancelled"`
 
+If checkpointed ingestion is incomplete when cancellation is requested, the
+unmaterialized source tail is intentionally abandoned. After active batches
+drain and remaining materialized items are cancelled, the stored ingest
+checkpoint is finalized so the run can become terminal without reopening the
+source.
+
 Manual pauses record `control_reason="manual"`. OpenAI upload/create/polling and batch-level insufficient-quota pauses record `control_reason="openai_insufficient_quota"`, clear batch-control-plane backoff, and preserve affected items for later retry without consuming attempts.
 
 Row-level insufficient-quota records inside completed batch outputs do not pause the run. Those items are stored as `failed_retryable` with `error_class="openai_insufficient_quota"`, do not consume attempts, and rely on retry backoff before they are submitted again.
