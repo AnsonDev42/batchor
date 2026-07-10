@@ -4,6 +4,8 @@ from importlib import resources
 from pathlib import Path
 
 from batchor import (
+    GeminiBatchProvider,
+    GeminiProviderConfig,
     MemoryStateStore,
     OpenAIBatchProvider,
     OpenAIEnqueueLimitConfig,
@@ -54,6 +56,35 @@ def test_default_provider_registry_can_dump_secretless_openai_config() -> None:
 
     assert payload["provider_kind"] == ProviderKind.OPENAI.value
     assert payload["config"]["model"] == "gpt-4.1"
+    assert "api_key" not in payload["config"]
+
+
+def test_default_provider_registry_round_trips_gemini_config() -> None:
+    registry = build_default_provider_registry()
+    config = GeminiProviderConfig(
+        api_key="k",
+        model="gemini-2.5-flash",
+        generation_config={"temperature": 0.1},
+    )
+
+    payload = registry.dump_config(config)
+    loaded = registry.load_config(payload)
+    provider = registry.create(loaded)
+
+    assert loaded.provider_kind is ProviderKind.GEMINI
+    assert isinstance(loaded, GeminiProviderConfig)
+    assert loaded == config
+    assert isinstance(provider, GeminiBatchProvider)
+
+
+def test_default_provider_registry_can_dump_secretless_gemini_config() -> None:
+    registry = build_default_provider_registry()
+    config = GeminiProviderConfig(api_key="secret", model="gemini-2.5-flash")
+
+    payload = registry.dump_config(config, include_secrets=False)
+
+    assert payload["provider_kind"] == ProviderKind.GEMINI.value
+    assert payload["config"]["model"] == "gemini-2.5-flash"
     assert "api_key" not in payload["config"]
 
 

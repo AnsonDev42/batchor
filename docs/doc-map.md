@@ -19,6 +19,7 @@ This page explains what each document is for so readers do not have to guess whi
 | `design_docs/BOUNDARY_AND_PHILOSOPHY.md` | Ownership boundary between `batchor`, storage/artifacts, and user pipelines. |
 | `design_docs/ARCHITECTURE.md` | Canonical runtime diagrams, package structure, main flows, and extension seams. |
 | `design_docs/OPENAI_BATCHING.md` | OpenAI request construction, token budgeting, splitting, and batch polling behavior. |
+| `design_docs/GEMINI_BATCHING.md` | Gemini text-only request construction, batch polling, response parsing, and current limits. |
 | `design_docs/STORAGE_AND_RUNS.md` | Durable `Run` lifecycle, rehydration, checkpoints, control state, artifact retention, and operator semantics. |
 | `design_docs/STORAGE_MIGRATIONS.md` | SQLite schema-versioning and migration guidance. |
 | `design_docs/ROADMAP.md` | Intentionally unimplemented areas and planned work. |
@@ -38,3 +39,4 @@ This page explains what each document is for so readers do not have to guess whi
 - Library-first run control now includes `pause`, `resume`, and drain-style `cancel`.
 - Incremental terminal-result reads/exports are documented in the Python API and storage docs.
 - Raw output/error artifact retention is now configurable per run through `ArtifactPolicy`.
+- Gemini text-only Batch support is available through the Python API and default provider registry.

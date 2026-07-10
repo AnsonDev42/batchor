@@ -16,7 +16,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from batchor.core.enums import ProviderKind
 from batchor.core.types import BatchRemoteRecord, BatchRequestLine, JSONObject
@@ -82,7 +82,8 @@ class BatchProvider(ABC):
     """Abstract adapter between the batchor runtime and a batch API provider.
 
     Each method maps to one step of the batch submission/polling lifecycle.
-    The :class:`~batchor.OpenAIBatchProvider` is the built-in implementation.
+    Built-in implementations include :class:`~batchor.OpenAIBatchProvider` and
+    :class:`~batchor.GeminiBatchProvider`.
     """
 
     @abstractmethod
@@ -106,6 +107,34 @@ class BatchProvider(ABC):
         """
         ...
 
+    def request_correlation_id(self, request_line: BatchRequestLine) -> str:
+        """Return the provider-facing correlation identifier for a request line.
+
+        OpenAI uses ``custom_id``. Providers with a different JSONL shape can
+        override this while the runtime continues to store one durable custom
+        identifier per submitted item.
+        """
+        custom_id = request_line.get("custom_id")
+        if not isinstance(custom_id, str) or not custom_id:
+            raise ValueError("request line is missing custom_id")
+        return custom_id
+
+    def with_request_correlation_id(
+        self,
+        request_line: BatchRequestLine,
+        custom_id: str,
+    ) -> BatchRequestLine:
+        """Return *request_line* with its provider correlation identifier set."""
+        updated = dict(request_line)
+        updated["custom_id"] = custom_id
+        return cast(BatchRequestLine, updated)
+
+    def extract_response_text(self, response_record: JSONObject) -> str:
+        """Extract plain text from one successful provider output record."""
+        from batchor.core.responses import extract_openai_response_text
+
+        return extract_openai_response_text(response_record)
+
     @abstractmethod
     def upload_input_file(self, input_path: str | Path) -> str:
         """Upload a prepared JSONL input file to the provider.
@@ -122,7 +151,8 @@ class BatchProvider(ABC):
     def delete_input_file(self, file_id: str) -> None:
         """Best-effort deletion of an uploaded input file.
 
-        Implementations should swallow errors — this is a clean-up path.
+        The runtime invokes this as a best-effort clean-up path and swallows
+        provider errors.
 
         Args:
             file_id: Provider-assigned file identifier to delete.

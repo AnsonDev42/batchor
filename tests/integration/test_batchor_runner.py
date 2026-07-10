@@ -116,6 +116,15 @@ class _FakeBatchProvider:
             "body": body,
         }
 
+    def request_correlation_id(self, request_line):  # noqa: ANN001
+        return self._parser.request_correlation_id(request_line)
+
+    def with_request_correlation_id(self, request_line, custom_id):  # noqa: ANN001
+        return self._parser.with_request_correlation_id(request_line, custom_id)
+
+    def extract_response_text(self, response_record):  # noqa: ANN001
+        return self._parser.extract_response_text(response_record)
+
     def write_requests_jsonl(self, request_lines: list[dict[str, object]], output_path: Path) -> Path:
         self._current_lines = [dict(line) for line in request_lines]
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -310,6 +319,12 @@ def test_sqlite_subprocess_resume_retries_from_persisted_request_artifact(
                     "url": "/v1/responses",
                     "body": {{"input": prompt_parts.prompt}},
                 }}
+
+            def request_correlation_id(self, request_line):
+                return request_line["custom_id"]
+
+            def with_request_correlation_id(self, request_line, custom_id):
+                return {{**request_line, "custom_id": custom_id}}
 
             def upload_input_file(self, input_path):
                 Path(input_path).read_text(encoding="utf-8")

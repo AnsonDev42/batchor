@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 from pydantic import BaseModel, ValidationError
 
 from batchor.core.exceptions import StructuredOutputSchemaError
+from batchor.core.responses import _extract_content_text as _extract_content_text_impl
+from batchor.core.responses import extract_openai_response_text
 from batchor.core.types import JSONObject, JSONValue
 
 
@@ -52,6 +54,11 @@ class StructuredOutputError(ValueError):
         self.error_class = error_class
         self.message = message
         self.raw_error = raw_error
+
+
+def _extract_content_text(content: Any) -> list[str]:
+    """Compatibility wrapper for the neutral response-text helper."""
+    return _extract_content_text_impl(content)
 
 
 def default_schema_name(model: type[BaseModel]) -> str:
@@ -220,38 +227,6 @@ def _schema_type_includes(value: object, expected_type: str) -> bool:
     return isinstance(value, list) and expected_type in value
 
 
-def _extract_content_text(content: Any) -> list[str]:
-    """Extract text fragments from an OpenAI response content field.
-
-    Args:
-        content: The ``content`` field from a response message, which may be
-            a string, a list of content parts, or ``None``.
-
-    Returns:
-        A list of non-empty text strings extracted from *content*.
-    """
-    if isinstance(content, str):
-        return [content]
-    if not isinstance(content, list):
-        return []
-    fragments: list[str] = []
-    for part in content:
-        if isinstance(part, str):
-            fragments.append(part)
-            continue
-        if not isinstance(part, dict):
-            continue
-        text = part.get("text")
-        if isinstance(text, str):
-            fragments.append(text)
-            continue
-        if isinstance(text, dict):
-            value = text.get("value")
-            if isinstance(value, str):
-                fragments.append(value)
-    return fragments
-
-
 def extract_response_text(response_record: dict[str, Any]) -> str:
     """Extract concatenated text output from a raw provider response record.
 
@@ -265,39 +240,7 @@ def extract_response_text(response_record: dict[str, Any]) -> str:
         Extracted text joined by newlines, or an empty string if nothing is
         found.
     """
-    body = response_record.get("response", {}).get("body") or response_record.get("body")
-    if not isinstance(body, dict):
-        return ""
-
-    fragments: list[str] = []
-    output = body.get("output")
-    if isinstance(output, list):
-        for output_item in output:
-            if not isinstance(output_item, dict):
-                continue
-            fragments.extend(_extract_content_text(output_item.get("content")))
-            text = output_item.get("text")
-            if isinstance(text, str):
-                fragments.append(text)
-            elif isinstance(text, dict):
-                value = text.get("value")
-                if isinstance(value, str):
-                    fragments.append(value)
-    output_text = body.get("output_text")
-    if isinstance(output_text, str):
-        fragments.append(output_text)
-
-    choices = body.get("choices")
-    if isinstance(choices, list):
-        for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            msg = choice.get("message", {})
-            if not isinstance(msg, dict):
-                continue
-            fragments.extend(_extract_content_text(msg.get("content")))
-
-    return "\n".join(fragment for fragment in fragments if fragment)
+    return extract_openai_response_text(response_record)
 
 
 def strip_json_fence(text: str) -> str:
@@ -331,6 +274,8 @@ def parse_text_response(response_record: JSONObject) -> str:
 def parse_structured_response(
     response_record: JSONObject,
     output_model: type[BaseModel],
+    *,
+    text_extractor: Callable[[JSONObject], str] | None = None,
 ) -> tuple[str, JSONValue, BaseModel]:
     """Parse and validate a structured JSON response from the provider.
 
@@ -347,7 +292,7 @@ def parse_structured_response(
         StructuredOutputError: If the response text is empty, is not valid
             JSON, or fails Pydantic validation.
     """
-    text = extract_response_text(response_record)
+    text = text_extractor(response_record) if text_extractor is not None else extract_response_text(response_record)
     if not text:
         raise StructuredOutputError(
             "empty_response_text",

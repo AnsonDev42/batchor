@@ -7,6 +7,7 @@ from batchor import (
     BatchItem,
     BatchJob,
     ChunkPolicy,
+    GeminiProviderConfig,
     ItemStatus,
     LocalArtifactStore,
     MemoryStateStore,
@@ -18,8 +19,8 @@ from batchor import (
 )
 from batchor.runtime.artifacts import request_sha256
 from batchor.runtime.context import build_persisted_config, build_run_context
-from batchor.runtime.submission import SubmissionDeps, submit_pending_items
-from batchor.storage.state import MaterializedItem, RequestArtifactPointer
+from batchor.runtime.submission import SubmissionDeps, prepare_claimed_item, submit_pending_items
+from batchor.storage.state import ClaimedItem, MaterializedItem, RequestArtifactPointer
 
 
 class _FakeSubmissionProvider:
@@ -56,6 +57,14 @@ class _FakeSubmissionProvider:
             "body": body,
         }
 
+    @staticmethod
+    def request_correlation_id(request_line):  # noqa: ANN001
+        return request_line["custom_id"]
+
+    @staticmethod
+    def with_request_correlation_id(request_line, custom_id):  # noqa: ANN001
+        return {**request_line, "custom_id": custom_id}
+
     def upload_input_file(self, input_path: Path) -> str:
         input_path.read_text(encoding="utf-8")
         file_id = f"file_{self._next_file}"
@@ -88,6 +97,35 @@ class _FakeSubmissionProvider:
         return max(len(prompt), 1)
 
 
+class _GeminiLikeReplayProvider:
+    def build_request_line(self, **kwargs):  # noqa: ANN003
+        del kwargs
+        raise AssertionError("request line should be replayed from a persisted artifact")
+
+    def with_request_correlation_id(
+        self,
+        request_line: dict[str, object],
+        custom_id: str,
+    ) -> dict[str, object]:
+        updated = dict(request_line)
+        updated["key"] = custom_id
+        return updated
+
+    def request_correlation_id(self, request_line: dict[str, object]) -> str:
+        key = request_line["key"]
+        assert isinstance(key, str)
+        return key
+
+    def estimate_request_tokens(
+        self,
+        request_line: dict[str, object],
+        *,
+        chars_per_token: int,
+    ) -> int:
+        del request_line, chars_per_token
+        return 1
+
+
 def _materialized_text_item(item_id: str, item_index: int, text: str) -> MaterializedItem:
     return MaterializedItem(
         item_id=item_id,
@@ -96,6 +134,60 @@ def _materialized_text_item(item_id: str, item_index: int, text: str) -> Materia
         metadata={},
         prompt=text,
     )
+
+
+def test_prepare_claimed_item_replays_provider_specific_correlation_key(tmp_path: Path) -> None:
+    provider = _GeminiLikeReplayProvider()
+    artifact_store = LocalArtifactStore(tmp_path / "artifacts")
+    request_line = {
+        "key": "row1:a1",
+        "request": {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": "hello",
+                        }
+                    ]
+                }
+            ]
+        },
+    }
+    artifact_path = "run/requests/request.jsonl"
+    artifact_store.write_text(
+        artifact_path,
+        json.dumps(request_line) + "\n",
+        encoding="utf-8",
+    )
+    job = BatchJob(
+        items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=GeminiProviderConfig(api_key="k", model="gemini-2.5-flash"),
+    )
+    config = build_persisted_config(job)
+    context = build_run_context(
+        config=config,
+        output_model=None,
+        create_provider=lambda _cfg: provider,
+    )
+
+    prepared = prepare_claimed_item(
+        ClaimedItem(
+            item_id="row1",
+            metadata={},
+            prompt="",
+            system_prompt=None,
+            attempt_count=1,
+            request_artifact_path=artifact_path,
+            request_artifact_line=1,
+            request_sha256=request_sha256(request_line),
+        ),
+        context=context,
+        artifact_store=artifact_store,
+    )
+
+    assert prepared.custom_id == "row1:a2"
+    assert prepared.request_line["key"] == "row1:a2"
 
 
 def test_submit_pending_items_replays_shared_request_artifact_once_per_cycle(tmp_path: Path) -> None:

@@ -401,14 +401,19 @@ def prepare_claimed_item(
     if item.request_artifact_path is not None:
         if item.request_artifact_line is None or item.request_sha256 is None:
             raise ValueError(f"incomplete request artifact pointer for item {item.item_id}")
-        request_line = load_request_artifact_line(
-            artifact_store=artifact_store,
-            artifact_path=item.request_artifact_path,
-            line_number=item.request_artifact_line,
-            expected_sha256=item.request_sha256,
-            artifact_cache=artifact_cache,
+        request_line = context.provider.with_request_correlation_id(
+            cast(
+                BatchRequestLine,
+                load_request_artifact_line(
+                    artifact_store=artifact_store,
+                    artifact_path=item.request_artifact_path,
+                    line_number=item.request_artifact_line,
+                    expected_sha256=item.request_sha256,
+                    artifact_cache=artifact_cache,
+                ),
+            ),
+            custom_id,
         )
-        request_line["custom_id"] = custom_id
     else:
         request_line = context.provider.build_request_line(
             custom_id=custom_id,
@@ -418,7 +423,6 @@ def prepare_claimed_item(
             ),
             structured_output=context.structured_output,
         )
-    request_line = cast(BatchRequestLine, request_line)
     request_bytes = len((json.dumps(request_line, ensure_ascii=False) + "\n").encode("utf-8"))
     submission_tokens = context.provider.estimate_request_tokens(
         request_line,
@@ -426,7 +430,7 @@ def prepare_claimed_item(
     )
     return PreparedRequest(
         item_id=item.item_id,
-        custom_id=str(request_line["custom_id"]),
+        custom_id=context.provider.request_correlation_id(request_line),
         request_line=cast(JSONObject, request_line),
         request_bytes=request_bytes,
         submission_tokens=submission_tokens,

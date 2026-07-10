@@ -2,9 +2,11 @@
 
 This document describes the OpenAI-specific behavior inside `batchor`.
 
-`batchor` is not a generic batch abstraction with many first-party providers yet. The OpenAI path is the primary implemented path, so a lot of runtime behavior is defined around OpenAI Batch semantics.
+OpenAI remains the default and most feature-complete provider path. Gemini has its own design note in [`GEMINI_BATCHING.md`](GEMINI_BATCHING.md), while this page focuses only on OpenAI Batch semantics.
 
 ## Current behavior
+
+The Python API and CLI both support OpenAI. The CLI is OpenAI-only today.
 
 ## Request construction
 
@@ -187,7 +189,6 @@ Provider-side remote batch cancellation is not implemented in v1.
 
 ## Current limits
 
-- only the built-in OpenAI Batch provider path is implemented
 - the docs do not yet provide a full capability matrix across all OpenAI endpoint features
 - artifact storage is still local-filesystem-only
 

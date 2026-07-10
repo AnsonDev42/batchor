@@ -18,7 +18,7 @@ from batchor.runtime.retry import (
     is_insufficient_quota_error,
     is_retryable_batch_control_plane_error,
 )
-from batchor.runtime.validation import parse_structured_response, parse_text_response
+from batchor.runtime.validation import parse_structured_response
 from batchor.storage.state import (
     BatchArtifactPointer,
     CompletedItemRecord,
@@ -360,7 +360,7 @@ def consume_completed_batch(
             completions.append(
                 CompletedItemRecord(
                     custom_id=custom_id,
-                    output_text=parse_text_response(record),
+                    output_text=context.provider.extract_response_text(record),
                     raw_response=record,
                 )
             )
@@ -369,6 +369,7 @@ def consume_completed_batch(
             output_text, parsed_json, _validated = parse_structured_response(
                 record,
                 context.output_model,
+                text_extractor=context.provider.extract_response_text,
             )
         except Exception as exc:  # noqa: BLE001
             failures.append(

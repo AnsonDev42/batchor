@@ -58,6 +58,7 @@ graph TB
     subgraph providers["providers/"]
         BatchProvider["BatchProvider (ABC)"]
         OpenAIProvider["OpenAIBatchProvider"]
+        GeminiProvider["GeminiBatchProvider"]
         ProviderRegistry
     end
 
@@ -91,6 +92,7 @@ graph TB
     MemoryStateStore -.->|implements| StateStore
     BatchRunner -->|submits/polls| BatchProvider
     OpenAIProvider -.->|implements| BatchProvider
+    GeminiProvider -.->|implements| BatchProvider
     BatchRunner -->|stores artifacts| ArtifactStore
     LocalArtifactStore -.->|implements| ArtifactStore
     BatchRunner -->|creates via| ProviderRegistry
@@ -120,6 +122,10 @@ The public runtime model centers on four types:
 one logical source, while callers remain responsible for selecting and ordering
 the child sources up front.
 
+Provider adaptation is intentionally concentrated behind `BatchProvider`.
+The runtime stores one durable internal custom identifier per item attempt, while each provider maps that identifier to its own request shape. OpenAI uses `custom_id`; the Gemini Developer API uses `key`; Vertex AI uses a request label that is returned with the original request in GCS output.
+Provider hooks also own response-text extraction so structured-output parsing can stay generic across provider payload shapes.
+
 ## Main user-facing flow
 
 The normal public flow is:
@@ -137,7 +143,7 @@ Internally that expands to:
 4. Claim a bounded submission window from pending items.
 5. Build or replay request JSONL rows.
 6. Persist request artifacts before upload.
-7. Submit one or more OpenAI batch files.
+7. Submit one or more provider batch files.
 8. Poll active batches.
 9. Download output/error files.
 10. Parse terminal item results back into the state store.
@@ -201,7 +207,7 @@ sequenceDiagram
         BatchRunner->>Provider: upload_input_file(local_path)
         Provider-->>BatchRunner: remote_file_id
         BatchRunner->>Provider: create_batch(remote_file_id)
-        Provider-->>BatchRunner: BatchRemoteRecord (status=validating)
+        Provider-->>BatchRunner: BatchRemoteRecord (status=submitted/validating)
         BatchRunner->>StateStore: register_batch()
         BatchRunner->>StateStore: mark_items_submitted()
     end
@@ -423,7 +429,7 @@ That split gives `batchor`:
 ## Current invariants
 
 1. Public execution is run-oriented: `start()`, `get_run()`, `run_and_wait()`.
-2. OpenAI Batch is the only built-in provider.
+2. OpenAI Batch and text-only Gemini Batch are built-in Python and CLI providers; OpenAI remains the CLI default.
 3. SQLite is the default durable backend.
 4. Postgres is an opt-in durable backend for shared control-plane state.
 5. Structured outputs require a module-level Pydantic v2 model for rehydration.
@@ -456,7 +462,7 @@ The code is shaped for future providers and backends, but within explicit bounda
 
 ## Current gaps
 
-- the only built-in provider is OpenAI Batch
+- Gemini request construction is text-only
 - the only built-in artifact backend is local filesystem storage
 - arbitrary non-checkpointable iterables do not support mid-ingest crash recovery
 - the CLI does not expose the full Python API surface
