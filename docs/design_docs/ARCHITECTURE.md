@@ -11,6 +11,8 @@ batchor/
   .agents/
   docs/
   plugins/
+    batchor/
+    batchor-agent-tools/
   src/batchor/
     artifacts/
     cli.py
@@ -22,13 +24,14 @@ batchor/
   tests/
 ```
 
-Repo-local contributor tooling also lives outside the shipped Python package:
+Agent tooling lives outside the shipped Python package so Python installation does not mutate or assume a particular coding-agent environment:
 
 - `.agents/skills/batchor-dev/` contains the repo skill for AI-agent onboarding
 - `.agents/plugins/marketplace.json` registers repo-local plugins for Codex-style discovery
-- `plugins/batchor-agent-tools/` contains the repo-local MCP server and plugin manifest
+- `plugins/batchor-agent-tools/` contains contributor-only repo guidance and validation tools
+- `plugins/batchor/` contains the downstream user skill and repo-independent workflow MCP for researchers and agents integrating Batchor into other projects
 
-These directories are contributor tooling only and are not part of the published `src/batchor` package.
+These directories are not part of the published `src/batchor` package. PyPI distributes the runtime and CLI; the agent marketplace distributes agent-specific skills and MCP configuration.
 
 The package is organized around one core concern: durable batch execution. Most modules exist to support one of five responsibilities:
 

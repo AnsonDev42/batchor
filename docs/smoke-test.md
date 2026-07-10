@@ -57,6 +57,16 @@ Expected:
 - current durable features remain covered, including deterministic source checkpoints, run control, incremental terminal-result APIs, and artifact-retention policy wiring
 - repeated `--input` CLI flows and `CompositeItemSource` resume semantics remain covered when those paths change
 
+When agent skills, plugins, or MCP helpers change, also run:
+
+```bash
+uv run pytest tests/unit/test_agent_tooling.py --no-cov -q
+uv run python ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/batchor/skills/use-batchor
+uv run python ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/batchor
+```
+
+The user-facing `batchor` plugin must remain repo-independent. The contributor-only `batchor-agent-tools` plugin may point at checkout paths and repository validation commands.
+
 GitHub pull request CI runs the main smoke across Python `3.12` and `3.13`, builds the docs site in a dedicated docs job, and runs packaging in a dedicated Python `3.13` build job so each validation path stays explicit.
 
 ## Targeted runtime smoke

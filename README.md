@@ -155,16 +155,25 @@ For Gemini Batch support, install the optional extra:
 pip install "batchor[gemini]"
 ```
 
-## Repo Agent Setup
+## Agent setup
 
-This repo now includes local AI-agent scaffolding so a contributor agent can pick up repo conventions without extra global setup:
+Batchor keeps contributor tooling separate from the tools intended for researchers and downstream projects:
 
-- repo-local skill: `.agents/skills/batchor-dev/`
-- repo-local plugin marketplace: `.agents/plugins/marketplace.json`
-- repo-local MCP plugin: `plugins/batchor-agent-tools/`
-- VS Code workspace MCP config: `.vscode/mcp.json`
+- `plugins/batchor/` is the user-facing Codex plugin. Its `$use-batchor` skill and MCP helpers turn datasets and prompts into safe CLI or Python workflows without assuming a Batchor source checkout.
+- `.agents/skills/batchor-dev/` and `plugins/batchor-agent-tools/` are contributor-only. They teach agents how to change this repository, find design docs, and run its validation suite.
+- `.agents/plugins/marketplace.json` registers both plugins for local development.
+- `.vscode/mcp.json` configures the contributor MCP for this workspace.
 
-The skill captures repo-specific workflow and validation guidance. The MCP plugin exposes a small repo-aware guide for project overview, docs entry points, and validation commands.
+The PyPI package remains the runtime dependency: `pip install batchor` installs the library and CLI. Agent skills and MCP configuration are distributed as the separate `batchor` plugin so Python environments do not receive Codex-specific files implicitly.
+
+To try the user plugin from a local checkout:
+
+```bash
+codex plugin marketplace add /path/to/batchor
+codex plugin add batchor@batchor-local
+```
+
+Start a new Codex task after installation, then ask: `Use $use-batchor to turn my CSV and research prompt into a resumable batch job.`
 
 Supported Python versions:
 

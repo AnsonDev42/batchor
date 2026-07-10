@@ -1,0 +1,4 @@
+interface:
+  display_name: "Use Batchor"
+  short_description: "Build resumable LLM batch research pipelines"
+  default_prompt: "Use $use-batchor to turn my dataset and prompt into a resumable Batchor workflow."
