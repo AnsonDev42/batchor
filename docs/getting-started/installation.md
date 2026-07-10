@@ -34,6 +34,23 @@ The package includes:
 
 It does not provision external infrastructure for you. If you use Postgres or a shared artifact root, you still manage those resources yourself.
 
+## Agent-assisted setup
+
+The Python package and the agent integration are intentionally separate:
+
+- PyPI installs the Batchor runtime and CLI into a project.
+- The user-facing `batchor` Codex plugin supplies the `$use-batchor` skill and repo-independent MCP helpers that help an agent choose the CLI or Python API, generate a starter, and check cost, data, resume, and retention decisions.
+- The `batchor-agent-tools` plugin and `$batchor-dev` skill are only for contributors changing Batchor itself.
+
+From a local Batchor checkout, install the user plugin with:
+
+```bash
+codex plugin marketplace add /path/to/batchor
+codex plugin add batchor@batchor-local
+```
+
+Start a new Codex task so the installed skill and tools are loaded. Installing `batchor` from PyPI alone does not modify an agent's global configuration.
+
 ## Authentication
 
 For Python API usage, authentication resolution is:
