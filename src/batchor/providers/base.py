@@ -131,9 +131,9 @@ class BatchProvider(ABC):
 
     def extract_response_text(self, response_record: JSONObject) -> str:
         """Extract plain text from one successful provider output record."""
-        from batchor.runtime.validation import extract_response_text
+        from batchor.core.responses import extract_openai_response_text
 
-        return extract_response_text(response_record)
+        return extract_openai_response_text(response_record)
 
     @abstractmethod
     def upload_input_file(self, input_path: str | Path) -> str:
@@ -151,7 +151,8 @@ class BatchProvider(ABC):
     def delete_input_file(self, file_id: str) -> None:
         """Best-effort deletion of an uploaded input file.
 
-        Implementations should swallow errors — this is a clean-up path.
+        The runtime invokes this as a best-effort clean-up path and swallows
+        provider errors.
 
         Args:
             file_id: Provider-assigned file identifier to delete.

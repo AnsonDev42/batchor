@@ -21,6 +21,7 @@ Typical usage::
 
 from batchor.artifacts import ArtifactStore, LocalArtifactStore
 from batchor.core.enums import (
+    GeminiBatchInputMode,
     ItemStatus,
     OpenAIEndpoint,
     OpenAIModel,
@@ -94,6 +95,7 @@ __all__ = [
     "CompositeItemSource",
     "CsvItemSource",
     "GeminiBatchProvider",
+    "GeminiBatchInputMode",
     "GeminiProviderConfig",
     "ItemFailure",
     "ItemStatus",

@@ -8,7 +8,8 @@ from pydantic import BaseModel
 from typer.testing import CliRunner
 
 from batchor.cli import create_app
-from batchor.core.models import OpenAIProviderConfig, PromptParts
+from batchor.core.enums import GeminiBatchInputMode
+from batchor.core.models import GeminiProviderConfig, OpenAIProviderConfig, PromptParts
 from batchor.providers.openai import OpenAIBatchProvider
 
 
@@ -41,6 +42,15 @@ class _FakeCliProvider:
             "url": "/v1/responses",
             "body": {"input": prompt_parts.prompt},
         }
+
+    def request_correlation_id(self, request_line):  # noqa: ANN001
+        return self._parser.request_correlation_id(request_line)
+
+    def with_request_correlation_id(self, request_line, custom_id):  # noqa: ANN001
+        return self._parser.with_request_correlation_id(request_line, custom_id)
+
+    def extract_response_text(self, response_record):  # noqa: ANN001
+        return self._parser.extract_response_text(response_record)
 
     def upload_input_file(self, input_path: Path) -> str:
         self._current_lines = [
@@ -144,6 +154,118 @@ def test_cli_start_loads_dotenv_for_local_usage(
     assert provider.env_seen_during_build == "dotenv-key"
     payload = json.loads(result.stdout)
     assert payload["run_id"].startswith("batchor_")
+
+
+def test_cli_start_builds_gemini_developer_config(tmp_path: Path) -> None:
+    input_path = tmp_path / "items.jsonl"
+    input_path.write_text('{"id":"row1","text":"hello"}\n', encoding="utf-8")
+    provider = _FakeCliProvider()
+    seen_configs: list[object] = []
+
+    def provider_factory(config):  # noqa: ANN001
+        seen_configs.append(config)
+        return provider
+
+    result = CliRunner().invoke(
+        create_app(provider_factory=provider_factory),
+        [
+            "start",
+            "--input",
+            str(input_path),
+            "--id-field",
+            "id",
+            "--prompt-field",
+            "text",
+            "--provider",
+            "gemini",
+            "--model",
+            "gemini-2.5-flash",
+            "--gemini-backend",
+            "developer",
+            "--gemini-input-mode",
+            "file",
+            "--gemini-generation-config",
+            '{"temperature":0.2}',
+            "--db-path",
+            str(tmp_path / "cli.sqlite3"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    config = seen_configs[0]
+    assert isinstance(config, GeminiProviderConfig)
+    assert config.vertexai is False
+    assert config.input_mode is GeminiBatchInputMode.FILE
+    assert config.generation_config == {"temperature": 0.2}
+
+
+def test_cli_start_builds_gemini_vertex_config(tmp_path: Path) -> None:
+    input_path = tmp_path / "items.jsonl"
+    input_path.write_text('{"id":"row1","text":"hello"}\n', encoding="utf-8")
+    provider = _FakeCliProvider()
+    seen_configs: list[object] = []
+
+    result = CliRunner().invoke(
+        create_app(provider_factory=lambda config: (seen_configs.append(config), provider)[1]),
+        [
+            "start",
+            "--input",
+            str(input_path),
+            "--id-field",
+            "id",
+            "--prompt-field",
+            "text",
+            "--provider",
+            "gemini",
+            "--model",
+            "gemini-2.5-flash",
+            "--gemini-backend",
+            "vertex",
+            "--gcs-uri",
+            "gs://bucket/prefix",
+            "--google-cloud-project",
+            "ma-policy",
+            "--google-cloud-location",
+            "europe-west8",
+            "--db-path",
+            str(tmp_path / "cli.sqlite3"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    config = seen_configs[0]
+    assert isinstance(config, GeminiProviderConfig)
+    assert config.vertexai is True
+    assert config.gcs_uri == "gs://bucket/prefix"
+    assert config.project == "ma-policy"
+    assert config.location == "europe-west8"
+
+
+def test_cli_start_rejects_invalid_gemini_generation_config(tmp_path: Path) -> None:
+    input_path = tmp_path / "items.jsonl"
+    input_path.write_text('{"id":"row1","text":"hello"}\n', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        create_app(provider_factory=lambda _config: _FakeCliProvider()),
+        [
+            "start",
+            "--input",
+            str(input_path),
+            "--id-field",
+            "id",
+            "--prompt-field",
+            "text",
+            "--provider",
+            "gemini",
+            "--model",
+            "gemini-2.5-flash",
+            "--gemini-generation-config",
+            "[]",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--gemini-generation-config must be a JSON object" in result.stderr
 
 
 def test_cli_wait_and_results_cover_operator_flow(tmp_path: Path) -> None:

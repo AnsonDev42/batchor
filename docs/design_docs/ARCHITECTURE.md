@@ -123,7 +123,7 @@ one logical source, while callers remain responsible for selecting and ordering
 the child sources up front.
 
 Provider adaptation is intentionally concentrated behind `BatchProvider`.
-The runtime stores one durable internal custom identifier per item attempt, while each provider maps that identifier to its own request JSONL field. OpenAI uses `custom_id`; Gemini uses `key`.
+The runtime stores one durable internal custom identifier per item attempt, while each provider maps that identifier to its own request shape. OpenAI uses `custom_id`; the Gemini Developer API uses `key`; Vertex AI uses a request label that is returned with the original request in GCS output.
 Provider hooks also own response-text extraction so structured-output parsing can stay generic across provider payload shapes.
 
 ## Main user-facing flow
@@ -406,7 +406,7 @@ That split gives `batchor`:
 ## Current invariants
 
 1. Public execution is run-oriented: `start()`, `get_run()`, `run_and_wait()`.
-2. OpenAI Batch is the only built-in provider.
+2. OpenAI Batch and text-only Gemini Batch are built-in Python and CLI providers; OpenAI remains the CLI default.
 3. SQLite is the default durable backend.
 4. Postgres is an opt-in durable backend for shared control-plane state.
 5. Structured outputs require a module-level Pydantic v2 model for rehydration.
@@ -439,7 +439,7 @@ The code is shaped for future providers and backends, but within explicit bounda
 
 ## Current gaps
 
-- the only built-in provider is OpenAI Batch
+- Gemini request construction is text-only
 - the only built-in artifact backend is local filesystem storage
 - arbitrary non-checkpointable iterables do not support mid-ingest crash recovery
 - the CLI does not expose the full Python API surface

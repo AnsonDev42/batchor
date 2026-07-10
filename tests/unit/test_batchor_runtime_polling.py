@@ -90,6 +90,9 @@ class _FakePollingProvider:
             error_content=error_content,
         )
 
+    def extract_response_text(self, response_record):  # noqa: ANN001
+        return self._parser.extract_response_text(response_record)
+
 
 def _polling_setup(
     tmp_path: Path,

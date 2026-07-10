@@ -319,8 +319,7 @@ def prepare_claimed_item(
     if item.request_artifact_path is not None:
         if item.request_artifact_line is None or item.request_sha256 is None:
             raise ValueError(f"incomplete request artifact pointer for item {item.item_id}")
-        request_line = with_provider_request_correlation_id(
-            context.provider,
+        request_line = context.provider.with_request_correlation_id(
             cast(
                 BatchRequestLine,
                 load_request_artifact_line(
@@ -349,7 +348,7 @@ def prepare_claimed_item(
     )
     return PreparedRequest(
         item_id=item.item_id,
-        custom_id=provider_request_correlation_id(context.provider, request_line),
+        custom_id=context.provider.request_correlation_id(request_line),
         request_line=cast(JSONObject, request_line),
         request_bytes=request_bytes,
         submission_tokens=submission_tokens,
@@ -372,31 +371,6 @@ def prepared_request_row(item: PreparedRequest) -> dict[str, Any]:
         "request_bytes": item.request_bytes,
         "submission_tokens": item.submission_tokens,
     }
-
-
-def provider_request_correlation_id(provider: object, request_line: BatchRequestLine) -> str:
-    """Return provider-facing request correlation id with OpenAI-compatible fallback."""
-    getter = getattr(provider, "request_correlation_id", None)
-    if callable(getter):
-        return str(getter(request_line))
-    custom_id = request_line.get("custom_id")
-    if not isinstance(custom_id, str) or not custom_id:
-        raise ValueError("request line is missing custom_id")
-    return custom_id
-
-
-def with_provider_request_correlation_id(
-    provider: object,
-    request_line: BatchRequestLine,
-    custom_id: str,
-) -> BatchRequestLine:
-    """Return request line with the provider-facing correlation id replaced."""
-    replacer = getattr(provider, "with_request_correlation_id", None)
-    if callable(replacer):
-        return cast(BatchRequestLine, replacer(request_line, custom_id))
-    updated = dict(request_line)
-    updated["custom_id"] = custom_id
-    return cast(BatchRequestLine, updated)
 
 
 def make_custom_id(item_id: str, attempt: int) -> str:

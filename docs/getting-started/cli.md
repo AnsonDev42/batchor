@@ -27,8 +27,17 @@ The rest of the commands rehydrate that durable run by `run_id`.
 
 ## Local setup
 
+For OpenAI:
+
 ```bash
 echo "OPENAI_API_KEY=sk-..." > .env
+```
+
+For the Gemini Developer API, install the provider extra and set its API key:
+
+```bash
+pip install "batchor[gemini]"
+echo "GEMINI_API_KEY=..." > .env
 ```
 
 ## Start a run from JSONL
@@ -56,6 +65,40 @@ batchor start \
 Use `--prompt-template` when the prompt should be derived from several fields.
 
 Exactly one of `--prompt-field` or `--prompt-template` is required.
+
+## Start a Gemini Developer API run
+
+```bash
+batchor start \
+  --input input/items.jsonl \
+  --id-field id \
+  --prompt-field text \
+  --provider gemini \
+  --model gemini-2.5-flash \
+  --gemini-backend developer
+```
+
+`--gemini-input-mode auto` uses inline requests below the API limit and the Files API for larger jobs. Use `inline` or `file` to force a transport. `--gemini-generation-config` accepts a JSON object such as `'{"temperature":0.2}'`.
+
+## Start a Gemini Vertex AI run
+
+Authenticate with Application Default Credentials, set the Google Cloud project and location, and provide a writable Cloud Storage staging prefix:
+
+```bash
+export GOOGLE_CLOUD_PROJECT="ma-policy"
+export GOOGLE_CLOUD_LOCATION="europe-west8"
+
+batchor start \
+  --input input/items.jsonl \
+  --id-field id \
+  --prompt-field text \
+  --provider gemini \
+  --model gemini-2.5-flash \
+  --gemini-backend vertex \
+  --gcs-uri gs://my-bucket/batchor
+```
+
+You may pass `--google-cloud-project` and `--google-cloud-location` instead of environment variables. `--gemini-backend auto` follows `GOOGLE_GENAI_USE_VERTEXAI`; choosing `developer` or `vertex` explicitly avoids ambiguity when both sets of credentials exist.
 
 ## Start a run from multiple files
 

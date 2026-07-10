@@ -152,6 +152,21 @@ Behavior:
 - is skipped unless `BATCHOR_RUN_LIVE_TESTS=1`
 - requires an OpenAI account with Batch API access and available billing quota
 
+## Live Gemini smoke
+
+Manual only. This runs three one-item jobs through the normal SQLite-backed runtime: Developer API inline, Developer Files API, and Vertex GCS. Developer files and temporary GCS objects are removed afterward:
+
+```bash
+export GOOGLE_CLOUD_PROJECT="my-project"
+export GOOGLE_CLOUD_LOCATION="europe-west8"
+export GOOGLE_GENAI_USE_VERTEXAI="true"
+export BATCHOR_LIVE_GEMINI_GCS_URI="gs://my-bucket/batchor-live"
+export BATCHOR_RUN_LIVE_GEMINI=1
+uv run --extra gemini pytest tests/integration/test_batchor_live_gemini.py --no-cov -q
+```
+
+The root `.env` or shell must also provide `GEMINI_API_KEY` with available Developer API billing/prepayment credits. The bucket must be writable by the active Application Default Credentials and should be in the same region as the Vertex job. The tests default to `gemini-2.5-flash` and a 30-minute timeout; override them with `BATCHOR_LIVE_GEMINI_DEVELOPER_MODEL`, `BATCHOR_LIVE_GEMINI_MODEL`, and `BATCHOR_LIVE_GEMINI_TIMEOUT_SEC`.
+
 Cost controls:
 
 - three total items across both live tests

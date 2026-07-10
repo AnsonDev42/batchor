@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Callable, Generic, TypeAlias, TypeVar, cast
 from pydantic import BaseModel
 
 from batchor.core.enums import (
+    GeminiBatchInputMode,
     ItemStatus,
     OpenAIEndpoint,
     OpenAIModel,
@@ -242,8 +243,16 @@ class GeminiProviderConfig(ProviderConfig):
 
     Attributes:
         model: Gemini model name, e.g. ``"gemini-2.5-flash"``.
-        api_key: Gemini API key.  When empty the runner falls back to the
-            ``GEMINI_API_KEY`` environment variable.
+        api_key: Gemini Developer API key. When empty the runner falls back to
+            ``GEMINI_API_KEY``. Vertex AI uses Application Default Credentials.
+        vertexai: Select Vertex AI explicitly. ``None`` follows
+            ``GOOGLE_GENAI_USE_VERTEXAI``.
+        project: Vertex AI project. When empty, uses ``GOOGLE_CLOUD_PROJECT``.
+        location: Vertex AI location. When empty, uses
+            ``GOOGLE_CLOUD_LOCATION``.
+        gcs_uri: Cloud Storage prefix used to stage Vertex input and output.
+        input_mode: ``auto``, ``inline``, ``file``, or ``gcs``. Auto selects
+            GCS for Vertex AI and inline/File API by size for Developer API.
         poll_interval_sec: Seconds to sleep between polling cycles when
             :meth:`~batchor.Run.wait` is used without a custom interval.
         generation_config: Gemini generation configuration merged into every
@@ -254,6 +263,11 @@ class GeminiProviderConfig(ProviderConfig):
 
     model: str
     api_key: str = ""
+    vertexai: bool | None = None
+    project: str = ""
+    location: str = ""
+    gcs_uri: str = ""
+    input_mode: GeminiBatchInputMode = GeminiBatchInputMode.AUTO
     poll_interval_sec: float = 1.0
     generation_config: JSONObject = field(default_factory=dict)
     display_name_prefix: str = "batchor"
@@ -265,11 +279,26 @@ class GeminiProviderConfig(ProviderConfig):
             raise ValueError("poll_interval_sec must be > 0")
         if not self.display_name_prefix.strip():
             raise ValueError("display_name_prefix must be a non-empty string")
+        try:
+            normalized_input_mode = GeminiBatchInputMode(self.input_mode)
+        except ValueError as exc:
+            raise ValueError("input_mode must be one of: auto, inline, file, gcs") from exc
+        if self.vertexai is True and normalized_input_mode in {
+            GeminiBatchInputMode.INLINE,
+            GeminiBatchInputMode.FILE,
+        }:
+            raise ValueError("Vertex AI Gemini batches require input_mode='gcs' or 'auto'")
+        if self.vertexai is False and normalized_input_mode is GeminiBatchInputMode.GCS:
+            raise ValueError("Gemini Developer API batches do not support input_mode='gcs'")
+        if self.gcs_uri and not self.gcs_uri.startswith("gs://"):
+            raise ValueError("gcs_uri must start with gs://")
         normalized_generation_config = _json_object_copy(
             self.generation_config,
             label="generation_config",
         )
         object.__setattr__(self, "generation_config", normalized_generation_config)
+        object.__setattr__(self, "input_mode", normalized_input_mode)
+        object.__setattr__(self, "gcs_uri", self.gcs_uri.rstrip("/"))
 
     @property
     def provider_kind(self) -> ProviderKind:
@@ -279,6 +308,11 @@ class GeminiProviderConfig(ProviderConfig):
         return {
             "api_key": self.api_key,
             "model": self.model,
+            "vertexai": self.vertexai,
+            "project": self.project,
+            "location": self.location,
+            "gcs_uri": self.gcs_uri,
+            "input_mode": self.input_mode.value,
             "poll_interval_sec": self.poll_interval_sec,
             "generation_config": dict(self.generation_config),
             "display_name_prefix": self.display_name_prefix,
@@ -295,6 +329,11 @@ class GeminiProviderConfig(ProviderConfig):
         """Deserialise a previously persisted Gemini provider config payload."""
         api_key = payload.get("api_key", "")
         model = payload.get("model")
+        vertexai = payload.get("vertexai")
+        project = payload.get("project", "")
+        location = payload.get("location", "")
+        gcs_uri = payload.get("gcs_uri", "")
+        input_mode = payload.get("input_mode", GeminiBatchInputMode.AUTO.value)
         poll_interval_sec = payload.get("poll_interval_sec", 1.0)
         generation_config = payload.get("generation_config", {})
         display_name_prefix = payload.get("display_name_prefix", "batchor")
@@ -302,6 +341,16 @@ class GeminiProviderConfig(ProviderConfig):
             raise TypeError("api_key must be a string")
         if not isinstance(model, str):
             raise TypeError("model must be a string")
+        if vertexai is not None and not isinstance(vertexai, bool):
+            raise TypeError("vertexai must be a bool or None")
+        if not isinstance(project, str):
+            raise TypeError("project must be a string")
+        if not isinstance(location, str):
+            raise TypeError("location must be a string")
+        if not isinstance(gcs_uri, str):
+            raise TypeError("gcs_uri must be a string")
+        if not isinstance(input_mode, str):
+            raise TypeError("input_mode must be a string")
         if not isinstance(poll_interval_sec, int | float):
             raise TypeError("poll_interval_sec must be numeric")
         if not isinstance(generation_config, dict):
@@ -311,6 +360,11 @@ class GeminiProviderConfig(ProviderConfig):
         return cls(
             api_key=api_key,
             model=model,
+            vertexai=vertexai,
+            project=project,
+            location=location,
+            gcs_uri=gcs_uri,
+            input_mode=GeminiBatchInputMode(input_mode),
             poll_interval_sec=float(poll_interval_sec),
             generation_config=cast(JSONObject, generation_config),
             display_name_prefix=display_name_prefix,

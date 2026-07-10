@@ -10,6 +10,7 @@ from batchor import (
     BatchItem,
     BatchJob,
     BatchRunner,
+    GeminiBatchInputMode,
     GeminiProviderConfig,
     MemoryStateStore,
     PromptParts,
@@ -152,7 +153,11 @@ def test_batch_runner_completes_text_job_with_gemini_provider() -> None:
         BatchJob(
             items=[BatchItem(item_id="row1", payload={"text": "hello"})],
             build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
-            provider_config=GeminiProviderConfig(api_key="k", model="gemini-2.5-flash"),
+            provider_config=GeminiProviderConfig(
+                api_key="k",
+                model="gemini-2.5-flash",
+                input_mode=GeminiBatchInputMode.FILE,
+            ),
         )
     )
 
@@ -193,7 +198,11 @@ def test_batch_runner_completes_structured_job_with_gemini_provider() -> None:
         BatchJob(
             items=[BatchItem(item_id="row1", payload={"text": "classify"})],
             build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
-            provider_config=GeminiProviderConfig(api_key="k", model="gemini-2.5-flash"),
+            provider_config=GeminiProviderConfig(
+                api_key="k",
+                model="gemini-2.5-flash",
+                input_mode=GeminiBatchInputMode.FILE,
+            ),
             structured_output=ClassificationResult,
         )
     )

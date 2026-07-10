@@ -75,6 +75,20 @@ class ProviderKind(StrEnum):
     GEMINI = "gemini"
 
 
+class GeminiBatchInputMode(StrEnum):
+    """Input transport used for Gemini batch jobs.
+
+    ``AUTO`` selects Cloud Storage for Vertex AI. For the Gemini Developer
+    API it uses inline requests below the API's 20 MiB request limit and the
+    Files API for larger batches.
+    """
+
+    AUTO = "auto"
+    INLINE = "inline"
+    FILE = "file"
+    GCS = "gcs"
+
+
 class StorageKind(StrEnum):
     """Identifier for a state-store backend.
 

@@ -20,7 +20,7 @@ Most users only need a small subset of the package:
 - `BatchRunner`: start, resume, and run orchestration
 - `Run`: refresh, wait, inspect, export, and prune
 - `OpenAIProviderConfig`: built-in provider config
-- `GeminiProviderConfig`: built-in Gemini provider config for Python API text batch jobs
+- `GeminiProviderConfig`: built-in Gemini provider config for text batch jobs; the common fields are also exposed by the CLI
 - `SQLiteStorage` and `PostgresStorage`: durable control-plane backends
 - `CompositeItemSource`, `CsvItemSource`, `JsonlItemSource`, and `ParquetItemSource`: deterministic item streaming
 

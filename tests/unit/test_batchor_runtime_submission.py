@@ -56,6 +56,14 @@ class _FakeSubmissionProvider:
             "body": body,
         }
 
+    @staticmethod
+    def request_correlation_id(request_line):  # noqa: ANN001
+        return request_line["custom_id"]
+
+    @staticmethod
+    def with_request_correlation_id(request_line, custom_id):  # noqa: ANN001
+        return {**request_line, "custom_id": custom_id}
+
     def upload_input_file(self, input_path: Path) -> str:
         input_path.read_text(encoding="utf-8")
         file_id = f"file_{self._next_file}"

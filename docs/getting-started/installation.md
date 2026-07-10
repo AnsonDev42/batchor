@@ -20,7 +20,7 @@ OpenAI support is installed by default. Gemini support uses Google's optional SD
 pip install "batchor[gemini]"
 ```
 
-The Gemini provider is currently Python API only and text-only. The CLI remains OpenAI-focused.
+Gemini support is text-only and is available through both the Python API and CLI.
 
 ## What gets installed
 
@@ -41,14 +41,16 @@ For Python API usage, authentication resolution is:
 1. `OpenAIProviderConfig(api_key=...)`
 2. `OPENAI_API_KEY`
 
-For Gemini Python API usage, authentication resolution is:
+For Gemini Developer API usage, authentication resolution is:
 
 1. `GeminiProviderConfig(api_key=...)`
 2. `GEMINI_API_KEY`
 
+Vertex AI uses Application Default Credentials and resolves project/location from explicit `GeminiProviderConfig` fields or `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`. Vertex batches also require a writable `gs://` staging prefix.
+
 The Python library does not auto-load `.env`.
 
-The CLI loads a local `.env` as a convenience for operator usage, then resolves `OPENAI_API_KEY`.
+The CLI loads a local `.env` as a convenience for operator usage. It resolves `OPENAI_API_KEY` for OpenAI, `GEMINI_API_KEY` for the Gemini Developer API, and the documented Google Cloud environment variables for Vertex AI. Rehydrated `status`, `wait`, and result operations load the same `.env` before reconstructing a provider.
 
 ## Storage defaults
 

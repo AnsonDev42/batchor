@@ -17,7 +17,7 @@ from batchor.runtime.retry import (
     is_enqueue_token_limit_error,
     is_retryable_batch_control_plane_error,
 )
-from batchor.runtime.validation import parse_structured_response, parse_text_response
+from batchor.runtime.validation import parse_structured_response
 from batchor.storage.state import (
     BatchArtifactPointer,
     CompletedItemRecord,
@@ -315,7 +315,7 @@ def consume_completed_batch(
             completions.append(
                 CompletedItemRecord(
                     custom_id=custom_id,
-                    output_text=extract_provider_response_text(context.provider, record),
+                    output_text=context.provider.extract_response_text(record),
                     raw_response=record,
                 )
             )
@@ -324,10 +324,7 @@ def consume_completed_batch(
             output_text, parsed_json, _validated = parse_structured_response(
                 record,
                 context.output_model,
-                text_extractor=lambda response_record: extract_provider_response_text(
-                    context.provider,
-                    response_record,
-                ),
+                text_extractor=context.provider.extract_response_text,
             )
         except Exception as exc:  # noqa: BLE001
             failures.append(
@@ -407,14 +404,6 @@ def consume_completed_batch(
             provider_kind=context.config.provider_config.provider_kind,
             data={"failed_item_count": len(failures)},
         )
-
-
-def extract_provider_response_text(provider: object, response_record: JSONObject) -> str:
-    """Extract text through a provider hook, falling back to OpenAI-compatible parsing."""
-    extractor = getattr(provider, "extract_response_text", None)
-    if callable(extractor):
-        return str(extractor(response_record))
-    return parse_text_response(response_record)
 
 
 def item_failure(

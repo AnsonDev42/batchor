@@ -20,7 +20,7 @@ def _repo_path(relative_path: str) -> str:
 
 def _project_guide() -> str:
     lines = [
-        "batchor is a durable OpenAI Batch runner with typed Pydantic outputs, resumable runs, durable artifacts, and a narrow operator CLI.",
+        "batchor is a durable OpenAI and Gemini Batch runner with typed Pydantic outputs, resumable runs, durable artifacts, and a narrow operator CLI.",
         "",
         f"Repo root: {REPO_ROOT}",
         "Read these first:",
@@ -28,6 +28,7 @@ def _project_guide() -> str:
         f"- README.md: {_repo_path('README.md')}",
         f"- Architecture: {_repo_path('docs/design_docs/ARCHITECTURE.md')}",
         f"- OpenAI batching: {_repo_path('docs/design_docs/OPENAI_BATCHING.md')}",
+        f"- Gemini batching: {_repo_path('docs/design_docs/GEMINI_BATCHING.md')}",
         f"- Storage and runs: {_repo_path('docs/design_docs/STORAGE_AND_RUNS.md')}",
         f"- Smoke tests: {_repo_path('docs/smoke-test.md')}",
         "",
@@ -60,11 +61,11 @@ VALIDATION_GUIDES = {
         "- uv run pytest tests/integration/test_batchor_runner.py --no-cov -q",
     ],
     "provider": [
-        "Use when changing OpenAI request shaping, batching, file upload/download handling, or provider normalization.",
+        "Use when changing OpenAI or Gemini request shaping, batching, file upload/download handling, or provider normalization.",
         "Commands:",
         "- uv run ty check src",
         "- uv run pytest -q",
-        "- uv run pytest tests/unit/test_batchor_openai_provider.py tests/unit/test_batchor_tokens.py --no-cov -q",
+        "- uv run pytest tests/unit/test_batchor_openai_provider.py tests/unit/test_batchor_gemini_provider.py tests/unit/test_batchor_tokens.py --no-cov -q",
     ],
     "storage": [
         "Use when changing SQLite/Postgres state handling, lifecycle persistence, or storage contracts.",
@@ -93,6 +94,7 @@ DOC_TOPICS = {
         ("README", "README.md", "Public scope, quickstart, and mental model."),
         ("Architecture", "docs/design_docs/ARCHITECTURE.md", "Package layout and runtime boundaries."),
         ("OpenAI batching", "docs/design_docs/OPENAI_BATCHING.md", "Provider request construction and enqueue policy."),
+        ("Gemini batching", "docs/design_docs/GEMINI_BATCHING.md", "Developer API and Vertex AI transports."),
         (
             "Storage and runs",
             "docs/design_docs/STORAGE_AND_RUNS.md",
@@ -110,6 +112,11 @@ DOC_TOPICS = {
             "OpenAI batching",
             "docs/design_docs/OPENAI_BATCHING.md",
             "Batch shaping, token budgeting, and provider behavior.",
+        ),
+        (
+            "Gemini batching",
+            "docs/design_docs/GEMINI_BATCHING.md",
+            "Developer inline/File modes, Vertex GCS transport, and provider limits.",
         ),
         ("Architecture", "docs/design_docs/ARCHITECTURE.md", "Provider layer boundary."),
         ("Smoke tests", "docs/smoke-test.md", "Targeted provider validation."),

@@ -65,6 +65,20 @@ print(run.results()[0].output_text)
 
 If `api_key` is omitted, the provider resolves `GEMINI_API_KEY` when it needs to create a live SDK client.
 
+Vertex AI uses Cloud Storage rather than the Developer Files API:
+
+```python
+provider_config = GeminiProviderConfig(
+    model="gemini-2.5-flash",
+    vertexai=True,
+    project="my-project",
+    location="europe-west8",
+    gcs_uri="gs://my-bucket/batchor",
+)
+```
+
+With `input_mode="auto"`, Vertex always uses GCS. The Developer API uses inline requests below 20 MB and its Files API for larger batches.
+
 ## Structured output job
 
 ```python
