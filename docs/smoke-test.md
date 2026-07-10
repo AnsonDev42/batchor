@@ -75,6 +75,7 @@ Expected:
 - subprocess crash + resume can recover `queued_local` work and replay persisted request artifacts
 - replaying multiple items from the same persisted request artifact does not require rereading that artifact file for each item
 - deterministic source ingestion can resume from a persisted checkpoint when rerun with the same `run_id`
+- incomplete checkpointed ingestion cannot become terminal, and fresh-process advancement requires reattaching the source with `start(job, run_id=...)`
 - composite deterministic sources can namespace duplicate row IDs across explicit inputs and resume across source boundaries
 - Parquet source adapters can resume from opaque checkpoints and project only required columns
 - retry/resume from persisted request artifacts still works for SQLite-backed runs

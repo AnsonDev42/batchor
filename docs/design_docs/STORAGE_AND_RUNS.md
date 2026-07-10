@@ -37,7 +37,7 @@ Important semantics:
 
 - `status` is cached from the last summary read or refresh
 - `refresh()` performs one poll-and-submit pass
-- `wait()` repeatedly refreshes until the run is terminal, and skips the poll-interval sleep after refreshes that complete items, fail items, or submit additional batches
+- `wait()` repeatedly advances through the internal executor until the run is terminal, and skips the poll-interval sleep when the structured cycle outcome reports durable progress
 - `results()` and artifact lifecycle operations are terminal-only
 - terminal currently means either `completed` or `completed_with_failures`
 - `read_terminal_results()` and `export_terminal_results()` are incremental APIs for already-terminal items and are safe to call before the whole run finishes
@@ -177,11 +177,18 @@ Successful rehydration depends on:
 - credentials being available when a refresh needs to talk to the provider
 
 Fresh-process resume also requeues any `queued_local` items back to `pending` before submission resumes.
+This recovery happens when an execution owner advances the run, not when a
+caller merely reads a handle with `get_run()` or changes control state.
 When `start(job, run_id=...)` resumes a run with active provider batches, it first performs a poll-only reconciliation pass. Terminal provider batches are consumed, failed batches update retry backoff, and any active backoff prevents new source materialization or submission until the backoff expires.
 
 Resume compatibility intentionally ignores non-persisted secret fields such as provider API keys.
 
 For deterministic-source resume, the caller must also reuse the same `run_id` and provide the same source identity/fingerprint.
+An incomplete ingest checkpoint is part of terminal-state calculation. In the
+same process, `Run.resume()` continues ingestion when the original job remains
+attached. A rehydrated run without that source stays non-terminal and raises
+`RunIngestionSourceRequiredError` from `refresh()`/`wait()`, directing the caller
+to `start(job, run_id=...)`.
 For composite sources, that includes the same ordered child identities; changing the child order or swapping one file changes the logical source identity.
 
 Built-in deterministic sources currently include:

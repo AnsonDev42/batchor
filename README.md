@@ -76,6 +76,11 @@ Durability is split on purpose:
 
 That split is what allows retries and fresh-process resume without keeping every request inline in the control-plane store.
 On resume, existing active provider batches are polled before `batchor` materializes or submits new local work, so completed batches and retry backoff are reconciled first. Deterministic sources also use stored checkpoint completion metadata to avoid opening a fully materialized Parquet or composite source just to discover there are no rows left.
+Incomplete checkpointed ingestion keeps the run non-terminal. In the process that
+started the job, `Run.resume()` can continue from the attached source. After a
+fresh-process rehydration, call `start(job, run_id=...)`; `refresh()` otherwise
+raises `RunIngestionSourceRequiredError` instead of silently completing only the
+already-materialized rows.
 
 ## Architecture
 
@@ -86,6 +91,7 @@ graph LR
     subgraph runtime["runtime/"]
         BatchRunner
         Run["Run handle"]
+        Executor["RunExecutor"]
     end
 
     subgraph providers["providers/"]
@@ -108,6 +114,7 @@ graph LR
 
     User -->|"start() / run_and_wait()"| BatchRunner
     BatchRunner --> Run
+    BatchRunner --> Executor
     BatchRunner --> OpenAI
     BatchRunner --> SQLite
     BatchRunner --> LocalFS
