@@ -32,6 +32,7 @@ uv run pytest -q
 This path uses the default pytest configuration, which:
 
 - runs in parallel
+- collects this package's `tests/` directory by default, so local reference checkouts are not treated as part of the smoke suite
 - enforces strict pytest config/marker handling
 - enforces the `85%` coverage gate
 
@@ -79,16 +80,22 @@ Expected:
 - composite deterministic sources can namespace duplicate row IDs across explicit inputs and resume across source boundaries
 - Parquet source adapters can resume from opaque checkpoints and project only required columns
 - retry/resume from persisted request artifacts still works for SQLite-backed runs
+- resumed runs reconcile existing active batches and persisted backoff before materializing more source rows
 - transient batch-poll failures do not block unrelated pending submissions from being sent when capacity remains
 - paused runs stop polling/submission until resumed
+- OpenAI control-plane and batch-level insufficient-quota provider failures auto-pause with a durable `control_reason` and do not consume item attempts
+- OpenAI row-level insufficient-quota records in completed batch output remain retryable, do not consume attempts, and back off without pausing the run
+- quota auto-pause preserves `cancel_requested` and does not strand non-checkpointed input rows during initial ingestion
 - cancelled runs drain already-submitted work and mark remaining local items as `run_cancelled`
 - incremental terminal-result reads/exports remain sequence-based and idempotent across repeated calls
 - raw output/error artifacts can be exported and require export before raw pruning
 - raw output/error artifact persistence can be disabled without breaking parsed terminal results or request-artifact replay
 - terminal runs, including `completed_with_failures`, can prune request artifacts without losing persisted results
 - shared storage-contract behavior remains aligned across SQLite and opt-in Postgres
+- completed submitted items report consumed attempts consistently across storage backends
 - OpenAI request splitting and enqueue-limit logic still behave as expected
 - Gemini text-only request construction, batch polling normalization, response parsing, and structured-output validation still behave as expected
+- wait-mode refresh cycles keep draining immediately after poll/submission progress, without introducing idle poll sleeps while more local work can be sent
 - structured-output parsing remains stable
 
 Notes:

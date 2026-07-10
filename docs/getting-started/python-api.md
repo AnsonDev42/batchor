@@ -344,6 +344,8 @@ runner = BatchRunner(
 )
 ```
 
+`PostgresStorage` uses psycopg v3. Plain `postgresql://` and `postgres://` DSNs are accepted and normalized to `postgresql+psycopg://`; explicit SQLAlchemy driver schemes are left unchanged.
+
 ## Artifacts, export, prune, and retention
 
 `batchor` stores request artifacts for replay and raw output artifacts for audit/export.

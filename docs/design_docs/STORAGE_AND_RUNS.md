@@ -18,6 +18,7 @@ The public handle exposes:
 - `run_id`
 - cached `status`
 - cached `control_state`
+- cached `control_reason`
 - `is_finished`
 - `refresh()`
 - `wait()`
@@ -36,7 +37,7 @@ Important semantics:
 
 - `status` is cached from the last summary read or refresh
 - `refresh()` performs one poll-and-submit pass
-- `wait()` repeatedly refreshes until the run is terminal
+- `wait()` repeatedly refreshes until the run is terminal, and skips the poll-interval sleep after refreshes that complete items, fail items, or submit additional batches
 - `results()` and artifact lifecycle operations are terminal-only
 - terminal currently means either `completed` or `completed_with_failures`
 - `read_terminal_results()` and `export_terminal_results()` are incremental APIs for already-terminal items and are safe to call before the whole run finishes
@@ -49,6 +50,7 @@ The control plane is the state store:
 
 - run config
 - run control state
+- run control reason
 - item rows and attempts
 - active batch rows
 - parsed outputs and failure records
@@ -80,6 +82,7 @@ Current storage responsibilities include:
 
 - persisting public run config
 - persisting run control state
+- persisting run control reason
 - persisting deterministic-source ingest checkpoints when available
 - persisting item state and attempts
 - persisting terminal result sequence metadata for incremental reads
@@ -111,12 +114,23 @@ For SQLite-backed runs, the default artifact root is a sibling `*_artifacts/` di
 ## Postgres behavior
 
 Postgres exists as an opt-in control-plane backend for cases where SQLite is not enough, such as shared state across processes or hosts.
+`PostgresStorage` uses psycopg v3. Plain `postgresql://` and `postgres://` DSNs are normalized to `postgresql+psycopg://` before engine creation; explicit SQLAlchemy driver schemes are preserved.
 
 Important operational rule:
 
 - if you use Postgres across machines or fresh processes, provide a shared artifact root explicitly
 
 Postgres stores the control plane, not the large request/output files themselves.
+
+## Attempt accounting
+
+Item `attempt_count` records consumed provider attempts.
+
+- Successful submitted completions increment the counter once.
+- Counted item-level provider or parse failures increment the counter before retry/permanent-failure decisions.
+- Local pre-submission rejections, control-plane quota pauses, batch-level reset-to-pending paths, and missing output rows marked with `count_attempt=False` do not increment it.
+
+This keeps terminal exports aligned with audit expectations: a first-attempt success reports `attempt_count == 1`, and a retryable counted failure followed by success reports `attempt_count == 2`.
 
 ## File-source checkpoints
 
@@ -163,6 +177,7 @@ Successful rehydration depends on:
 - credentials being available when a refresh needs to talk to the provider
 
 Fresh-process resume also requeues any `queued_local` items back to `pending` before submission resumes.
+When `start(job, run_id=...)` resumes a run with active provider batches, it first performs a poll-only reconciliation pass. Terminal provider batches are consumed, failed batches update retry backoff, and any active backoff prevents new source materialization or submission until the backoff expires.
 
 Resume compatibility intentionally ignores non-persisted secret fields such as provider API keys. Rehydrated OpenAI runs need `OPENAI_API_KEY` when no explicit in-memory config is supplied. Gemini Developer API runs need `GEMINI_API_KEY`; Vertex runs need Application Default Credentials plus the persisted or ambient project, location, and GCS prefix configuration.
 
@@ -175,6 +190,8 @@ Built-in deterministic sources currently include:
 - `CsvItemSource`
 - `JsonlItemSource`
 - `ParquetItemSource`
+
+For checkpointed ingestion, durable stores append materialized item chunks and advance the ingest checkpoint in one storage operation. Parquet and composite sources can also identify an end-of-source checkpoint from cheap metadata, so a resume after all rows were materialized but before the final completion flag was written can mark ingestion complete without re-reading the source data or re-rendering prompts.
 
 Once an item has a durable request artifact pointer, `batchor` prunes large inline request-building fields from the control-plane store and relies on the artifact for later retries.
 Provider-specific request rows are preserved in those artifacts. During replay, OpenAI updates `custom_id`; Gemini updates either the Developer API `key` or the Vertex correlation label. All map back to the same internal durable attempt identifier.
@@ -223,7 +240,15 @@ Semantics:
 - `resume` restarts those local activities from persisted state
 - `cancel` stops new ingestion/submission, keeps polling active provider batches, and then permanently fails remaining local non-terminal items with `error_class="run_cancelled"`
 
-`wait()` fails fast on paused runs instead of sleeping indefinitely.
+Manual pauses record `control_reason="manual"`. OpenAI upload/create/polling and batch-level insufficient-quota pauses record `control_reason="openai_insufficient_quota"`, clear batch-control-plane backoff, and preserve affected items for later retry without consuming attempts.
+
+Row-level insufficient-quota records inside completed batch outputs do not pause the run. Those items are stored as `failed_retryable` with `error_class="openai_insufficient_quota"`, do not consume attempts, and rely on retry backoff before they are submitted again.
+
+Auto-pause must not overwrite `cancel_requested`. Cancellation is non-reversible, so quota errors observed while draining already-submitted batches leave the run in cancel flow.
+
+For non-checkpointed finite iterables, ingestion continues materializing remaining items after an auto-pause so `resume()` cannot silently lose input rows that were not yet persisted. Checkpointed sources may stop on pause because their stored checkpoint can resume materialization later.
+
+`wait()` fails fast on paused runs instead of sleeping indefinitely. The raised `RunPausedError` carries the same `control_reason` as the summary.
 Provider-side remote cancellation is still `TBD`.
 
 ## Python API versus CLI

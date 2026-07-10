@@ -57,6 +57,7 @@ Before request artifacts exist, built-in deterministic sources can resume ingest
 That currently includes CSV, JSONL, Parquet, and `CompositeItemSource` for ordered composition of checkpointed sources.
 When `CompositeItemSource` is used, child-source row IDs are auto-namespaced into run-unique `item_id` values, while the original row ID is preserved in lineage metadata.
 Custom non-file sources must implement a durable checkpoint contract explicitly; arbitrary iterables and live DB cursors are still `TBD`.
+Before resumed ingestion continues, active OpenAI batches are polled once. If that poll consumes terminal batches or records enqueue/backoff failures, those state changes are applied before any new prompt rendering, request replay, or submission happens.
 
 ## Raw output retention
 
@@ -101,6 +102,7 @@ For structured outputs:
 - the result is validated through the declared Pydantic model
 
 Validation failures consume item attempts because they represent item-level response failure, not a transient provider control-plane problem.
+Successful submitted responses also consume one item attempt. A successful first provider response is exported with `attempt_count == 1`; a counted retryable item failure followed by success is exported with the total consumed attempts.
 
 ## Token estimation
 
@@ -127,6 +129,7 @@ From those settings, `batchor` derives:
 - an effective per-batch token limit
 
 Submission is constrained by both token budget and generic chunking rules such as max request count and max request file size.
+During `Run.wait()`, each drain cycle polls active batches before submitting new work, so capacity freed by completed batches is visible before the next submit attempt. If that cycle makes durable progress, the wait loop immediately runs another cycle instead of sleeping.
 
 ## Batch splitting
 
@@ -139,6 +142,7 @@ Splitting considers:
 - estimated request tokens
 
 Submission claims only a bounded pending-item window per refresh. This is intentional: large backlogs should not pay full prompt-build and token-estimation cost long before provider capacity exists to send them.
+The default claim window is still large enough to prepare multiple provider batches per cycle, so runs with high remote enqueue headroom can keep filling capacity without waiting for one local batch at a time.
 
 If a single request exceeds the allowed OpenAI token limit by itself, that item is marked as a permanent item failure instead of aborting the whole run.
 
@@ -152,16 +156,23 @@ Control-plane failures:
 - retryable control-plane failures do not consume item attempts
 - batch submit failures can trigger batch-level backoff
 - transient poll failures do not stall unrelated submissions when other capacity remains
+- resume honors existing batch backoff before materializing more source rows
+- OpenAI 429 insufficient-quota or billing exhaustion during upload/create/polling auto-pauses the run with `control_reason="openai_insufficient_quota"` instead of continuing through the backlog
+- batch-level terminal insufficient-quota failures also auto-pause after submitted rows are reset to pending
 
 Item-level failures:
 
+- successful submitted responses consume attempts
 - structured-output parse failures consume attempts
 - validation failures consume attempts
 - oversized requests become permanent item failures
+- item-level insufficient-quota records inside completed batch output are retryable without consuming attempts
+- row-level insufficient-quota records emit `openai_insufficient_quota` failure telemetry and record retry backoff before resubmission instead of pausing the whole run
 
 Cleanup behavior:
 
 - if upload succeeds but batch creation fails, `batchor` makes a best-effort attempt to delete the uploaded OpenAI input file
+- if upload or batch creation fails because OpenAI reports insufficient quota, local queued items are released back to pending before the run is paused
 - if a process dies after local artifact persistence but before durable batch registration, fresh-process resume requeues those items and resubmits from persisted request artifacts
 
 ## Run control
@@ -171,6 +182,8 @@ Run control is local control-plane state, not a separate OpenAI provider feature
 - `pause` stops new ingestion, new submission, and provider polling
 - `resume` restarts those local activities
 - `cancel` stops new ingestion/submission, continues polling already-submitted batches, and then marks any remaining local non-terminal items as `run_cancelled`
+- automatic quota pause uses the same `paused` control state as manual pause for control-plane and batch-level quota failures, but records `control_reason="openai_insufficient_quota"` so operators can tell why `wait()` exited
+- automatic quota pause is ignored once `cancel_requested` is set, because cancellation is not reversible
 
 Provider-side remote batch cancellation is not implemented in v1.
 

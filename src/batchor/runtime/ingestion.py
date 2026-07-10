@@ -21,6 +21,10 @@ from batchor.storage.state import (
 )
 
 
+def _noop_poll_active_batches(_run_id: str, _context: RunContext) -> None:
+    return
+
+
 @dataclass(frozen=True)
 class IngestionDeps:
     """Dependencies needed by the ingestion and resume layer.
@@ -29,6 +33,8 @@ class IngestionDeps:
         state: Durable state store used for ingest checkpoints and items.
         emit_event: Observer callback used for coarse lifecycle events.
         submit_pending_items: Callback used to submit items during ingestion.
+        poll_active_batches: Callback used to reconcile already-submitted
+            batches before resume materializes or submits new local work.
         configs_match_for_resume: Predicate used to validate resume
             compatibility.
     """
@@ -37,6 +43,7 @@ class IngestionDeps:
     emit_event: Callable[..., None]
     submit_pending_items: Callable[[str, RunContext], int]
     configs_match_for_resume: Callable[[PersistedRunConfig, PersistedRunConfig], bool]
+    poll_active_batches: Callable[[str, RunContext], None] = _noop_poll_active_batches
 
 
 def resume_existing_run(
@@ -67,11 +74,30 @@ def resume_existing_run(
     control_state = deps.state.get_run_control_state(run_id=run_id)
     if control_state is RunControlState.CANCEL_REQUESTED:
         return
+    if control_state is RunControlState.RUNNING and deps.state.get_active_batches(run_id=run_id):
+        deps.poll_active_batches(run_id, context)
+        summary = deps.state.get_run_summary(run_id=run_id)
+        if summary.backoff_remaining_sec > 0:
+            return
+        control_state = deps.state.get_run_control_state(run_id=run_id)
+        if control_state is RunControlState.CANCEL_REQUESTED:
+            return
+    if deps.state.get_batch_retry_backoff_remaining_sec(run_id=run_id) > 0:
+        return
     checkpoint = deps.state.get_ingest_checkpoint(run_id=run_id)
     if checkpoint is not None and not checkpoint.ingestion_complete:
         source = require_checkpointed_source(job, run_id=run_id)
         validate_checkpoint_source(run_id=run_id, source=source, checkpoint=checkpoint)
         if control_state is RunControlState.PAUSED:
+            return
+        if checkpoint.checkpoint_payload is not None and source.checkpoint_is_complete(checkpoint.checkpoint_payload):
+            deps.state.update_ingest_checkpoint(
+                run_id=run_id,
+                next_item_index=checkpoint.next_item_index,
+                checkpoint_payload=checkpoint.checkpoint_payload,
+                ingestion_complete=True,
+            )
+            deps.submit_pending_items(run_id, context)
             return
         ingest_job_items(
             deps,
@@ -115,7 +141,16 @@ def ingest_job_items(
         start_index=start_index,
         checkpoint_payload=checkpoint_payload,
     ):
-        deps.state.append_items(run_id=run_id, items=item_chunk)
+        if checkpointed:
+            deps.state.append_items_with_ingest_checkpoint(
+                run_id=run_id,
+                items=item_chunk,
+                next_item_index=next_item_index,
+                checkpoint_payload=next_checkpoint_payload,
+                ingestion_complete=False,
+            )
+        else:
+            deps.state.append_items(run_id=run_id, items=item_chunk)
         deps.emit_event(
             "items_ingested",
             run_id=run_id,
@@ -125,20 +160,16 @@ def ingest_job_items(
                 "last_item_index": item_chunk[-1].item_index,
             },
         )
-        if checkpointed:
-            deps.state.update_ingest_checkpoint(
-                run_id=run_id,
-                next_item_index=next_item_index,
-                checkpoint_payload=next_checkpoint_payload,
-                ingestion_complete=False,
-            )
         control_state = deps.state.get_run_control_state(run_id=run_id)
         if control_state is RunControlState.CANCEL_REQUESTED:
             ingestion_complete = False
             break
         deps.submit_pending_items(run_id, context)
         control_state = deps.state.get_run_control_state(run_id=run_id)
-        if control_state is not RunControlState.RUNNING:
+        if control_state is RunControlState.CANCEL_REQUESTED:
+            ingestion_complete = False
+            break
+        if checkpointed and control_state is not RunControlState.RUNNING:
             ingestion_complete = False
             break
     if checkpointed:

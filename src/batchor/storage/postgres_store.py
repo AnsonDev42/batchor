@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
 
-from sqlalchemy import and_, create_engine, select, text, update
-from sqlalchemy.engine import Engine
+from sqlalchemy import and_, create_engine, inspect, select, text, update
+from sqlalchemy.engine import Engine, make_url
 
 from batchor.core.enums import ItemStatus
 from batchor.providers.registry import ProviderRegistry, build_default_provider_registry
@@ -19,6 +19,7 @@ from batchor.storage.sqlite_results import SQLiteResultsMixin
 from batchor.storage.sqlite_schema import (
     ITEMS_TABLE,
     METADATA,
+    RUNS_TABLE,
     SQLITE_SCHEMA_VERSION,
     STORAGE_METADATA_TABLE,
 )
@@ -45,12 +46,13 @@ class PostgresStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin
             raise ValueError("PostgresStorage requires a non-empty dsn")
         if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", schema):
             raise ValueError(f"invalid postgres schema name: {schema}")
-        self.dsn = dsn
+        normalized_dsn = _normalize_postgres_dsn(dsn)
+        self.dsn = normalized_dsn
         self.schema = schema
         self.path = Path(f"postgres/{schema}")
         self._now = now or (lambda: datetime.now(UTC))
         self.provider_registry = provider_registry or build_default_provider_registry()
-        self._base_engine = engine or create_engine(dsn, future=True)
+        self._base_engine = engine or create_engine(normalized_dsn, future=True)
         with self._base_engine.begin() as conn:
             conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
         self.engine = self._base_engine.execution_options(schema_translate_map={None: schema})
@@ -74,6 +76,11 @@ class PostgresStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin
 
     def _ensure_schema(self) -> None:
         with self.engine.begin() as conn:
+            run_columns = {
+                str(column["name"]) for column in inspect(conn).get_columns(RUNS_TABLE.name, schema=self.schema)
+            }
+            if "control_reason" not in run_columns:
+                conn.execute(text(f'ALTER TABLE "{self.schema}"."runs" ADD COLUMN control_reason VARCHAR'))
             existing_schema_row = conn.execute(
                 select(STORAGE_METADATA_TABLE.c.value).where(STORAGE_METADATA_TABLE.c.key == "schema_version")
             ).first()
@@ -157,3 +164,10 @@ class PostgresStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin
     def __del__(self) -> None:
         with suppress(Exception):
             self.close()
+
+
+def _normalize_postgres_dsn(dsn: str) -> str:
+    url = make_url(dsn)
+    if url.drivername in {"postgres", "postgresql"}:
+        return url.set(drivername="postgresql+psycopg").render_as_string(hide_password=False)
+    return dsn

@@ -58,6 +58,7 @@ Important constraints:
 - structured-output rehydration requires an importable module-level Pydantic model
 - raw output artifacts are retained by default and must be exported before raw pruning
 - pause/resume/cancel and incremental terminal-result APIs are library-first today
+- OpenAI control-plane or batch-level 429 quota/billing exhaustion auto-pauses the run instead of burning attempts across the remaining backlog
 
 ## Mental model
 
@@ -77,6 +78,7 @@ Durability is split on purpose:
 - the artifact store keeps replayable request JSONL and downloaded raw batch payloads
 
 That split is what allows retries and fresh-process resume without keeping every request inline in the control-plane store.
+On resume, existing active provider batches are polled before `batchor` materializes or submits new local work, so completed batches and retry backoff are reconciled first. Deterministic sources also use stored checkpoint completion metadata to avoid opening a fully materialized Parquet or composite source just to discover there are no rows left.
 
 ## Architecture
 
@@ -285,6 +287,8 @@ run.wait()
 print(run.results()[0].output)
 ```
 
+While waiting, `batchor` polls active batches before submitting more work. If a refresh consumes a completed batch, records terminal item state, or submits another provider batch, `Run.wait()` immediately continues draining instead of sleeping for the next poll interval.
+
 Structured-output models are validated up front against the OpenAI strict-schema subset used by `batchor`.
 
 - root schema must be an object
@@ -432,6 +436,8 @@ run.cancel()
 
 Run control and incremental terminal-result APIs are Python-first in this release. The CLI does not yet expose `pause`, `resume`, `cancel`, or incremental terminal-result export commands.
 
+OpenAI insufficient-quota failures during upload/create/polling, or as a batch-level terminal error, are treated as an automatic pause with `summary().control_reason == "openai_insufficient_quota"`. Row-level insufficient-quota records inside a completed batch output stay item-scoped: those rows become retryable without consuming attempts, emit `openai_insufficient_quota` failure telemetry, and use retry backoff before resubmission. Auto-pause does not replace an in-progress cancellation.
+
 ## CLI quickstart
 
 The CLI is intentionally narrower than the Python API:
@@ -517,12 +523,13 @@ def observer(event: RunEvent) -> None:
 runner = BatchRunner(observer=observer)
 ```
 
-Current events include run creation/resume, item ingestion, batch submission/polling/completion, item completion/failure, and artifact export/prune.
+Current events include run creation/resume, automatic quota pause, item ingestion, batch submission/polling/completion, item completion/failure, and artifact export/prune.
 
 ## Storage notes
 
 - SQLite remains the default durable backend.
-- `PostgresStorage` is available for shared control-plane state, but the CLI remains SQLite-only today.
+- `PostgresStorage` is available for shared control-plane state, but the CLI remains SQLite-only today. Plain `postgresql://` and `postgres://` DSNs are normalized to the package's psycopg v3 driver URL.
+- Item `attempt_count` means consumed provider attempts: successful submitted completions increment it, counted item-level failures increment it, and local or batch-level retry/reset paths that did not consume an item attempt leave it unchanged.
 - Durable artifacts now go through an `ArtifactStore` seam. The built-in implementation is `LocalArtifactStore`, intended for local disk or a shared mounted volume.
 - Fresh-process resume requeues any locally claimed but not yet submitted items before continuing, so a process crash after request-artifact persistence does not strand work in `queued_local`.
 

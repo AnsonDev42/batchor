@@ -186,6 +186,37 @@ def test_parquet_item_source_resumes_from_checkpoint(tmp_path: Path) -> None:
     assert [item.item.item_id for item in resumed] == ["r2", "r3"]
 
 
+def test_parquet_item_source_detects_complete_checkpoint(tmp_path: Path) -> None:
+    path = tmp_path / "items.parquet"
+    table = pa.table(
+        {
+            "id": ["r1", "r2"],
+            "text": ["alpha", "beta"],
+        }
+    )
+    pq.write_table(table, path, row_group_size=1)
+
+    source = ParquetItemSource(
+        path,
+        item_id_from_row=lambda row: str(row["id"]),
+        payload_from_row=lambda row: {"text": row["text"]},
+        columns=["id", "text"],
+    )
+
+    assert source.checkpoint_is_complete(
+        {
+            "row_group_index": 2,
+            "row_index_within_group": 0,
+        }
+    )
+    assert not source.checkpoint_is_complete(
+        {
+            "row_group_index": 1,
+            "row_index_within_group": 0,
+        }
+    )
+
+
 def test_composite_item_source_namespaces_item_ids_and_lineage() -> None:
     source_a = _StaticCheckpointedSource(
         name="a",
@@ -274,6 +305,18 @@ def test_composite_item_source_skips_empty_children_and_resumes_across_boundarie
     }
     resumed = list(composite.iter_from_checkpoint(checkpointed_items[1].next_checkpoint))
     assert [item.item.item_id for item in resumed] == [f"{third_namespace}__c1"]
+    assert composite.checkpoint_is_complete(
+        {
+            "source_index": 3,
+            "child_checkpoint": None,
+        }
+    )
+    assert not composite.checkpoint_is_complete(
+        {
+            "source_index": 1,
+            "child_checkpoint": None,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

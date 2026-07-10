@@ -22,6 +22,7 @@ from batchor.runtime.artifacts import (
 from batchor.runtime.context import RunContext
 from batchor.runtime.retry import (
     classify_batch_error,
+    is_insufficient_quota_error,
     is_retryable_batch_control_plane_error,
 )
 from batchor.runtime.tokens import (
@@ -224,7 +225,26 @@ def submit_pending_items(
             break
         with ExitStack() as stack:
             request_file = stack.enter_context(deps.artifact_store.stage_local_copy(request_relative_path.as_posix()))
-            remote_input_file_id = context.provider.upload_input_file(request_file)
+            try:
+                remote_input_file_id = context.provider.upload_input_file(request_file)
+            except Exception as exc:  # noqa: BLE001
+                if is_insufficient_quota_error(exc):
+                    _release_unsubmitted_claimed_items(
+                        deps,
+                        run_id=run_id,
+                        claimed=claimed,
+                        submitted_item_ids=submitted_item_ids,
+                        failed_item_ids=failed_item_ids,
+                    )
+                    pause_run_for_insufficient_quota(
+                        deps,
+                        run_id=run_id,
+                        context=context,
+                        error=exc,
+                        phase="batch_upload",
+                    )
+                    return submitted_count
+                raise
             try:
                 batch = context.provider.create_batch(
                     input_file_id=remote_input_file_id,
@@ -232,6 +252,22 @@ def submit_pending_items(
                 )
             except Exception as exc:  # noqa: BLE001
                 cleanup_uploaded_input_file(context, remote_input_file_id)
+                if is_insufficient_quota_error(exc):
+                    _release_unsubmitted_claimed_items(
+                        deps,
+                        run_id=run_id,
+                        claimed=claimed,
+                        submitted_item_ids=submitted_item_ids,
+                        failed_item_ids=failed_item_ids,
+                    )
+                    pause_run_for_insufficient_quota(
+                        deps,
+                        run_id=run_id,
+                        context=context,
+                        error=exc,
+                        phase="batch_create",
+                    )
+                    return submitted_count
                 if not is_retryable_batch_control_plane_error(exc):
                     raise
                 deps.state.record_batch_retry_failure(
@@ -292,6 +328,52 @@ def submit_pending_items(
     if unsent:
         deps.state.release_items_to_pending(run_id=run_id, item_ids=unsent)
     return submitted_count
+
+
+def _release_unsubmitted_claimed_items(
+    deps: SubmissionDeps,
+    *,
+    run_id: str,
+    claimed: list[ClaimedItem],
+    submitted_item_ids: set[str],
+    failed_item_ids: set[str],
+) -> None:
+    unsent = [
+        item.item_id
+        for item in claimed
+        if item.item_id not in submitted_item_ids and item.item_id not in failed_item_ids
+    ]
+    if unsent:
+        deps.state.release_items_to_pending(run_id=run_id, item_ids=unsent)
+
+
+def pause_run_for_insufficient_quota(
+    deps: SubmissionDeps,
+    *,
+    run_id: str,
+    context: RunContext,
+    error: object,
+    phase: str,
+) -> bool:
+    if deps.state.get_run_control_state(run_id=run_id) is RunControlState.CANCEL_REQUESTED:
+        return False
+    deps.state.clear_batch_retry_backoff(run_id=run_id)
+    deps.state.set_run_control_state(
+        run_id=run_id,
+        control_state=RunControlState.PAUSED,
+        control_reason="openai_insufficient_quota",
+    )
+    deps.emit_event(
+        "run_auto_paused",
+        run_id=run_id,
+        provider_kind=context.config.provider_config.provider_kind,
+        data={
+            "control_reason": "openai_insufficient_quota",
+            "error_class": classify_batch_error(error),
+            "phase": phase,
+        },
+    )
+    return True
 
 
 def prepare_claimed_item(
@@ -409,7 +491,7 @@ def submission_claim_limit(config: Any) -> int:
         Claim limit used for one submission cycle.
     """
     max_requests = int(config.chunk_policy.max_requests)
-    return max(1, min(max_requests * 4, 8_192))
+    return max(1, min(max_requests * 5, 8_192))
 
 
 def inflight_budget_for_provider(provider_config: Any) -> int | None:

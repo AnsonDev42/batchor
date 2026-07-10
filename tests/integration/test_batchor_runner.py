@@ -257,6 +257,41 @@ class _ControlledBatchProvider(_FakeBatchProvider):
         }
 
 
+class _ResumeQuotaFailureBatchProvider(_FakeBatchProvider):
+    def __init__(
+        self,
+        *,
+        record_factory: Callable[[str], dict[str, object] | None],
+    ) -> None:
+        super().__init__(record_factory=record_factory)
+        self.fail_active_batches = False
+        self.polled_batches: list[str] = []
+
+    def get_batch(self, batch_id: str) -> dict[str, object]:
+        self.polled_batches.append(batch_id)
+        if not self.fail_active_batches:
+            return {
+                "id": batch_id,
+                "status": "submitted",
+                "output_file_id": None,
+                "error_file_id": None,
+            }
+        return {
+            "id": batch_id,
+            "status": "failed",
+            "output_file_id": None,
+            "error_file_id": None,
+            "errors": {
+                "data": [
+                    {
+                        "code": "insufficient_quota",
+                        "message": "quota exhausted",
+                    }
+                ]
+            },
+        }
+
+
 def test_sqlite_subprocess_resume_retries_from_persisted_request_artifact(
     tmp_path: Path,
 ) -> None:
@@ -400,6 +435,7 @@ def test_transient_poll_failures_do_not_block_new_submissions(tmp_path: Path) ->
                 BatchItem(item_id="row3", payload="c"),
                 BatchItem(item_id="row4", payload="d"),
                 BatchItem(item_id="row5", payload="e"),
+                BatchItem(item_id="row6", payload="f"),
             ],
             build_prompt=lambda item: PromptParts(prompt=item.payload),
             provider_config=OpenAIProviderConfig(
@@ -417,14 +453,47 @@ def test_transient_poll_failures_do_not_block_new_submissions(tmp_path: Path) ->
         )
     )
 
-    assert provider.created_batches == ["batch_0", "batch_1", "batch_2", "batch_3"]
+    assert provider.created_batches == ["batch_0", "batch_1", "batch_2", "batch_3", "batch_4"]
 
     run.refresh()
 
-    assert provider.created_batches == ["batch_0", "batch_1", "batch_2", "batch_3", "batch_4"]
+    assert provider.created_batches == ["batch_0", "batch_1", "batch_2", "batch_3", "batch_4", "batch_5"]
     summary = run.summary()
-    assert summary.completed_items == 3
+    assert summary.completed_items == 4
     assert summary.status_counts[ItemStatus.SUBMITTED] == 2
+
+
+def test_wait_keeps_draining_after_progress_without_idle_sleep(tmp_path: Path) -> None:
+    clock = _FakeClock()
+    provider = _FakeBatchProvider(record_factory=lambda custom_id: _success_record(f"text:{custom_id}"))
+    runner = BatchRunner(
+        storage=MemoryStateStore(now=clock.now),
+        provider_factory=lambda _cfg: provider,
+        sleep=clock.sleep,
+        temp_root=tmp_path,
+    )
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[BatchItem(item_id=f"row{index}", payload="x") for index in range(12)],
+            build_prompt=lambda item: PromptParts(prompt=item.payload),
+            provider_config=OpenAIProviderConfig(
+                api_key="k",
+                model="gpt-4.1",
+                poll_interval_sec=1.0,
+                enqueue_limits=OpenAIEnqueueLimitConfig(
+                    enqueued_token_limit=5,
+                    target_ratio=1.0,
+                    headroom=0,
+                    max_batch_enqueued_tokens=1,
+                ),
+            ),
+            chunk_policy=ChunkPolicy(max_requests=1, max_file_bytes=1024),
+        )
+    )
+
+    assert run.status is RunLifecycleStatus.COMPLETED
+    assert len(provider.created_batches) == 12
+    assert clock.sleeps == []
 
 
 def test_pause_blocks_polling_and_wait_raises_paused_error(tmp_path: Path) -> None:
@@ -457,18 +526,164 @@ def test_pause_blocks_polling_and_wait_raises_paused_error(tmp_path: Path) -> No
 
     paused = run.pause()
     assert paused.control_state is RunControlState.PAUSED
+    assert paused.control_reason == "manual"
+    assert run.control_reason == "manual"
     assert provider.created_batches == ["batch_0"]
     run.refresh()
     assert provider.polled_batches == []
-    with pytest.raises(RunPausedError):
+    with pytest.raises(RunPausedError) as exc_info:
         run.wait(timeout=0.1, poll_interval=0)
+    assert exc_info.value.control_reason == "manual"
 
     provider.release_batch("batch_0")
     resumed = run.resume()
     assert resumed.control_state is RunControlState.RUNNING
+    assert resumed.control_reason is None
+    assert run.control_reason is None
     run.refresh()
     assert provider.polled_batches == ["batch_0"]
     assert provider.created_batches == ["batch_0", "batch_1"]
+
+
+def test_insufficient_quota_create_failure_auto_pauses_and_resume_continues(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(f"text:{custom_id}"),
+        create_failures=[
+            RuntimeError(
+                {
+                    "response": {"status_code": 429},
+                    "error": {"code": "insufficient_quota", "message": "You exceeded your current quota"},
+                }
+            )
+        ],
+    )
+    events: list[RunEvent] = []
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        observer=events.append,
+        temp_root=tmp_path,
+    )
+    run = runner.start(
+        BatchJob(
+            items=[BatchItem(item_id="row1", payload="a")],
+            build_prompt=lambda item: PromptParts(prompt=item.payload),
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        )
+    )
+
+    summary = run.summary()
+    assert summary.control_state is RunControlState.PAUSED
+    assert summary.control_reason == "openai_insufficient_quota"
+    assert provider.deleted_files == ["file_0"]
+    assert provider.created_batches == []
+    with pytest.raises(RunPausedError) as exc_info:
+        run.wait(timeout=0.1, poll_interval=0)
+    assert exc_info.value.control_reason == "openai_insufficient_quota"
+    assert "run_auto_paused" in {event.event_type for event in events}
+
+    resumed = run.resume()
+    assert resumed.control_state is RunControlState.RUNNING
+    assert resumed.control_reason is None
+    run.wait(poll_interval=0)
+
+    assert run.status is RunLifecycleStatus.COMPLETED
+    assert provider.created_batches == ["batch_0"]
+    assert run.results()[0].status is ItemStatus.COMPLETED
+
+
+def test_insufficient_quota_pause_preserves_noncheckpointed_items(tmp_path: Path) -> None:
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(f"text:{custom_id}"),
+        create_failures=[
+            RuntimeError(
+                {
+                    "response": {"status_code": 429},
+                    "error": {"code": "insufficient_quota", "message": "You exceeded your current quota"},
+                }
+            )
+        ],
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path,
+    )
+    run = runner.start(
+        BatchJob(
+            items=[BatchItem(item_id=f"row{index}", payload=str(index)) for index in range(1001)],
+            build_prompt=lambda item: PromptParts(prompt=item.payload),
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        )
+    )
+
+    paused = run.summary()
+    assert paused.control_state is RunControlState.PAUSED
+    assert paused.total_items == 1001
+
+    run.resume()
+    run.wait(poll_interval=0)
+
+    results = run.results()
+    assert len(results) == 1001
+    assert results[-1].item_id == "row1000"
+    assert results[-1].status is ItemStatus.COMPLETED
+
+
+def test_item_level_insufficient_quota_retries_without_pausing_or_consuming_attempts(tmp_path: Path) -> None:
+    seen_counts: dict[str, int] = {}
+
+    def quota_record(custom_id: str) -> dict[str, object]:
+        seen_counts[custom_id] = seen_counts.get(custom_id, 0) + 1
+        if seen_counts[custom_id] > 1:
+            return _success_record(f"text:{custom_id}")
+        return {
+            "custom_id": custom_id,
+            "response": {
+                "status_code": 429,
+                "body": {
+                    "error": {
+                        "code": "insufficient_quota",
+                        "message": "You exceeded your current quota",
+                    }
+                },
+            },
+        }
+
+    clock = _FakeClock()
+    provider = _FakeBatchProvider(record_factory=quota_record)
+    events: list[RunEvent] = []
+    runner = BatchRunner(
+        storage=MemoryStateStore(now=clock.now),
+        provider_factory=lambda _cfg: provider,
+        observer=events.append,
+        sleep=clock.sleep,
+        temp_root=tmp_path,
+    )
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[
+                BatchItem(item_id="row1", payload="a"),
+                BatchItem(item_id="row2", payload="b"),
+                BatchItem(item_id="row3", payload="c"),
+            ],
+            build_prompt=lambda item: PromptParts(prompt=item.payload),
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+            retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=1.0, max_backoff_sec=1.0),
+        )
+    )
+
+    summary = run.summary()
+    records = runner.state.get_item_records(run_id=run.run_id)
+
+    assert summary.status is RunLifecycleStatus.COMPLETED
+    assert summary.control_state is RunControlState.RUNNING
+    assert summary.control_reason is None
+    assert [record.status for record in records] == [ItemStatus.COMPLETED] * 3
+    assert [record.attempt_count for record in records] == [1, 1, 1]
+    assert "run_auto_paused" not in {event.event_type for event in events}
+    assert any(sleep >= 1.0 for sleep in clock.sleeps)
+    assert seen_counts == {"row1:a1": 2, "row2:a1": 2, "row3:a1": 2}
 
 
 def test_cancel_drains_active_batch_and_marks_remaining_items_cancelled(tmp_path: Path) -> None:
@@ -700,7 +915,7 @@ def test_missing_output_record_retries_without_consuming_attempt(tmp_path: Path)
     )
     result = run.results()[0]
     assert result.status is ItemStatus.COMPLETED
-    assert result.attempt_count == 0
+    assert result.attempt_count == 1
     assert seen_counts["row1:a1"] == 2
 
 
@@ -731,7 +946,7 @@ def test_enqueue_limit_create_failure_recovers_without_consuming_attempts(tmp_pa
     )
     result = run.results()[0]
     assert result.status is ItemStatus.COMPLETED
-    assert result.attempt_count == 0
+    assert result.attempt_count == 1
     assert any(sleep >= 1.0 for sleep in clock.sleeps)
     assert provider.deleted_files == ["file_0"]
 
@@ -1092,7 +1307,7 @@ def test_inflight_limit_defers_later_submissions_without_consuming_attempts(tmp_
         )
     )
     assert len(provider.created_batches) == 2
-    assert [result.attempt_count for result in run.results()] == [0, 0, 0]
+    assert [result.attempt_count for result in run.results()] == [1, 1, 1]
 
 
 def test_oversized_request_becomes_permanent_failure_instead_of_aborting_run(tmp_path: Path) -> None:
@@ -1126,6 +1341,7 @@ def test_oversized_request_becomes_permanent_failure_instead_of_aborting_run(tmp
     assert results[0].error.error_class == "openai_request_exceeds_batch_token_limit"
     assert results[0].attempt_count == 0
     assert results[1].status is ItemStatus.COMPLETED
+    assert results[1].attempt_count == 1
     assert len(provider.created_batches) == 1
 
 
@@ -1332,6 +1548,80 @@ def test_composite_item_source_namespaces_duplicate_ids_across_sources(
     assert [result.output.label if result.output is not None else None for result in results] == [
         result.item_id for result in results
     ]
+
+
+def test_resume_polls_active_batches_before_materializing_more_source(tmp_path: Path) -> None:
+    path = tmp_path / "items.jsonl"
+    records = [{"id": f"row{i}", "text": f"text-{i}"} for i in range(1002)]
+    path.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+    source = JsonlItemSource(
+        path,
+        item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+        payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+    )
+    provider = _ResumeQuotaFailureBatchProvider(
+        record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
+    )
+    storage = SQLiteStorage(path=tmp_path / "resume_poll_first.sqlite3")
+    runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+    )
+    run_id = "resume_poll_first"
+
+    def crash_after_first_chunk(item: BatchItem[dict[str, str]]) -> PromptParts:
+        if item.item_id == "row1000":
+            raise RuntimeError("simulated crash after first materialized chunk")
+        return PromptParts(prompt=item.payload["text"])
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        runner.start(
+            BatchJob(
+                items=source,
+                build_prompt=crash_after_first_chunk,
+                structured_output=ClassificationResult,
+                provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+                retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=10.0, max_backoff_sec=10.0),
+            ),
+            run_id=run_id,
+        )
+
+    assert provider.created_batches == ["batch_0"]
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1000
+    assert checkpoint.ingestion_complete is False
+
+    provider.fail_active_batches = True
+
+    def fail_if_materialized(item: BatchItem[dict[str, str]]) -> PromptParts:
+        raise AssertionError(f"resume materialized before polling old batch: {item.item_id}")
+
+    resumed = runner.start(
+        BatchJob(
+            items=source,
+            build_prompt=fail_if_materialized,
+            structured_output=ClassificationResult,
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+            retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=10.0, max_backoff_sec=10.0),
+        ),
+        run_id=run_id,
+    )
+
+    assert resumed.run_id == run_id
+    assert provider.polled_batches == ["batch_0"]
+    assert provider.created_batches == ["batch_0"]
+    summary = resumed.summary()
+    assert summary.control_state is RunControlState.PAUSED
+    assert summary.control_reason == "openai_insufficient_quota"
+    assert summary.status_counts[ItemStatus.PENDING] == 1000
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1000
+    assert checkpoint.ingestion_complete is False
 
 
 def test_start_with_same_run_id_resumes_incomplete_jsonl_ingestion(tmp_path: Path) -> None:

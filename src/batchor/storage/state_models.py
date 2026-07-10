@@ -372,6 +372,29 @@ class StateStore(ABC):
         """
         ...
 
+    def append_items_with_ingest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        items: list[MaterializedItem],
+        next_item_index: int,
+        checkpoint_payload: JSONValue | None = None,
+        ingestion_complete: bool,
+    ) -> None:
+        """Append materialized items and advance the ingest checkpoint together.
+
+        Durable stores should override this to make the item rows and checkpoint
+        update one transaction. The default keeps custom stores source-compatible
+        but is not crash-atomic.
+        """
+        self.append_items(run_id=run_id, items=items)
+        self.update_ingest_checkpoint(
+            run_id=run_id,
+            next_item_index=next_item_index,
+            checkpoint_payload=checkpoint_payload,
+            ingestion_complete=ingestion_complete,
+        )
+
     @abstractmethod
     def set_ingest_checkpoint(
         self,
@@ -439,12 +462,15 @@ class StateStore(ABC):
         *,
         run_id: str,
         control_state: RunControlState,
+        control_reason: str | None = None,
     ) -> None:
         """Persist a new operator control state for a run.
 
         Args:
             run_id: Run identifier.
             control_state: The new control state to set.
+            control_reason: Optional machine-readable reason for the control
+                state. Cleared by callers when returning to ``RUNNING``.
         """
         ...
 

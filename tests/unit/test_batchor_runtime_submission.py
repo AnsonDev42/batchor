@@ -15,6 +15,7 @@ from batchor import (
     OpenAIProviderConfig,
     PromptParts,
     RetryPolicy,
+    RunControlState,
 )
 from batchor.runtime.artifacts import request_sha256
 from batchor.runtime.context import build_persisted_config, build_run_context
@@ -373,3 +374,52 @@ def test_submit_pending_items_cleans_up_uploaded_input_on_retryable_create_failu
     assert record.status is ItemStatus.PENDING
     assert provider.deleted_files == ["file_0"]
     assert storage.get_run_summary(run_id=run_id).backoff_remaining_sec > 0
+
+
+def test_submit_pending_items_auto_pauses_on_insufficient_quota_create_failure(tmp_path: Path) -> None:
+    quota_error = RuntimeError(
+        {
+            "response": {"status_code": 429},
+            "error": {"code": "insufficient_quota", "message": "You exceeded your current quota"},
+        }
+    )
+    provider = _FakeSubmissionProvider(create_failures=[quota_error])
+    storage = MemoryStateStore()
+    artifact_store = LocalArtifactStore(tmp_path / "artifacts")
+    events: list[tuple[str, dict[str, object]]] = []
+    deps = SubmissionDeps(
+        state=storage,
+        artifact_store=artifact_store,
+        emit_event=lambda event_type, **kwargs: events.append((event_type, kwargs)),
+    )
+    job = BatchJob(
+        items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=1.0, max_backoff_sec=1.0),
+    )
+    config = build_persisted_config(job)
+    context = build_run_context(
+        config=config,
+        output_model=None,
+        create_provider=lambda _cfg: provider,
+    )
+    run_id = "quota_create_failure"
+    storage.create_run(
+        run_id=run_id,
+        config=config,
+        items=[_materialized_text_item("row1", 0, "hello")],
+    )
+
+    submitted = submit_pending_items(deps, run_id=run_id, context=context)
+
+    record = storage.get_item_records(run_id=run_id)[0]
+    summary = storage.get_run_summary(run_id=run_id)
+    assert submitted == 0
+    assert record.status is ItemStatus.PENDING
+    assert record.attempt_count == 0
+    assert provider.deleted_files == ["file_0"]
+    assert summary.control_state is RunControlState.PAUSED
+    assert summary.control_reason == "openai_insufficient_quota"
+    assert summary.backoff_remaining_sec == 0.0
+    assert any(event_type == "run_auto_paused" for event_type, _kwargs in events)
