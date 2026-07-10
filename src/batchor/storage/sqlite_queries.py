@@ -299,7 +299,20 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
         failed_items = status_counts.get(ItemStatus.FAILED_PERMANENT, 0)
         run_row = self._fetch_run_row(conn, run_id)
         control_state = RunControlState(str(run_row["control_state"]))
-        if terminal_items == total_items and active_batches == 0 and backoff_remaining_sec <= 0:
+        incomplete_ingestion = (
+            conn.execute(
+                select(func.count())
+                .select_from(RUN_INGEST_STATE_TABLE)
+                .where((RUN_INGEST_STATE_TABLE.c.run_id == run_id) & (RUN_INGEST_STATE_TABLE.c.ingestion_complete == 0))
+            ).scalar_one()
+            > 0
+        )
+        if (
+            terminal_items == total_items
+            and active_batches == 0
+            and backoff_remaining_sec <= 0
+            and not incomplete_ingestion
+        ):
             status: RunLifecycleStatus = (
                 RunLifecycleStatus.COMPLETED_WITH_FAILURES if failed_items > 0 else RunLifecycleStatus.COMPLETED
             )

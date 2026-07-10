@@ -12,6 +12,7 @@ from batchor.core.models import ItemFailure, RunSummary
 from batchor.core.types import BatchRemoteRecord, JSONObject, JSONValue
 from batchor.runtime.artifacts import write_batch_result_artifacts
 from batchor.runtime.context import RunContext
+from batchor.runtime.ingestion import finalize_cancelled_ingestion
 from batchor.runtime.retry import (
     classify_batch_error,
     is_enqueue_token_limit_error,
@@ -83,6 +84,7 @@ def refresh_run(
                     retryable=False,
                 ),
             )
+            finalize_cancelled_ingestion(deps.state, run_id=run_id)
         return deps.state.get_run_summary(run_id=run_id)
     submit_pending_items(run_id, context)
     return deps.state.get_run_summary(run_id=run_id)

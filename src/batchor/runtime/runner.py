@@ -19,7 +19,6 @@ from batchor.core.models import (
     BatchJob,
     BatchResultItem,
     RunEvent,
-    RunSummary,
     TerminalResultsExportResult,
     TerminalResultsPage,
 )
@@ -34,13 +33,14 @@ from batchor.runtime.context import (
     configs_match_for_resume,
     resolve_output_model,
 )
+from batchor.runtime.execution import CycleOutcome, RunExecutor
 from batchor.runtime.ingestion import (
     IngestionDeps,
     checkpointed_source,
     ingest_job_items,
     resume_existing_run,
 )
-from batchor.runtime.polling import PollingDeps, poll_once, refresh_run
+from batchor.runtime.polling import PollingDeps, poll_once
 from batchor.runtime.results import result_from_record, results_for_records, serialize_result, write_results_export
 from batchor.runtime.run_handle import Run, generate_run_id
 from batchor.runtime.submission import SubmissionDeps, submit_pending_items
@@ -112,6 +112,13 @@ class BatchRunner:
             configs_match_for_resume=self._configs_match_for_resume,
             poll_active_batches=self._poll_active_batches,
         )
+        self._executor = RunExecutor(
+            state=self.state,
+            ingestion_deps=self._ingestion_deps,
+            polling_deps=self._polling_deps,
+            context_for_run=self._context_for_run,
+            submit_pending_items=self._submit_pending_items,
+        )
 
     def start(
         self,
@@ -136,6 +143,7 @@ class BatchRunner:
             create_provider=self._create_provider,
         )
         self._contexts[resolved_run_id] = context
+        self._executor.start_or_attach(run_id=resolved_run_id, job=job)
         if self.state.has_run(run_id=resolved_run_id):
             self._emit_event(
                 "run_resumed",
@@ -205,7 +213,6 @@ class BatchRunner:
         Returns:
             Rehydrated durable run handle.
         """
-        self.state.requeue_local_items(run_id=run_id)
         self._context_for_run(run_id)
         return self._run_handle(run_id)
 
@@ -240,11 +247,13 @@ class BatchRunner:
         control_state = self.state.get_run_control_state(run_id=run_id)
         if control_state is RunControlState.CANCEL_REQUESTED:
             raise ValueError(f"run {run_id} is cancelling and cannot be resumed")
+        self._executor.require_attached_source(run_id)
         self.state.set_run_control_state(
             run_id=run_id,
             control_state=RunControlState.RUNNING,
             control_reason=None,
         )
+        self._executor.resume_attached_ingestion(run_id)
         return self.get_run(run_id)
 
     def cancel_run(self, run_id: str) -> Run:
@@ -549,13 +558,8 @@ class BatchRunner:
             context=context or self._context_for_run(run_id),
         )
 
-    def _refresh_run(self, run_id: str) -> RunSummary:
-        return refresh_run(
-            self._polling_deps,
-            run_id=run_id,
-            context=self._context_for_run(run_id),
-            submit_pending_items=self._submit_pending_items,
-        )
+    def _advance_run(self, run_id: str) -> CycleOutcome:
+        return self._executor.advance(run_id)
 
     def _poll_active_batches(
         self,

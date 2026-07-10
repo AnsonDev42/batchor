@@ -737,7 +737,8 @@ class MemoryStateStore(StateStore):
         all_terminal = all(run.items[item_id].status in self.TERMINAL_ITEM_STATUSES for item_id in run.item_ids)
         active_batches = any(batch.status not in self.TERMINAL_BATCH_STATUSES for batch in run.batches.values())
         backoff_remaining = self.get_batch_retry_backoff_remaining_sec(run_id=run.run_id)
-        if all_terminal and not active_batches and backoff_remaining <= 0:
+        ingestion_complete = run.ingest_checkpoint is None or run.ingest_checkpoint.ingestion_complete
+        if all_terminal and not active_batches and backoff_remaining <= 0 and ingestion_complete:
             failed_items = sum(
                 1 for item_id in run.item_ids if run.items[item_id].status == ItemStatus.FAILED_PERMANENT
             )

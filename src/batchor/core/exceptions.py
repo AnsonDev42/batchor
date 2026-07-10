@@ -70,6 +70,17 @@ class RunPausedError(RuntimeError):
         self.control_reason = control_reason
 
 
+class RunIngestionSourceRequiredError(RuntimeError):
+    """Raised when incomplete durable ingestion needs its original source."""
+
+    def __init__(self, run_id: str) -> None:
+        """Initialise the error with recovery instructions for the run."""
+        super().__init__(
+            f"run {run_id} has incomplete source ingestion; resume with BatchRunner.start(job, run_id={run_id!r})"
+        )
+        self.run_id = run_id
+
+
 class StructuredOutputSchemaError(ValueError):
     """Raised when a Pydantic model produces a schema incompatible with OpenAI.
 
