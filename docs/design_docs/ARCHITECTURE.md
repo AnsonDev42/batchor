@@ -353,8 +353,12 @@ Owns execution behavior:
 
 This is where the durable lifecycle lives. It bridges the domain models, providers, storage, and artifact store.
 
-The public facade is still `BatchRunner` plus `Run`, but the current internal layering under `runtime/` is intentionally split so execution concerns do not collapse back into one file:
+The public facade is still `BatchRunner` plus `Run`. A deep internal
+`RunExecutor` module owns execution attachment and the ordered advance cycle,
+returning a structured outcome that reports durable progress.
+The supporting implementation under `runtime/` remains split by concern:
 
+- `execution.py`: claim recovery on execution attachment, source-availability checks, and ordered ingest/poll/cancel/submit advancement
 - `context.py`: persisted config building, resume config comparison, output-model resolution, and provider-backed `RunContext` creation
 - `ingestion.py`: checkpoint-aware item materialization, ingest checkpoint updates, and resume-aware ingestion flow
 - `submission.py`: pending-item claiming, request replay/build, token-budget gating, request artifact persistence, and batch submission
@@ -453,7 +457,11 @@ That split gives `batchor`:
 17. Run lifecycle status and run control state are separate; pause/cancel do not redefine terminal lifecycle semantics.
 18. Incremental terminal-result reads are sequence-based and only return items that have already reached a terminal item state.
 19. Built-in deterministic-source resume currently covers CSV, JSONL, and Parquet; arbitrary iterables still do not become durable by magic.
-20. `BatchItem.metadata["batchor_lineage"]` is reserved for lightweight source/join metadata when provided by built-in adapters or callers.
+20. An incomplete ingest checkpoint prevents terminal lifecycle status. A fresh
+    process must reattach the source with `start(job, run_id=...)` before execution
+    can advance, unless cancellation intentionally abandons the unmaterialized
+    source tail and finalizes the checkpoint.
+21. `BatchItem.metadata["batchor_lineage"]` is reserved for lightweight source/join metadata when provided by built-in adapters or callers.
 
 ## Extension seams
 

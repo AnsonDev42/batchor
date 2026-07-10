@@ -46,6 +46,19 @@ class IngestionDeps:
     poll_active_batches: Callable[[str, RunContext], None] = _noop_poll_active_batches
 
 
+def finalize_cancelled_ingestion(state: StateStore, *, run_id: str) -> None:
+    """Abandon an incomplete source tail after cancellation has drained."""
+    checkpoint = state.get_ingest_checkpoint(run_id=run_id)
+    if checkpoint is None or checkpoint.ingestion_complete:
+        return
+    state.update_ingest_checkpoint(
+        run_id=run_id,
+        next_item_index=checkpoint.next_item_index,
+        checkpoint_payload=checkpoint.checkpoint_payload,
+        ingestion_complete=True,
+    )
+
+
 def resume_existing_run(
     deps: IngestionDeps,
     *,

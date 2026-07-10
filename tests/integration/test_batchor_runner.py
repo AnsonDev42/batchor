@@ -27,8 +27,10 @@ from batchor import (
     OpenAIProviderConfig,
     PromptParts,
     RetryPolicy,
+    Run,
     RunControlState,
     RunEvent,
+    RunIngestionSourceRequiredError,
     RunLifecycleStatus,
     RunNotFinishedError,
     RunPausedError,
@@ -36,6 +38,7 @@ from batchor import (
 )
 from batchor.providers.openai import OpenAIBatchProvider
 from batchor.storage import sqlite as storage_sqlite
+from batchor.storage.state import IngestCheckpoint
 
 
 class ClassificationResult(BaseModel):
@@ -628,6 +631,118 @@ def test_insufficient_quota_pause_preserves_noncheckpointed_items(tmp_path: Path
     assert len(results) == 1001
     assert results[-1].item_id == "row1000"
     assert results[-1].status is ItemStatus.COMPLETED
+
+
+def _start_checkpointed_quota_paused_run(
+    tmp_path: Path,
+    *,
+    storage: str | SQLiteStorage,
+    stem: str,
+) -> tuple[BatchRunner, Run, JsonlItemSource, _FakeBatchProvider]:
+    path = tmp_path / f"{stem}-items.jsonl"
+    path.write_text(
+        "\n".join(json.dumps({"id": f"row{i}", "text": str(i)}) for i in range(1001)) + "\n",
+        encoding="utf-8",
+    )
+    source = JsonlItemSource(
+        path,
+        item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+        payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+    )
+    provider = _FakeBatchProvider(
+        record_factory=lambda custom_id: _success_record(f"text:{custom_id}"),
+        create_failures=[
+            RuntimeError(
+                {
+                    "response": {"status_code": 429},
+                    "error": {"code": "insufficient_quota", "message": "quota exhausted"},
+                }
+            )
+        ],
+    )
+    runner = BatchRunner(
+        storage=storage,
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path / f"{stem}-artifacts",
+    )
+    run = runner.start(
+        BatchJob(
+            items=source,
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        )
+    )
+
+    assert run.summary().control_state is RunControlState.PAUSED
+    checkpoint = runner.state.get_ingest_checkpoint(run_id=run.run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1000
+    assert checkpoint.ingestion_complete is False
+    return runner, run, source, provider
+
+
+def test_checkpointed_quota_pause_resume_requires_attached_source(tmp_path: Path) -> None:
+    storage_path = tmp_path / "checkpointed-quota.sqlite3"
+    runner, run, source, provider = _start_checkpointed_quota_paused_run(
+        tmp_path,
+        storage=SQLiteStorage(path=storage_path),
+        stem="resume",
+    )
+
+    run.resume()
+    run.wait(poll_interval=0)
+    assert len(run.results()) == 1001
+
+    incomplete_run_id = "fresh_process_incomplete_ingestion"
+    runner.state.create_run(
+        run_id=incomplete_run_id,
+        config=runner.state.get_run_config(run_id=run.run_id),
+        items=[],
+    )
+    runner.state.set_ingest_checkpoint(
+        run_id=incomplete_run_id,
+        checkpoint=IngestCheckpoint(
+            source_kind="jsonl",
+            source_ref=source.source_identity().source_ref,
+            source_fingerprint=source.source_identity().source_fingerprint,
+            checkpoint_payload=0,
+            ingestion_complete=False,
+        ),
+    )
+    fresh_runner = BatchRunner(
+        storage=SQLiteStorage(path=storage_path),
+        provider_factory=lambda _cfg: provider,
+    )
+    rehydrated = fresh_runner.get_run(incomplete_run_id)
+    assert rehydrated.status is RunLifecycleStatus.RUNNING
+    with pytest.raises(RunIngestionSourceRequiredError, match=r"start\(job, run_id=.*" + incomplete_run_id):
+        rehydrated.refresh()
+
+
+@pytest.mark.parametrize("storage_kind", ["memory", "sqlite"])
+def test_cancel_finalizes_incomplete_checkpointed_ingestion(
+    tmp_path: Path,
+    storage_kind: str,
+) -> None:
+    storage = "memory" if storage_kind == "memory" else SQLiteStorage(path=tmp_path / "checkpointed-cancel.sqlite3")
+    runner, run, _, _ = _start_checkpointed_quota_paused_run(
+        tmp_path,
+        storage=storage,
+        stem=f"{storage_kind}-cancel",
+    )
+
+    run.cancel()
+    run.refresh()
+
+    checkpoint = runner.state.get_ingest_checkpoint(run_id=run.run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1000
+    assert checkpoint.ingestion_complete is True
+    assert run.status is RunLifecycleStatus.COMPLETED_WITH_FAILURES
+    results = run.results()
+    assert len(results) == 1000
+    assert all(result.status is ItemStatus.FAILED_PERMANENT for result in results)
+    assert all(result.error is not None and result.error.error_class == "run_cancelled" for result in results)
 
 
 def test_item_level_insufficient_quota_retries_without_pausing_or_consuming_attempts(tmp_path: Path) -> None:

@@ -58,6 +58,9 @@ That currently includes CSV, JSONL, Parquet, and `CompositeItemSource` for order
 When `CompositeItemSource` is used, child-source row IDs are auto-namespaced into run-unique `item_id` values, while the original row ID is preserved in lineage metadata.
 Custom non-file sources must implement a durable checkpoint contract explicitly; arbitrary iterables and live DB cursors are still `TBD`.
 Before resumed ingestion continues, active OpenAI batches are polled once. If that poll consumes terminal batches or records enqueue/backoff failures, those state changes are applied before any new prompt rendering, request replay, or submission happens.
+The execution cycle reports durable progress explicitly to `Run.wait()`, so the
+wait loop immediately drains productive poll/submission cycles and sleeps only
+when a cycle makes no durable progress, respecting any persisted retry backoff.
 
 ## Raw output retention
 

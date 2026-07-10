@@ -33,6 +33,7 @@ from batchor.core.enums import (
 )
 from batchor.core.exceptions import (
     ModelResolutionError,
+    RunIngestionSourceRequiredError,
     RunNotFinishedError,
     RunPausedError,
     StructuredOutputSchemaError,
@@ -127,6 +128,7 @@ __all__ = [
     "RunControlState",
     "RunEvent",
     "RunLifecycleStatus",
+    "RunIngestionSourceRequiredError",
     "RunNotFinishedError",
     "RunPausedError",
     "RunSnapshot",

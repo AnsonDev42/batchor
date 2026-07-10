@@ -13,6 +13,7 @@ from batchor import (
     OpenAIProviderConfig,
     ProviderKind,
     RunControlState,
+    RunLifecycleStatus,
     SQLiteStorage,
 )
 from batchor.core.models import ChunkPolicy, ItemFailure, RetryPolicy
@@ -201,6 +202,29 @@ def test_storage_contract_ingest_checkpoint_tolerates_only_exact_replay(storage)
     checkpoint = storage.get_ingest_checkpoint(run_id="run_replay")
     assert checkpoint is not None
     assert checkpoint.next_item_index == 1
+
+
+def test_storage_contract_incomplete_ingestion_prevents_terminal_status(storage) -> None:
+    storage.create_run(run_id="run_incomplete", config=_config(), items=[])
+    storage.set_ingest_checkpoint(
+        run_id="run_incomplete",
+        checkpoint=IngestCheckpoint(
+            source_kind="jsonl",
+            source_ref="items.jsonl",
+            source_fingerprint="abc",
+            ingestion_complete=False,
+        ),
+    )
+
+    assert storage.get_run_summary(run_id="run_incomplete").status is RunLifecycleStatus.RUNNING
+
+    storage.update_ingest_checkpoint(
+        run_id="run_incomplete",
+        next_item_index=0,
+        checkpoint_payload=None,
+        ingestion_complete=True,
+    )
+    assert storage.get_run_summary(run_id="run_incomplete").status is RunLifecycleStatus.COMPLETED
 
 
 def test_storage_contract_artifact_pointers_and_summary_rehydration(storage) -> None:
