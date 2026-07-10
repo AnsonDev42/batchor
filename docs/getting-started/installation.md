@@ -10,6 +10,17 @@ Supported Python versions:
 
 - `3.12`
 - `3.13`
+- `3.14`
+
+## Optional provider extras
+
+OpenAI support is installed by default. Gemini support uses Google's optional SDK dependency:
+
+```bash
+pip install "batchor[gemini]"
+```
+
+Gemini support is text-only and is available through both the Python API and CLI.
 
 ## What gets installed
 
@@ -18,9 +29,27 @@ The package includes:
 - the Python library
 - the `batchor` CLI
 - the built-in OpenAI provider integration
+- the built-in Gemini provider integration when `batchor[gemini]` is installed
 - SQLite and Postgres storage implementations
 
 It does not provision external infrastructure for you. If you use Postgres or a shared artifact root, you still manage those resources yourself.
+
+## Agent-assisted setup
+
+The Python package and the agent integration are intentionally separate:
+
+- PyPI installs the Batchor runtime and CLI into a project.
+- The user-facing `batchor` Codex plugin supplies the `$use-batchor` skill and repo-independent MCP helpers that help an agent choose the CLI or Python API, generate a starter, and check cost, data, resume, and retention decisions.
+- The `batchor-agent-tools` plugin and `$batchor-dev` skill are only for contributors changing Batchor itself.
+
+From a local Batchor checkout, install the user plugin with:
+
+```bash
+codex plugin marketplace add /path/to/batchor
+codex plugin add batchor@batchor-local
+```
+
+Start a new Codex task so the installed skill and tools are loaded. Installing `batchor` from PyPI alone does not modify an agent's global configuration.
 
 ## Authentication
 
@@ -29,9 +58,16 @@ For Python API usage, authentication resolution is:
 1. `OpenAIProviderConfig(api_key=...)`
 2. `OPENAI_API_KEY`
 
+For Gemini Developer API usage, authentication resolution is:
+
+1. `GeminiProviderConfig(api_key=...)`
+2. `GEMINI_API_KEY`
+
+Vertex AI uses Application Default Credentials and resolves project/location from explicit `GeminiProviderConfig` fields or `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`. Vertex batches also require a writable `gs://` staging prefix.
+
 The Python library does not auto-load `.env`.
 
-The CLI loads a local `.env` as a convenience for operator usage, then resolves `OPENAI_API_KEY`.
+The CLI loads a local `.env` as a convenience for operator usage. It resolves `OPENAI_API_KEY` for OpenAI, `GEMINI_API_KEY` for the Gemini Developer API, and the documented Google Cloud environment variables for Vertex AI. Rehydrated `status`, `wait`, and result operations load the same `.env` before reconstructing a provider.
 
 ## Storage defaults
 

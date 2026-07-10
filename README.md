@@ -2,7 +2,7 @@
 
 `batchor` grew out of a recurring problem in academic research: running large datasets through LLMs in batch — reliably, reproducibly, and without reinventing the same glue code across every project. The patterns that kept emerging (durable state, typed results, safe resume after failure) were extracted into this library so they do not have to be rebuilt each time.
 
-`batchor` is a durable OpenAI Batch runner for Python teams that want:
+`batchor` is a durable provider Batch runner for Python teams that want:
 
 - typed Pydantic results
 - resumable durable runs
@@ -12,7 +12,7 @@
 - library-first run controls
 - a small operator CLI for CSV and JSONL jobs
 
-It is intentionally narrow today: OpenAI-first, SQLite-first, and library-first.
+It is intentionally narrow today: OpenAI is the CLI default, Gemini is opt-in through `batchor[gemini]`, SQLite is the CLI durability backend, and the Python API exposes the broadest configuration surface.
 
 ## What problem it solves
 
@@ -37,6 +37,7 @@ Most OpenAI Batch examples stop at "upload a JSONL file and poll until it finish
 Built-in implementations:
 
 - `OpenAIProviderConfig` + `OpenAIBatchProvider`
+- `GeminiProviderConfig` + `GeminiBatchProvider` for text-only Gemini Batch jobs
 - `SQLiteStorage`
 - `PostgresStorage` as an opt-in durable control-plane backend
 - `MemoryStateStore`
@@ -52,6 +53,8 @@ Important constraints:
 - the CLI supports file-backed inputs only
 - users still own selecting and ordering input files or partitions
 - the built-in CLI uses SQLite durability only
+- the CLI supports OpenAI plus Gemini Developer API and Vertex AI text jobs
+- Gemini support is text-only for now and does not build multimodal requests
 - structured-output rehydration requires an importable module-level Pydantic model
 - raw output artifacts are retained by default and must be exported before raw pruning
 - pause/resume/cancel and incremental terminal-result APIs are library-first today
@@ -96,6 +99,7 @@ graph LR
 
     subgraph providers["providers/"]
         OpenAI["OpenAIBatchProvider"]
+        Gemini["GeminiBatchProvider"]
     end
 
     subgraph sources["sources/"]
@@ -116,6 +120,7 @@ graph LR
     BatchRunner --> Run
     BatchRunner --> Executor
     BatchRunner --> OpenAI
+    BatchRunner --> Gemini
     BatchRunner --> SQLite
     BatchRunner --> LocalFS
     Files -->|"BatchItem stream"| BatchRunner
@@ -151,16 +156,31 @@ Operational semantics for resume, run control, and artifact retention live in
 pip install batchor
 ```
 
-## Repo Agent Setup
+For Gemini Batch support, install the optional extra:
 
-This repo now includes local AI-agent scaffolding so a contributor agent can pick up repo conventions without extra global setup:
+```bash
+pip install "batchor[gemini]"
+```
 
-- repo-local skill: `.agents/skills/batchor-dev/`
-- repo-local plugin marketplace: `.agents/plugins/marketplace.json`
-- repo-local MCP plugin: `plugins/batchor-agent-tools/`
-- VS Code workspace MCP config: `.vscode/mcp.json`
+## Agent setup
 
-The skill captures repo-specific workflow and validation guidance. The MCP plugin exposes a small repo-aware guide for project overview, docs entry points, and validation commands.
+Batchor keeps contributor tooling separate from the tools intended for researchers and downstream projects:
+
+- `plugins/batchor/` is the user-facing Codex plugin. Its `$use-batchor` skill and MCP helpers turn datasets and prompts into safe CLI or Python workflows without assuming a Batchor source checkout.
+- `.agents/skills/batchor-dev/` and `plugins/batchor-agent-tools/` are contributor-only. They teach agents how to change this repository, find design docs, and run its validation suite.
+- `.agents/plugins/marketplace.json` registers both plugins for local development.
+- `.vscode/mcp.json` configures the contributor MCP for this workspace.
+
+The PyPI package remains the runtime dependency: `pip install batchor` installs the library and CLI. Agent skills and MCP configuration are distributed as the separate `batchor` plugin so Python environments do not receive Codex-specific files implicitly.
+
+To try the user plugin from a local checkout:
+
+```bash
+codex plugin marketplace add /path/to/batchor
+codex plugin add batchor@batchor-local
+```
+
+Start a new Codex task after installation, then ask: `Use $use-batchor to turn my CSV and research prompt into a resumable batch job.`
 
 Supported Python versions:
 
@@ -172,8 +192,9 @@ Supported Python versions:
 
 For Python API usage, auth resolution is:
 
-1. explicit `OpenAIProviderConfig(api_key=...)`
-2. ambient `OPENAI_API_KEY`
+1. explicit provider config credentials such as `OpenAIProviderConfig(api_key=...)` or `GeminiProviderConfig(api_key=...)`
+2. ambient provider environment variables, currently `OPENAI_API_KEY` or `GEMINI_API_KEY`
+3. Vertex AI Application Default Credentials when `GeminiProviderConfig(vertexai=True, ...)` or `GOOGLE_GENAI_USE_VERTEXAI=true` is used
 
 The Python library does not auto-load `.env`.
 
@@ -201,6 +222,43 @@ run = runner.run_and_wait(
 
 print(run.results()[0].output_text)
 ```
+
+### Gemini text job
+
+```python
+from batchor import BatchItem, BatchJob, BatchRunner, GeminiProviderConfig, PromptParts
+
+
+runner = BatchRunner(storage="memory")
+run = runner.run_and_wait(
+    BatchJob(
+        items=[BatchItem(item_id="row1", payload="Summarize this text")],
+        build_prompt=lambda item: PromptParts(prompt=item.payload),
+        provider_config=GeminiProviderConfig(
+            model="gemini-2.5-flash",
+            api_key="YOUR_GEMINI_API_KEY",
+        ),
+    )
+)
+
+print(run.results()[0].output_text)
+```
+
+Gemini support currently builds text-only `GenerateContent` batch requests. It uses Gemini JSONL `key` values internally while keeping `batchor`'s durable item and attempt tracking unchanged.
+
+For Vertex AI, provide a Cloud Storage staging prefix and use Application Default Credentials:
+
+```python
+provider_config = GeminiProviderConfig(
+    model="gemini-2.5-flash",
+    vertexai=True,
+    project="my-project",
+    location="europe-west8",
+    gcs_uri="gs://my-bucket/batchor",
+)
+```
+
+Vertex AI stages JSONL input and output in that prefix. The Gemini Developer API uses inline requests for batches below 20 MB and the Files API for larger batches; `input_mode=` can override that automatic choice. Vertex request/output correlation uses a generated request label because Vertex output does not include the Developer API JSONL `key`.
 
 ### Structured output
 
@@ -254,6 +312,8 @@ Structured-output models are validated up front against the OpenAI strict-schema
 - object properties must all be listed in `required`
 
 If you need a field to be optional in Python, model it as nullable in the schema shape OpenAI accepts rather than relying on omitted required fields.
+
+The same `structured_output=` API is available with `GeminiProviderConfig`; batchor sends the schema through Gemini `generation_config.response_json_schema` and validates the returned JSON text with the same Pydantic model.
 
 ### Rehydrate a durable run
 
@@ -401,6 +461,31 @@ The CLI is intentionally narrower than the Python API:
 - file-backed inputs only
 - CSV and JSONL only
 - SQLite-backed durable runs only
+
+OpenAI remains the default provider. For Gemini, install `batchor[gemini]` and select the backend explicitly or let `auto` follow `GOOGLE_GENAI_USE_VERTEXAI`:
+
+```bash
+batchor start \
+  --input input/items.jsonl \
+  --id-field id \
+  --prompt-field text \
+  --provider gemini \
+  --model gemini-2.5-flash \
+  --gemini-backend developer
+```
+
+Vertex AI additionally needs a writable staging prefix:
+
+```bash
+batchor start \
+  --input input/items.jsonl \
+  --id-field id \
+  --prompt-field text \
+  --provider gemini \
+  --model gemini-2.5-flash \
+  --gemini-backend vertex \
+  --gcs-uri gs://my-bucket/batchor
+```
 
 Start a run from JSONL:
 

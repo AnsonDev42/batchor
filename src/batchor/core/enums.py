@@ -68,9 +68,25 @@ class ProviderKind(StrEnum):
 
     Attributes:
         OPENAI: The built-in OpenAI Batch API provider.
+        GEMINI: The built-in Gemini Batch API provider.
     """
 
     OPENAI = "openai"
+    GEMINI = "gemini"
+
+
+class GeminiBatchInputMode(StrEnum):
+    """Input transport used for Gemini batch jobs.
+
+    ``AUTO`` selects Cloud Storage for Vertex AI. For the Gemini Developer
+    API it uses inline requests below the API's 20 MiB request limit and the
+    Files API for larger batches.
+    """
+
+    AUTO = "auto"
+    INLINE = "inline"
+    FILE = "file"
+    GCS = "gcs"
 
 
 class StorageKind(StrEnum):

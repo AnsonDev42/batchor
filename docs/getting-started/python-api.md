@@ -39,6 +39,46 @@ print(run.results()[0].output_text)
 
 Use `storage="memory"` only for tests or short-lived local experiments. For durable runs, use the default SQLite storage or an explicit backend.
 
+## Gemini text job
+
+Gemini Batch support is available through the Python API after installing `batchor[gemini]`.
+It currently builds text-only `GenerateContent` requests.
+
+```python
+from batchor import BatchItem, BatchJob, BatchRunner, GeminiProviderConfig, PromptParts
+
+
+runner = BatchRunner(storage="memory")
+run = runner.run_and_wait(
+    BatchJob(
+        items=[BatchItem(item_id="row1", payload="Summarize this text")],
+        build_prompt=lambda item: PromptParts(prompt=item.payload),
+        provider_config=GeminiProviderConfig(
+            model="gemini-2.5-flash",
+            api_key="YOUR_GEMINI_API_KEY",
+        ),
+    )
+)
+
+print(run.results()[0].output_text)
+```
+
+If `api_key` is omitted, the provider resolves `GEMINI_API_KEY` when it needs to create a live SDK client.
+
+Vertex AI uses Cloud Storage rather than the Developer Files API:
+
+```python
+provider_config = GeminiProviderConfig(
+    model="gemini-2.5-flash",
+    vertexai=True,
+    project="my-project",
+    location="europe-west8",
+    gcs_uri="gs://my-bucket/batchor",
+)
+```
+
+With `input_mode="auto"`, Vertex always uses GCS. The Developer API uses inline requests below 20 MB and its Files API for larger batches.
+
 ## Structured output job
 
 ```python
@@ -90,6 +130,7 @@ Notes:
 - `batchor` validates structured-output schemas before submission; the root schema must be an object, object schemas must be closed, and object properties must all be required
 - `output` is the parsed Pydantic object
 - `output_text` preserves the raw text that was parsed
+- with `GeminiProviderConfig`, the same `structured_output=` argument is sent through Gemini `generation_config.response_json_schema`
 
 ## Durable run lifecycle
 

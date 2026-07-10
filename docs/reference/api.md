@@ -20,6 +20,7 @@ Most users only need a small subset of the package:
 - `BatchRunner`: start, resume, and run orchestration
 - `Run`: refresh, wait, inspect, export, and prune
 - `OpenAIProviderConfig`: built-in provider config
+- `GeminiProviderConfig`: built-in Gemini provider config for text batch jobs; the common fields are also exposed by the CLI
 - `SQLiteStorage` and `PostgresStorage`: durable control-plane backends
 - `CompositeItemSource`, `CsvItemSource`, `JsonlItemSource`, and `ParquetItemSource`: deterministic item streaming
 
@@ -59,6 +60,15 @@ Use imports from `batchor` first. That is the intended consumer surface.
 This is the built-in provider implementation. Most consumers only need `OpenAIProviderConfig`, but the lower-level provider class is documented here for extension work and tests.
 
 ::: batchor.providers.openai
+    options:
+      show_root_heading: true
+      heading_level: 2
+
+## Gemini provider
+
+This is the built-in Gemini Batch implementation. Most consumers only need `GeminiProviderConfig`; install `batchor[gemini]` before running real Gemini jobs.
+
+::: batchor.providers.gemini
     options:
       show_root_heading: true
       heading_level: 2

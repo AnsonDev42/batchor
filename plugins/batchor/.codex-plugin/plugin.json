@@ -1,0 +1,44 @@
+{
+  "name": "batchor",
+  "version": "0.1.0",
+  "description": "Help researchers and coding agents build durable OpenAI and Gemini Batch workflows with Batchor.",
+  "author": {
+    "name": "batchor contributors",
+    "email": "support@example.invalid",
+    "url": "https://github.com/AnsonDev42/batchor"
+  },
+  "homepage": "https://github.com/AnsonDev42/batchor#readme",
+  "repository": "https://github.com/AnsonDev42/batchor",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "keywords": [
+    "batchor",
+    "research",
+    "openai-batch",
+    "gemini-batch",
+    "resumable-pipelines"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Batchor",
+    "shortDescription": "Build resumable LLM batch research pipelines",
+    "longDescription": "Turns datasets and prompts into durable Batchor CLI or Python workflows, with guidance for structured results, resume-safe sources, storage, run operations, and artifact retention.",
+    "developerName": "batchor contributors",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/AnsonDev42/batchor",
+    "privacyPolicyURL": "https://github.com/AnsonDev42/batchor/blob/main/SUPPORT.md",
+    "termsOfServiceURL": "https://github.com/AnsonDev42/batchor/blob/main/LICENSE",
+    "defaultPrompt": [
+      "Turn my CSV and research prompt into a resumable batch job.",
+      "Add structured Batchor results to this Python pipeline.",
+      "Help me resume and export results from a Batchor run."
+    ],
+    "brandColor": "#0F766E",
+    "screenshots": []
+  }
+}

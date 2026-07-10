@@ -74,7 +74,7 @@ Postgres is also implemented for shared control-plane state when callers explici
 
 In-memory storage exists for tests and short-lived local runs.
 
-The SQLite/OpenAI path is covered by the default smoke test. Postgres storage compatibility is validated in a dedicated storage-contract CI job and requires `BATCHOR_TEST_POSTGRES_DSN` for equivalent local coverage.
+The SQLite/OpenAI path is covered by the default smoke test. Gemini provider wiring is covered with fake-client integration tests, and an opt-in live Vertex/GCS smoke test covers the real control and payload planes. Postgres storage compatibility is validated in a dedicated storage-contract CI job and requires `BATCHOR_TEST_POSTGRES_DSN` for equivalent local coverage.
 
 ## Storage responsibilities
 
@@ -181,7 +181,7 @@ This recovery happens when an execution owner advances the run, not when a
 caller merely reads a handle with `get_run()` or changes control state.
 When `start(job, run_id=...)` resumes a run with active provider batches, it first performs a poll-only reconciliation pass. Terminal provider batches are consumed, failed batches update retry backoff, and any active backoff prevents new source materialization or submission until the backoff expires.
 
-Resume compatibility intentionally ignores non-persisted secret fields such as provider API keys.
+Resume compatibility intentionally ignores non-persisted secret fields such as provider API keys. Rehydrated OpenAI runs need `OPENAI_API_KEY` when no explicit in-memory config is supplied. Gemini Developer API runs need `GEMINI_API_KEY`; Vertex runs need Application Default Credentials plus the persisted or ambient project, location, and GCS prefix configuration.
 
 For deterministic-source resume, the caller must also reuse the same `run_id` and provide the same source identity/fingerprint.
 An incomplete ingest checkpoint is part of terminal-state calculation. In the
@@ -201,6 +201,7 @@ Built-in deterministic sources currently include:
 For checkpointed ingestion, durable stores append materialized item chunks and advance the ingest checkpoint in one storage operation. Parquet and composite sources can also identify an end-of-source checkpoint from cheap metadata, so a resume after all rows were materialized but before the final completion flag was written can mark ingestion complete without re-reading the source data or re-rendering prompts.
 
 Once an item has a durable request artifact pointer, `batchor` prunes large inline request-building fields from the control-plane store and relies on the artifact for later retries.
+Provider-specific request rows are preserved in those artifacts. During replay, OpenAI updates `custom_id`; Gemini updates either the Developer API `key` or the Vertex correlation label. All map back to the same internal durable attempt identifier.
 
 ## Artifact lifecycle
 

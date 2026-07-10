@@ -2,7 +2,7 @@
 
 <div class="hero" markdown>
 
-`batchor` is a durable OpenAI Batch runner for Python teams that want typed results, resumable runs, replayable artifacts, and a narrow operator CLI.
+`batchor` is a durable provider Batch runner for Python teams that want typed results, resumable runs, replayable artifacts, and a narrow operator CLI.
 
 [Get Started](getting-started/installation.md){ .md-button .md-button--primary }
 [Use Cases](getting-started/use-cases.md){ .md-button }
@@ -56,7 +56,7 @@ If that is the mental model you were missing from the generated docs, start with
 
 ## Current surface
 
-- Built-in provider: OpenAI Batch
+- Built-in providers: OpenAI Batch, plus text-only Gemini Batch for Python API usage
 - Durable storage: SQLite by default, Postgres as an opt-in control-plane backend
 - Ephemeral storage: in-memory state store
 - Artifact backend: local filesystem via `LocalArtifactStore`

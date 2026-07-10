@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "batchor"
-version = "0.0.3"
-description = "Structured-first OpenAI Batch runner with typed Pydantic results."
+version = "0.0.4"
+description = "Structured-first provider Batch runner with typed Pydantic results."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12,<4"
@@ -19,7 +19,7 @@ dependencies = [
     "typer>=0.16.0,<1",
     "python-dotenv>=1.0.1,<2",
 ]
-keywords = ["openai", "batch", "sqlite", "cli", "pydantic"]
+keywords = ["openai", "gemini", "batch", "sqlite", "cli", "pydantic"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -40,6 +40,12 @@ Issues = "https://github.com/AnsonDev42/batchor/issues"
 
 [project.scripts]
 batchor = "batchor.cli:app"
+
+[project.optional-dependencies]
+gemini = [
+    "google-genai>=1.55.0,<2",
+    "google-cloud-storage>=3.4.0,<4",
+]
 
 [dependency-groups]
 dev = [
@@ -65,7 +71,7 @@ testpaths = ["tests"]
 markers = [
     "unit: fast isolated tests",
     "integration: fake-provider and multi-component tests",
-    "live: manual live-provider smoke tests that require OpenAI credentials",
+    "live: manual live-provider smoke tests that require provider credentials",
 ]
 
 [tool.ty.environment]

@@ -1,6 +1,6 @@
-"""Batchor: durable OpenAI Batch runner with typed Pydantic results.
+"""Batchor: durable batch runner with typed Pydantic results.
 
-This package provides a library-first API for running OpenAI Batch jobs durably,
+This package provides a library-first API for running provider Batch jobs durably,
 with SQLite-backed state, resumable item sources, replayable request artifacts,
 and structured Pydantic outputs.
 
@@ -21,6 +21,7 @@ Typical usage::
 
 from batchor.artifacts import ArtifactStore, LocalArtifactStore
 from batchor.core.enums import (
+    GeminiBatchInputMode,
     ItemStatus,
     OpenAIEndpoint,
     OpenAIModel,
@@ -44,6 +45,7 @@ from batchor.core.models import (
     BatchItem,
     BatchJob,
     ChunkPolicy,
+    GeminiProviderConfig,
     ItemFailure,
     OpenAIEnqueueLimitConfig,
     OpenAIModelName,
@@ -64,6 +66,7 @@ from batchor.providers.base import (
     ProviderConfig,
     StructuredOutputSchema,
 )
+from batchor.providers.gemini import GeminiBatchProvider
 from batchor.providers.openai import OpenAIBatchProvider
 from batchor.providers.registry import (
     ProviderRegistry,
@@ -92,6 +95,9 @@ __all__ = [
     "ChunkPolicy",
     "CompositeItemSource",
     "CsvItemSource",
+    "GeminiBatchProvider",
+    "GeminiBatchInputMode",
+    "GeminiProviderConfig",
     "ItemFailure",
     "ItemStatus",
     "ItemSource",

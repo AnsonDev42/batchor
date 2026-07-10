@@ -8,6 +8,7 @@ This guide defines the minimum validation bar for `batchor`.
 - verify durable run handling and SQLite persistence still work
 - verify artifact-store wiring still supports replay, export, and prune
 - verify OpenAI-specific batching logic through fake-provider integration tests
+- verify Gemini provider wiring through fake-client integration tests
 - verify the documentation site still builds cleanly in strict mode
 
 ## Prerequisites
@@ -56,6 +57,16 @@ Expected:
 - current durable features remain covered, including deterministic source checkpoints, run control, incremental terminal-result APIs, and artifact-retention policy wiring
 - repeated `--input` CLI flows and `CompositeItemSource` resume semantics remain covered when those paths change
 
+When agent skills, plugins, or MCP helpers change, also run:
+
+```bash
+uv run pytest tests/unit/test_agent_tooling.py --no-cov -q
+uv run python ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/batchor/skills/use-batchor
+uv run python ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/batchor
+```
+
+The user-facing `batchor` plugin must remain repo-independent. The contributor-only `batchor-agent-tools` plugin may point at checkout paths and repository validation commands.
+
 GitHub pull request CI runs the main smoke across Python `3.12` and `3.13`, builds the docs site in a dedicated docs job, and runs packaging in a dedicated Python `3.13` build job so each validation path stays explicit.
 
 ## Targeted runtime smoke
@@ -67,6 +78,7 @@ uv run ty check src
 uv run pytest tests/unit/test_batchor_tokens.py tests/unit/test_batchor_sqlite_storage_flow.py tests/unit/test_batchor_validation.py --no-cov -q
 uv run pytest tests/unit/test_batchor_artifacts.py tests/unit/test_batchor_storage_contracts.py --no-cov -q
 uv run pytest tests/integration/test_batchor_runner.py --no-cov -q
+uv run pytest tests/unit/test_batchor_gemini_provider.py tests/integration/test_batchor_gemini_runner.py --no-cov -q
 ```
 
 Expected:
@@ -93,6 +105,7 @@ Expected:
 - shared storage-contract behavior remains aligned across SQLite and opt-in Postgres
 - completed submitted items report consumed attempts consistently across storage backends
 - OpenAI request splitting and enqueue-limit logic still behave as expected
+- Gemini text-only request construction, batch polling normalization, response parsing, and structured-output validation still behave as expected
 - wait-mode refresh cycles keep draining immediately after poll/submission progress, without introducing idle poll sleeps while more local work can be sent
 - structured-output parsing remains stable
 
@@ -156,6 +169,21 @@ Behavior:
 - loads `.env` when present through the test harness for local use, so `OPENAI_API_KEY` may come from the shell or `.env`
 - is skipped unless `BATCHOR_RUN_LIVE_TESTS=1`
 - requires an OpenAI account with Batch API access and available billing quota
+
+## Live Gemini smoke
+
+Manual only. This runs three one-item jobs through the normal SQLite-backed runtime: Developer API inline, Developer Files API, and Vertex GCS. Developer files and temporary GCS objects are removed afterward:
+
+```bash
+export GOOGLE_CLOUD_PROJECT="my-project"
+export GOOGLE_CLOUD_LOCATION="europe-west8"
+export GOOGLE_GENAI_USE_VERTEXAI="true"
+export BATCHOR_LIVE_GEMINI_GCS_URI="gs://my-bucket/batchor-live"
+export BATCHOR_RUN_LIVE_GEMINI=1
+uv run --extra gemini pytest tests/integration/test_batchor_live_gemini.py --no-cov -q
+```
+
+The root `.env` or shell must also provide `GEMINI_API_KEY` with available Developer API billing/prepayment credits. The bucket must be writable by the active Application Default Credentials and should be in the same region as the Vertex job. The tests default to `gemini-2.5-flash` and a 30-minute timeout; override them with `BATCHOR_LIVE_GEMINI_DEVELOPER_MODEL`, `BATCHOR_LIVE_GEMINI_MODEL`, and `BATCHOR_LIVE_GEMINI_TIMEOUT_SEC`.
 
 Cost controls:
 

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "batchorUser": {
+      "command": "python3",
+      "args": [
+        "./scripts/batchor_user_mcp.py"
+      ]
+    }
+  }
+}

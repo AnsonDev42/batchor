@@ -17,6 +17,7 @@ import importlib
 import json
 import string
 from collections.abc import Callable, Mapping
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, cast
 
@@ -24,18 +25,19 @@ import typer
 from dotenv import find_dotenv, load_dotenv
 from pydantic import BaseModel
 
-from batchor.core.enums import OpenAIEndpoint
+from batchor.core.enums import GeminiBatchInputMode, OpenAIEndpoint, ProviderKind
 from batchor.core.models import (
     ArtifactExportResult,
     ArtifactPruneResult,
     BatchJob,
     BatchResultItem,
+    GeminiProviderConfig,
     OpenAIProviderConfig,
     PromptParts,
     RunSummary,
 )
 from batchor.core.types import JSONObject
-from batchor.providers.base import BatchProvider
+from batchor.providers.base import BatchProvider, ProviderConfig
 from batchor.runtime.runner import BatchRunner
 from batchor.runtime.validation import default_schema_name
 from batchor.sources.base import CheckpointedItemSource
@@ -44,6 +46,14 @@ from batchor.sources.files import CsvItemSource, JsonlItemSource
 from batchor.storage.sqlite_store import SQLiteStorage
 
 app_name = "batchor"
+
+
+class GeminiBackend(StrEnum):
+    """Gemini API surface selected by the CLI."""
+
+    AUTO = "auto"
+    DEVELOPER = "developer"
+    VERTEX = "vertex"
 
 
 def _echo_json(payload: object) -> None:
@@ -134,10 +144,69 @@ def _runner_for_path(
     db_path: Path | None,
     provider_factory: Callable[[Any], BatchProvider] | None,
 ) -> tuple[BatchRunner, SQLiteStorage]:
+    load_dotenv(find_dotenv(usecwd=True), override=False)
     storage = _storage_for_path(db_path)
     return (
         BatchRunner(storage=storage, provider_factory=provider_factory),
         storage,
+    )
+
+
+def _gemini_vertexai(backend: GeminiBackend) -> bool | None:
+    if backend is GeminiBackend.AUTO:
+        return None
+    return backend is GeminiBackend.VERTEX
+
+
+def _json_object_option(value: str | None, *, option_name: str) -> JSONObject:
+    if value is None:
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{option_name} must be a JSON object: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{option_name} must be a JSON object")
+    return cast(JSONObject, payload)
+
+
+def _provider_config(
+    *,
+    provider: ProviderKind,
+    model: str,
+    endpoint: OpenAIEndpoint,
+    completion_window: str,
+    request_timeout_sec: int,
+    poll_interval_sec: float,
+    reasoning_effort: str | None,
+    gemini_backend: GeminiBackend,
+    gemini_input_mode: GeminiBatchInputMode,
+    gcs_uri: str,
+    google_cloud_project: str,
+    google_cloud_location: str,
+    gemini_generation_config: str | None,
+) -> ProviderConfig:
+    if provider is ProviderKind.GEMINI:
+        return GeminiProviderConfig(
+            model=model,
+            vertexai=_gemini_vertexai(gemini_backend),
+            project=google_cloud_project,
+            location=google_cloud_location,
+            gcs_uri=gcs_uri,
+            input_mode=gemini_input_mode,
+            poll_interval_sec=poll_interval_sec,
+            generation_config=_json_object_option(
+                gemini_generation_config,
+                option_name="--gemini-generation-config",
+            ),
+        )
+    return OpenAIProviderConfig(
+        model=model,
+        endpoint=endpoint,
+        completion_window=completion_window,
+        request_timeout_sec=request_timeout_sec,
+        poll_interval_sec=poll_interval_sec,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -276,6 +345,7 @@ def create_app(
         id_field: str = typer.Option(..., "--id-field"),
         prompt_field: str | None = typer.Option(None, "--prompt-field"),
         prompt_template: str | None = typer.Option(None, "--prompt-template"),
+        provider: ProviderKind = typer.Option(ProviderKind.OPENAI, "--provider"),
         model: str = typer.Option(..., "--model"),
         db_path: Path | None = typer.Option(None, "--db-path", dir_okay=False),
         run_id: str | None = typer.Option(None, "--run-id"),
@@ -286,6 +356,19 @@ def create_app(
         request_timeout_sec: int = typer.Option(30, "--request-timeout-sec"),
         poll_interval_sec: float = typer.Option(1.0, "--poll-interval-sec"),
         reasoning_effort: str | None = typer.Option(None, "--reasoning-effort"),
+        gemini_backend: GeminiBackend = typer.Option(GeminiBackend.AUTO, "--gemini-backend"),
+        gemini_input_mode: GeminiBatchInputMode = typer.Option(
+            GeminiBatchInputMode.AUTO,
+            "--gemini-input-mode",
+        ),
+        gcs_uri: str = typer.Option("", "--gcs-uri"),
+        google_cloud_project: str = typer.Option("", "--google-cloud-project"),
+        google_cloud_location: str = typer.Option("", "--google-cloud-location"),
+        gemini_generation_config: str | None = typer.Option(
+            None,
+            "--gemini-generation-config",
+            help="JSON object merged into each Gemini generation request.",
+        ),
     ) -> None:
         storage: SQLiteStorage | None = None
         try:
@@ -301,13 +384,20 @@ def create_app(
                 output_model = _load_output_model(structured_output_class)
                 if resolved_schema_name is None:
                     resolved_schema_name = default_schema_name(output_model)
-            provider_config = OpenAIProviderConfig(
+            provider_config = _provider_config(
+                provider=provider,
                 model=model,
                 endpoint=endpoint,
                 completion_window=completion_window,
                 request_timeout_sec=request_timeout_sec,
                 poll_interval_sec=poll_interval_sec,
                 reasoning_effort=reasoning_effort,
+                gemini_backend=gemini_backend,
+                gemini_input_mode=gemini_input_mode,
+                gcs_uri=gcs_uri,
+                google_cloud_project=google_cloud_project,
+                google_cloud_location=google_cloud_location,
+                gemini_generation_config=gemini_generation_config,
             )
             runner, storage = _runner_for_path(
                 db_path=db_path,
