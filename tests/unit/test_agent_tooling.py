@@ -55,6 +55,7 @@ def test_project_guide_points_to_repo_docs():
 
     assert "AGENTS.md" in text
     assert "docs/design_docs/ARCHITECTURE.md" in text
+    assert "docs/design_docs/ANTHROPIC_BATCHING.md" in text
     assert "uv run pytest -q" in text
 
 
@@ -161,3 +162,45 @@ def test_user_starter_supports_vertex_python_config():
     assert "GeminiProviderConfig" in text
     assert "vertexai=True" in text
     assert 'Install "batchor[gemini]"' in text
+
+
+def test_user_tools_support_anthropic_workflows():
+    module = _load_module(
+        "plugins/batchor/scripts/batchor_user_mcp.py",
+        "batchor_user_mcp",
+    )
+
+    workflow = module.call_tool(
+        "batchor_choose_workflow",
+        {
+            "input_kind": "jsonl",
+            "structured_output": False,
+            "shared_workers": False,
+            "provider": "anthropic",
+        },
+    )["content"][0]["text"]
+    cli = module.call_tool(
+        "batchor_starter",
+        {
+            "surface": "cli",
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5",
+            "id_field": "record_id",
+            "prompt_field": "abstract",
+        },
+    )["content"][0]["text"]
+    python = module.call_tool(
+        "batchor_starter",
+        {
+            "surface": "python",
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5",
+            "id_field": "record_id",
+            "prompt_field": "abstract",
+        },
+    )["content"][0]["text"]
+
+    assert 'pip install "batchor[anthropic]"' in workflow
+    assert "--provider anthropic --anthropic-max-tokens 1024" in cli
+    assert "AnthropicProviderConfig" in python
+    assert "max_tokens=1024" in python

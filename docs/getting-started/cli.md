@@ -40,6 +40,13 @@ pip install "batchor[gemini]"
 echo "GEMINI_API_KEY=..." > .env
 ```
 
+For Anthropic:
+
+```bash
+pip install "batchor[anthropic]"
+echo "ANTHROPIC_API_KEY=..." > .env
+```
+
 ## Start a run from JSONL
 
 ```bash
@@ -65,6 +72,20 @@ batchor start \
 Use `--prompt-template` when the prompt should be derived from several fields.
 
 Exactly one of `--prompt-field` or `--prompt-template` is required.
+
+## Start an Anthropic run
+
+```bash
+batchor start \
+  --input input/items.jsonl \
+  --id-field id \
+  --prompt-field text \
+  --provider anthropic \
+  --model claude-sonnet-4-5 \
+  --anthropic-max-tokens 1024
+```
+
+Use `--anthropic-message-params` for an additional JSON object such as `'{"temperature":0.2}'`.
 
 ## Start a Gemini Developer API run
 

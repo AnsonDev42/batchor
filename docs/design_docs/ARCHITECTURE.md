@@ -61,6 +61,7 @@ graph TB
     subgraph providers["providers/"]
         BatchProvider["BatchProvider (ABC)"]
         OpenAIProvider["OpenAIBatchProvider"]
+        AnthropicProvider["AnthropicBatchProvider"]
         GeminiProvider["GeminiBatchProvider"]
         ProviderRegistry
     end
@@ -95,6 +96,7 @@ graph TB
     MemoryStateStore -.->|implements| StateStore
     BatchRunner -->|submits/polls| BatchProvider
     OpenAIProvider -.->|implements| BatchProvider
+    AnthropicProvider -.->|implements| BatchProvider
     GeminiProvider -.->|implements| BatchProvider
     BatchRunner -->|stores artifacts| ArtifactStore
     LocalArtifactStore -.->|implements| ArtifactStore
@@ -126,7 +128,7 @@ one logical source, while callers remain responsible for selecting and ordering
 the child sources up front.
 
 Provider adaptation is intentionally concentrated behind `BatchProvider`.
-The runtime stores one durable internal custom identifier per item attempt, while each provider maps that identifier to its own request shape. OpenAI uses `custom_id`; the Gemini Developer API uses `key`; Vertex AI uses a request label that is returned with the original request in GCS output.
+The runtime stores one durable internal custom identifier per item attempt, while each provider maps that identifier to its own request shape. OpenAI and Anthropic use `custom_id`; the Gemini Developer API uses `key`; Vertex AI uses a request label that is returned with the original request in GCS output.
 Provider hooks also own response-text extraction so structured-output parsing can stay generic across provider payload shapes.
 
 ## Main user-facing flow
@@ -311,6 +313,7 @@ Owns provider-facing abstractions and implementations:
 - base provider contract
 - provider registry
 - OpenAI Batch implementation
+- Anthropic Message Batches implementation
 
 The provider layer is responsible for:
 
@@ -436,7 +439,7 @@ That split gives `batchor`:
 ## Current invariants
 
 1. Public execution is run-oriented: `start()`, `get_run()`, `run_and_wait()`.
-2. OpenAI Batch and text-only Gemini Batch are built-in Python and CLI providers; OpenAI remains the CLI default.
+2. OpenAI Batch, Anthropic Message Batches, and text-only Gemini Batch are built-in Python and CLI providers; OpenAI remains the CLI default.
 3. SQLite is the default durable backend.
 4. Postgres is an opt-in durable backend for shared control-plane state.
 5. Structured outputs require a module-level Pydantic v2 model for rehydration.

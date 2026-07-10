@@ -4,6 +4,7 @@ from importlib import resources
 from pathlib import Path
 
 from batchor import (
+    AnthropicProviderConfig,
     GeminiBatchProvider,
     GeminiProviderConfig,
     MemoryStateStore,
@@ -85,6 +86,31 @@ def test_default_provider_registry_can_dump_secretless_gemini_config() -> None:
 
     assert payload["provider_kind"] == ProviderKind.GEMINI.value
     assert payload["config"]["model"] == "gemini-2.5-flash"
+    assert "api_key" not in payload["config"]
+
+
+def test_default_provider_registry_round_trips_anthropic_config() -> None:
+    registry = build_default_provider_registry()
+    config = AnthropicProviderConfig(
+        api_key="k",
+        model="claude-sonnet-4-5",
+        max_tokens=1024,
+        message_params={"temperature": 0.1},
+    )
+
+    payload = registry.dump_config(config)
+    loaded = registry.load_config(payload)
+    assert loaded.provider_kind is ProviderKind.ANTHROPIC
+    assert loaded == config
+
+
+def test_default_provider_registry_can_dump_secretless_anthropic_config() -> None:
+    registry = build_default_provider_registry()
+    config = AnthropicProviderConfig(api_key="secret", model="claude-sonnet-4-5", max_tokens=1024)
+
+    payload = registry.dump_config(config, include_secrets=False)
+
+    assert payload["provider_kind"] == ProviderKind.ANTHROPIC.value
     assert "api_key" not in payload["config"]
 
 

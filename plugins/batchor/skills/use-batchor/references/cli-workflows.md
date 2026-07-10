@@ -11,6 +11,8 @@ export OPENAI_API_KEY="..."
 
 Use `python -m pip install "batchor[gemini]"` and the relevant Gemini or Google Cloud credentials for Gemini.
 
+For Anthropic, install `batchor[anthropic]`, set `ANTHROPIC_API_KEY`, and select `--provider anthropic`. Anthropic also requires `--anthropic-max-tokens`.
+
 ## Start a run
 
 For JSONL containing `id` and `text`:

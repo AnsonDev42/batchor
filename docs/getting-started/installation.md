@@ -22,6 +22,12 @@ pip install "batchor[gemini]"
 
 Gemini support is text-only and is available through both the Python API and CLI.
 
+Anthropic support uses the optional Anthropic SDK dependency:
+
+```bash
+pip install "batchor[anthropic]"
+```
+
 ## What gets installed
 
 The package includes:
@@ -29,6 +35,7 @@ The package includes:
 - the Python library
 - the `batchor` CLI
 - the built-in OpenAI provider integration
+- the built-in Anthropic provider integration when `batchor[anthropic]` is installed
 - the built-in Gemini provider integration when `batchor[gemini]` is installed
 - SQLite and Postgres storage implementations
 
@@ -63,11 +70,16 @@ For Gemini Developer API usage, authentication resolution is:
 1. `GeminiProviderConfig(api_key=...)`
 2. `GEMINI_API_KEY`
 
+For Anthropic usage, authentication resolution is:
+
+1. `AnthropicProviderConfig(api_key=...)`
+2. `ANTHROPIC_API_KEY`
+
 Vertex AI uses Application Default Credentials and resolves project/location from explicit `GeminiProviderConfig` fields or `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`. Vertex batches also require a writable `gs://` staging prefix.
 
 The Python library does not auto-load `.env`.
 
-The CLI loads a local `.env` as a convenience for operator usage. It resolves `OPENAI_API_KEY` for OpenAI, `GEMINI_API_KEY` for the Gemini Developer API, and the documented Google Cloud environment variables for Vertex AI. Rehydrated `status`, `wait`, and result operations load the same `.env` before reconstructing a provider.
+The CLI loads a local `.env` as a convenience for operator usage. It resolves `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, and the documented Google Cloud environment variables for Vertex AI. Rehydrated `status`, `wait`, and result operations load the same `.env` before reconstructing a provider.
 
 ## Storage defaults
 

@@ -47,6 +47,8 @@ class Finding(BaseModel):
 
 Pass it as `structured_output=Finding` on `BatchJob`. Consume validated `result.output`, while handling failed items explicitly. For OpenAI strict schemas, object fields must satisfy the provider's required/closed-object rules.
 
+For Anthropic, install `batchor[anthropic]` and use `AnthropicProviderConfig(model=..., max_tokens=...)`. Extra Messages parameters belong in `message_params`; Batchor maps structured output through `output_config.format`.
+
 ## Durable file sources
 
 Prefer `CsvItemSource`, `JsonlItemSource`, or `ParquetItemSource` for large files. Give every row a stable `item_id`. Re-enter `start(job, run_id=the_same_id)` only with the same logical source and compatible job configuration.

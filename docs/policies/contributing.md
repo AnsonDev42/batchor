@@ -13,7 +13,7 @@ Before submitting changes:
 Please keep changes aligned with the documented package boundary:
 
 - durable batch execution
-- OpenAI Batch provider support
+- OpenAI, Anthropic, and Gemini Batch provider support
 - SQLite-backed local durability by default
 
 Out-of-scope proposals are still useful, but should usually start as an issue discussing fit before implementation.

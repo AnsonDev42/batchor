@@ -89,6 +89,7 @@ nav:
       - Boundary & Philosophy: design_docs/BOUNDARY_AND_PHILOSOPHY.md
       - OpenAI Batching: design_docs/OPENAI_BATCHING.md
       - Gemini Batching: design_docs/GEMINI_BATCHING.md
+      - Anthropic Batching: design_docs/ANTHROPIC_BATCHING.md
       - Storage & Runs: design_docs/STORAGE_AND_RUNS.md
       - Storage Migrations: design_docs/STORAGE_MIGRATIONS.md
       - Roadmap: design_docs/ROADMAP.md

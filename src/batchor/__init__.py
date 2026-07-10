@@ -39,6 +39,7 @@ from batchor.core.exceptions import (
     StructuredOutputSchemaError,
 )
 from batchor.core.models import (
+    AnthropicProviderConfig,
     ArtifactExportResult,
     ArtifactPolicy,
     ArtifactPruneResult,
@@ -61,6 +62,7 @@ from batchor.core.models import (
     TerminalResultsPage,
     TextItemResult,
 )
+from batchor.providers.anthropic import AnthropicBatchProvider
 from batchor.providers.base import (
     BatchProvider,
     ProviderConfig,
@@ -83,6 +85,8 @@ from batchor.storage.sqlite import SQLiteStorage
 from batchor.storage.state import MemoryStateStore, StateStore
 
 __all__ = [
+    "AnthropicBatchProvider",
+    "AnthropicProviderConfig",
     "ArtifactStore",
     "ArtifactPolicy",
     "BatchProvider",
