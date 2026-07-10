@@ -19,7 +19,7 @@ dependencies = [
     "typer>=0.16.0,<1",
     "python-dotenv>=1.0.1,<2",
 ]
-keywords = ["openai", "gemini", "batch", "sqlite", "cli", "pydantic"]
+keywords = ["openai", "anthropic", "gemini", "batch", "sqlite", "cli", "pydantic"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -42,6 +42,9 @@ Issues = "https://github.com/AnsonDev42/batchor/issues"
 batchor = "batchor.cli:app"
 
 [project.optional-dependencies]
+anthropic = [
+    "anthropic>=0.71.0,<1",
+]
 gemini = [
     "google-genai>=1.55.0,<2",
     "google-cloud-storage>=3.4.0,<4",

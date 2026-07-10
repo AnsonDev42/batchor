@@ -73,6 +73,7 @@ class ProviderKind(StrEnum):
 
     OPENAI = "openai"
     GEMINI = "gemini"
+    ANTHROPIC = "anthropic"
 
 
 class GeminiBatchInputMode(StrEnum):

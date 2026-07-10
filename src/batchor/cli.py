@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from batchor.core.enums import GeminiBatchInputMode, OpenAIEndpoint, ProviderKind
 from batchor.core.models import (
+    AnthropicProviderConfig,
     ArtifactExportResult,
     ArtifactPruneResult,
     BatchJob,
@@ -185,7 +186,19 @@ def _provider_config(
     google_cloud_project: str,
     google_cloud_location: str,
     gemini_generation_config: str | None,
+    anthropic_max_tokens: int,
+    anthropic_message_params: str | None,
 ) -> ProviderConfig:
+    if provider is ProviderKind.ANTHROPIC:
+        return AnthropicProviderConfig(
+            model=model,
+            max_tokens=anthropic_max_tokens,
+            poll_interval_sec=poll_interval_sec,
+            message_params=_json_object_option(
+                anthropic_message_params,
+                option_name="--anthropic-message-params",
+            ),
+        )
     if provider is ProviderKind.GEMINI:
         return GeminiProviderConfig(
             model=model,
@@ -369,6 +382,12 @@ def create_app(
             "--gemini-generation-config",
             help="JSON object merged into each Gemini generation request.",
         ),
+        anthropic_max_tokens: int = typer.Option(1024, "--anthropic-max-tokens"),
+        anthropic_message_params: str | None = typer.Option(
+            None,
+            "--anthropic-message-params",
+            help="JSON object merged into each Anthropic Messages request.",
+        ),
     ) -> None:
         storage: SQLiteStorage | None = None
         try:
@@ -398,6 +417,8 @@ def create_app(
                 google_cloud_project=google_cloud_project,
                 google_cloud_location=google_cloud_location,
                 gemini_generation_config=gemini_generation_config,
+                anthropic_max_tokens=anthropic_max_tokens,
+                anthropic_message_params=anthropic_message_params,
             )
             runner, storage = _runner_for_path(
                 db_path=db_path,

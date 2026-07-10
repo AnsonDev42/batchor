@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 
 from batchor.cli import create_app
 from batchor.core.enums import GeminiBatchInputMode
-from batchor.core.models import GeminiProviderConfig, OpenAIProviderConfig, PromptParts
+from batchor.core.models import AnthropicProviderConfig, GeminiProviderConfig, OpenAIProviderConfig, PromptParts
 from batchor.providers.openai import OpenAIBatchProvider
 
 
@@ -197,6 +197,42 @@ def test_cli_start_builds_gemini_developer_config(tmp_path: Path) -> None:
     assert config.vertexai is False
     assert config.input_mode is GeminiBatchInputMode.FILE
     assert config.generation_config == {"temperature": 0.2}
+
+
+def test_cli_start_builds_anthropic_config(tmp_path: Path) -> None:
+    input_path = tmp_path / "items.jsonl"
+    input_path.write_text('{"id":"row1","text":"hello"}\n', encoding="utf-8")
+    provider = _FakeCliProvider()
+    seen_configs: list[object] = []
+
+    result = CliRunner().invoke(
+        create_app(provider_factory=lambda config: (seen_configs.append(config), provider)[1]),
+        [
+            "start",
+            "--input",
+            str(input_path),
+            "--id-field",
+            "id",
+            "--prompt-field",
+            "text",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-sonnet-4-5",
+            "--anthropic-max-tokens",
+            "2048",
+            "--anthropic-message-params",
+            '{"temperature":0.2}',
+            "--db-path",
+            str(tmp_path / "cli.sqlite3"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    config = seen_configs[0]
+    assert isinstance(config, AnthropicProviderConfig)
+    assert config.max_tokens == 2048
+    assert config.message_params == {"temperature": 0.2}
 
 
 def test_cli_start_builds_gemini_vertex_config(tmp_path: Path) -> None:

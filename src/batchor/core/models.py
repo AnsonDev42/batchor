@@ -372,6 +372,73 @@ class GeminiProviderConfig(ProviderConfig):
 
 
 @dataclass(frozen=True)
+class AnthropicProviderConfig(ProviderConfig):
+    """Configuration for the built-in Anthropic Message Batches provider."""
+
+    model: str
+    max_tokens: int
+    api_key: str = ""
+    poll_interval_sec: float = 1.0
+    message_params: JSONObject = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.model.strip():
+            raise ValueError("model must be a non-empty string")
+        if self.max_tokens < 1:
+            raise ValueError("max_tokens must be >= 1")
+        if self.poll_interval_sec <= 0:
+            raise ValueError("poll_interval_sec must be > 0")
+        params = _json_object_copy(self.message_params, label="message_params")
+        reserved = {"model", "max_tokens", "messages", "system", "stream"} & params.keys()
+        if reserved:
+            raise ValueError(f"message_params contains reserved fields: {', '.join(sorted(reserved))}")
+        object.__setattr__(self, "message_params", params)
+
+    @property
+    def provider_kind(self) -> ProviderKind:
+        return ProviderKind.ANTHROPIC
+
+    def to_payload(self) -> JSONObject:
+        return {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "api_key": self.api_key,
+            "poll_interval_sec": self.poll_interval_sec,
+            "message_params": dict(self.message_params),
+        }
+
+    def to_public_payload(self) -> JSONObject:
+        payload = self.to_payload()
+        payload.pop("api_key", None)
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: JSONObject) -> AnthropicProviderConfig:
+        model = payload.get("model")
+        max_tokens = payload.get("max_tokens")
+        api_key = payload.get("api_key", "")
+        poll_interval_sec = payload.get("poll_interval_sec", 1.0)
+        message_params = payload.get("message_params", {})
+        if not isinstance(model, str):
+            raise TypeError("model must be a string")
+        if not isinstance(max_tokens, int):
+            raise TypeError("max_tokens must be an int")
+        if not isinstance(api_key, str):
+            raise TypeError("api_key must be a string")
+        if not isinstance(poll_interval_sec, int | float):
+            raise TypeError("poll_interval_sec must be numeric")
+        if not isinstance(message_params, dict):
+            raise TypeError("message_params must be a JSON object")
+        return cls(
+            model=model,
+            max_tokens=max_tokens,
+            api_key=api_key,
+            poll_interval_sec=float(poll_interval_sec),
+            message_params=cast(JSONObject, message_params),
+        )
+
+
+@dataclass(frozen=True)
 class OpenAIProviderConfig(ProviderConfig):
     """Configuration for the built-in OpenAI Batch provider.
 

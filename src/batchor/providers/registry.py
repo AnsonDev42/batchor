@@ -16,7 +16,7 @@ from batchor.core.types import JSONObject
 from batchor.providers.base import BatchProvider, ProviderConfig
 
 if TYPE_CHECKING:
-    from batchor.core.models import GeminiProviderConfig, OpenAIProviderConfig
+    from batchor.core.models import AnthropicProviderConfig, GeminiProviderConfig, OpenAIProviderConfig
 
 type ProviderFactory = Callable[[ProviderConfig], BatchProvider]
 type ProviderConfigLoader = Callable[[JSONObject], ProviderConfig]
@@ -133,7 +133,8 @@ def build_default_provider_registry() -> ProviderRegistry:
     Returns:
         A :class:`ProviderRegistry` with OpenAI and Gemini registered.
     """
-    from batchor.core.models import GeminiProviderConfig, OpenAIProviderConfig
+    from batchor.core.models import AnthropicProviderConfig, GeminiProviderConfig, OpenAIProviderConfig
+    from batchor.providers.anthropic import AnthropicBatchProvider
     from batchor.providers.gemini import GeminiBatchProvider
     from batchor.providers.openai import OpenAIBatchProvider
 
@@ -147,6 +148,11 @@ def build_default_provider_registry() -> ProviderRegistry:
         kind=ProviderKind.GEMINI,
         factory=lambda config: GeminiBatchProvider(_require_gemini_config(config)),
         loader=GeminiProviderConfig.from_payload,
+    )
+    registry.register(
+        kind=ProviderKind.ANTHROPIC,
+        factory=lambda config: AnthropicBatchProvider(_require_anthropic_config(config)),
+        loader=AnthropicProviderConfig.from_payload,
     )
     return registry
 
@@ -164,4 +170,12 @@ def _require_gemini_config(config: ProviderConfig) -> GeminiProviderConfig:
 
     if not isinstance(config, GeminiProviderConfig):
         raise TypeError(f"expected {ProviderKind.GEMINI.value} config, got {type(config).__name__}")
+    return config
+
+
+def _require_anthropic_config(config: ProviderConfig) -> AnthropicProviderConfig:
+    from batchor.core.models import AnthropicProviderConfig
+
+    if not isinstance(config, AnthropicProviderConfig):
+        raise TypeError(f"expected {ProviderKind.ANTHROPIC.value} config, got {type(config).__name__}")
     return config
