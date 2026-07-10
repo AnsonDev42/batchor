@@ -56,7 +56,7 @@ If that is the mental model you were missing from the generated docs, start with
 
 ## Current surface
 
-- Built-in providers: OpenAI Batch, plus text-only Gemini Batch for Python API usage
+- Built-in providers: OpenAI Batch, Anthropic Message Batches, and text-only Gemini Batch through Python and CLI workflows
 - Durable storage: SQLite by default, Postgres as an opt-in control-plane backend
 - Ephemeral storage: in-memory state store
 - Artifact backend: local filesystem via `LocalArtifactStore`

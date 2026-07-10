@@ -8,6 +8,7 @@ This guide defines the minimum validation bar for `batchor`.
 - verify durable run handling and SQLite persistence still work
 - verify artifact-store wiring still supports replay, export, and prune
 - verify OpenAI-specific batching logic through fake-provider integration tests
+- verify Anthropic Message Batches wiring through fake-client and opt-in live tests
 - verify Gemini provider wiring through fake-client integration tests
 - verify the documentation site still builds cleanly in strict mode
 
@@ -79,6 +80,7 @@ uv run pytest tests/unit/test_batchor_tokens.py tests/unit/test_batchor_sqlite_s
 uv run pytest tests/unit/test_batchor_artifacts.py tests/unit/test_batchor_storage_contracts.py --no-cov -q
 uv run pytest tests/integration/test_batchor_runner.py --no-cov -q
 uv run pytest tests/unit/test_batchor_gemini_provider.py tests/integration/test_batchor_gemini_runner.py --no-cov -q
+uv run pytest tests/unit/test_batchor_anthropic_provider.py --no-cov -q
 ```
 
 Expected:
@@ -105,6 +107,7 @@ Expected:
 - completed submitted items report consumed attempts consistently across storage backends
 - OpenAI request splitting and enqueue-limit logic still behave as expected
 - Gemini text-only request construction, batch polling normalization, response parsing, and structured-output validation still behave as expected
+- Anthropic request construction, safe correlation IDs, polling normalization, result parsing, and structured-output validation still behave as expected
 - wait-mode refresh cycles keep draining immediately after poll/submission progress, without introducing idle poll sleeps while more local work can be sent
 - structured-output parsing remains stable
 
@@ -186,7 +189,18 @@ The root `.env` or shell must also provide `GEMINI_API_KEY` with available Devel
 
 Cost controls:
 
-- three total items across both live tests
+- three total items across the Gemini live transports
 - text output only
 - manual/local only
 - not part of default CI or release automation
+
+## Live Anthropic smoke
+
+Manual only. This submits one minimal text request through the normal SQLite-backed runtime:
+
+```bash
+export BATCHOR_RUN_LIVE_ANTHROPIC=1
+uv run --extra anthropic pytest tests/integration/test_batchor_live_anthropic.py --no-cov -q
+```
+
+The root `.env` or shell must provide `ANTHROPIC_API_KEY`. The test defaults to `claude-haiku-4-5`, 64 output tokens, and a 15-minute timeout. Override these with `BATCHOR_LIVE_ANTHROPIC_MODEL` and `BATCHOR_LIVE_ANTHROPIC_TIMEOUT_SEC`.

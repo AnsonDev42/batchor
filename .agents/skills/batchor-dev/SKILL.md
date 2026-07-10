@@ -14,13 +14,14 @@ Use this skill for normal contributor work in this repository.
 3. Load only the design docs that match the task:
    - `docs/design_docs/ARCHITECTURE.md` for package layout and runtime boundaries
    - `docs/design_docs/OPENAI_BATCHING.md` for provider-specific batching behavior
+   - `docs/design_docs/ANTHROPIC_BATCHING.md` for Anthropic Message Batches behavior
    - `docs/design_docs/STORAGE_AND_RUNS.md` for durable state, run lifecycle, and retention
    - `docs/smoke-test.md` for the full validation matrix
 
 ## Repo map
 
 - `src/batchor/runtime/`: orchestration, run handles, validation, retry, token budgeting
-- `src/batchor/providers/`: provider interfaces and OpenAI Batch implementation
+- `src/batchor/providers/`: provider interfaces and OpenAI, Anthropic, and Gemini implementations
 - `src/batchor/storage/`: SQLite, Postgres, and in-memory durability backends
 - `src/batchor/sources/`: file-backed checkpointable item sources
 - `src/batchor/artifacts/`: durable request/output artifact handling

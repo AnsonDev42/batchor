@@ -2,11 +2,11 @@
 
 This document describes the OpenAI-specific behavior inside `batchor`.
 
-OpenAI remains the default and most feature-complete provider path. Gemini has its own design note in [`GEMINI_BATCHING.md`](GEMINI_BATCHING.md), while this page focuses only on OpenAI Batch semantics.
+OpenAI remains the default and most feature-complete provider path. Anthropic and Gemini have their own design notes in [`ANTHROPIC_BATCHING.md`](ANTHROPIC_BATCHING.md) and [`GEMINI_BATCHING.md`](GEMINI_BATCHING.md), while this page focuses only on OpenAI Batch semantics.
 
 ## Current behavior
 
-The Python API and CLI both support OpenAI. The CLI is OpenAI-only today.
+The Python API and CLI both support OpenAI, which remains the CLI default.
 
 ## Request construction
 

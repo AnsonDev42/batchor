@@ -28,7 +28,7 @@ def list_tools() -> list[dict[str, Any]]:
                     "shared_workers": {"type": "boolean"},
                     "provider": {
                         "type": "string",
-                        "enum": ["openai", "gemini", "vertex"],
+                        "enum": ["openai", "anthropic", "gemini", "vertex"],
                     },
                 },
                 "required": ["input_kind", "structured_output", "shared_workers", "provider"],
@@ -42,7 +42,7 @@ def list_tools() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "surface": {"type": "string", "enum": ["cli", "python"]},
-                    "provider": {"type": "string", "enum": ["openai", "gemini", "vertex"]},
+                    "provider": {"type": "string", "enum": ["openai", "anthropic", "gemini", "vertex"]},
                     "model": {"type": "string"},
                     "id_field": {"type": "string"},
                     "prompt_field": {"type": "string"},
@@ -70,11 +70,11 @@ def _choose_workflow(args: dict[str, Any]) -> str:
     provider = str(args["provider"])
     use_cli = input_kind in {"csv", "jsonl"} and not structured and not shared
     surface = "CLI" if use_cli else "Python API"
-    install = (
-        'python -m pip install "batchor[gemini]"'
-        if provider in {"gemini", "vertex"}
-        else "python -m pip install batchor"
-    )
+    install = {
+        "anthropic": 'python -m pip install "batchor[anthropic]"',
+        "gemini": 'python -m pip install "batchor[gemini]"',
+        "vertex": 'python -m pip install "batchor[gemini]"',
+    }.get(provider, "python -m pip install batchor")
     storage = "Postgres plus an artifact root shared by all workers" if shared else "default SQLite durability"
     source = {
         "csv": "CsvItemSource",
@@ -102,7 +102,12 @@ def _starter(args: dict[str, Any]) -> str:
     prompt_field = str(args["prompt_field"])
     if surface == "cli":
         backend = "vertex" if provider == "vertex" else "developer"
-        provider_flag = "" if provider == "openai" else f" --provider gemini --gemini-backend {backend}"
+        if provider == "anthropic":
+            provider_flag = " --provider anthropic --anthropic-max-tokens 1024"
+        elif provider in {"gemini", "vertex"}:
+            provider_flag = f" --provider gemini --gemini-backend {backend}"
+        else:
+            provider_flag = ""
         return (
             "Inspect `batchor start --help` for the installed version, then adapt this without running it:\n\n"
             "batchor start \\\n"
@@ -111,10 +116,18 @@ def _starter(args: dict[str, Any]) -> str:
             f"  --prompt-field {prompt_field} \\\n"
             f"  --model {model}{provider_flag}\n"
         )
-    is_gemini = provider in {"gemini", "vertex"}
-    config = "GeminiProviderConfig" if is_gemini else "OpenAIProviderConfig"
-    install = '"batchor[gemini]"' if is_gemini else "batchor"
-    provider_args = f'model="{model}", vertexai=True' if provider == "vertex" else f'model="{model}"'
+    if provider == "anthropic":
+        config = "AnthropicProviderConfig"
+        install = '"batchor[anthropic]"'
+        provider_args = f'model="{model}", max_tokens=1024'
+    elif provider in {"gemini", "vertex"}:
+        config = "GeminiProviderConfig"
+        install = '"batchor[gemini]"'
+        provider_args = f'model="{model}", vertexai=True' if provider == "vertex" else f'model="{model}"'
+    else:
+        config = "OpenAIProviderConfig"
+        install = "batchor"
+        provider_args = f'model="{model}"'
     return f'''Install {install} with the project's dependency manager, then adapt this module:\n\nfrom batchor import BatchItem, BatchJob, BatchRunner, {config}, PromptParts\n\n\ndef start_job(records: list[dict[str, str]], run_id: str):\n    runner = BatchRunner()\n    job = BatchJob(\n        items=[\n            BatchItem(item_id=row["{id_field}"], payload=row)\n            for row in records\n        ],\n        build_prompt=lambda item: PromptParts(prompt=item.payload["{prompt_field}"]),\n        provider_config={config}({provider_args}),\n    )\n    return runner.start(job, run_id=run_id)\n\nDo not call this against real records until the user approves the upload and cost.\n'''
 
 

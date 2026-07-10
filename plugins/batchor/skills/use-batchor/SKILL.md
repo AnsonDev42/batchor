@@ -1,6 +1,6 @@
 ---
 name: use-batchor
-description: Turn datasets, prompts, or existing Python data pipelines into durable OpenAI or Gemini Batch workflows with Batchor. Use when a researcher or downstream project needs to process CSV, JSONL, Parquet, or application records with resumable LLM batches, typed outputs, result export, or run operations; also use to diagnose or improve an existing Batchor integration. Do not use for contributing to the Batchor library itself.
+description: Turn datasets, prompts, or existing Python data pipelines into durable OpenAI, Anthropic, or Gemini Batch workflows with Batchor. Use when a researcher or downstream project needs to process CSV, JSONL, Parquet, or application records with resumable LLM batches, typed outputs, result export, or run operations; also use to diagnose or improve an existing Batchor integration. Do not use for contributing to the Batchor library itself.
 ---
 
 # Use Batchor
@@ -11,7 +11,7 @@ Build the smallest reliable Batchor workflow that fits the user's data and opera
 
 1. Inspect the project and a small sample of the input schema when available.
 2. Identify or safely infer:
-   - provider: OpenAI, Gemini Developer API, or Vertex AI
+   - provider: OpenAI, Anthropic, Gemini Developer API, or Vertex AI
    - input: CSV, JSONL, Parquet, or application records
    - stable item identifier and prompt fields
    - plain text versus structured Pydantic output
@@ -31,7 +31,7 @@ If the Batchor MCP tools are available, call `batchor_choose_workflow` before im
 
 ## Implement safely
 
-1. Add `batchor` to the project's normal dependency manager. Use `batchor[gemini]` only for Gemini.
+1. Add `batchor` to the project's normal dependency manager. Use `batchor[anthropic]` for Anthropic or `batchor[gemini]` for Gemini.
 2. Keep credentials in the project's existing secret mechanism. Python callers do not get automatic `.env` loading from Batchor.
 3. Preserve a stable `run_id` outside the process so a fresh process can call `get_run()` or resume `start(..., run_id=...)`.
 4. Prefer `CsvItemSource`, `JsonlItemSource`, `ParquetItemSource`, or another checkpointed source when restart-safe ingestion matters.
