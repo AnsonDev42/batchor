@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.engine import Connection, RowMapping
 
 from batchor.core.enums import ItemStatus, RunControlState, RunLifecycleStatus
@@ -28,6 +28,7 @@ from batchor.storage.sqlite_schema import (
     RUNS_TABLE,
     SQLITE_SCHEMA_VERSION,
     STORAGE_METADATA_TABLE,
+    SUBMISSION_INTENTS_TABLE,
 )
 from batchor.storage.state import (
     IngestCheckpoint,
@@ -149,6 +150,7 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
             }
             if "checkpoint_payload_json" not in ingest_columns:
                 conn.exec_driver_sql("ALTER TABLE run_ingest_state ADD COLUMN checkpoint_payload_json TEXT")
+            self._backfill_missing_ingest_markers(conn)
             existing_schema_row = conn.execute(
                 select(STORAGE_METADATA_TABLE.c.value).where(STORAGE_METADATA_TABLE.c.key == "schema_version")
             ).first()
@@ -163,6 +165,44 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
                     .where(STORAGE_METADATA_TABLE.c.key == "schema_version")
                     .values(value=str(SQLITE_SCHEMA_VERSION))
                 )
+
+    @staticmethod
+    def _backfill_missing_ingest_markers(conn: Connection) -> None:
+        """Conservatively migrate runs created before generic ingest markers."""
+        rows = conn.execute(
+            select(
+                RUNS_TABLE.c.run_id,
+                select(func.count())
+                .select_from(ITEMS_TABLE)
+                .where(ITEMS_TABLE.c.run_id == RUNS_TABLE.c.run_id)
+                .scalar_subquery()
+                .label("item_count"),
+            ).where(
+                ~exists(
+                    select(RUN_INGEST_STATE_TABLE.c.run_id).where(
+                        RUN_INGEST_STATE_TABLE.c.run_id == RUNS_TABLE.c.run_id
+                    )
+                )
+            )
+        ).mappings()
+        for row in rows:
+            conn.execute(
+                RUN_INGEST_STATE_TABLE.insert(),
+                [
+                    {
+                        "run_id": str(row["run_id"]),
+                        "source_kind": "unattached",
+                        "source_ref": "",
+                        "source_fingerprint": "",
+                        "next_item_index": int(row["item_count"]),
+                        "checkpoint_payload_json": None,
+                        # No pre-v6 durable fact distinguishes a completed
+                        # arbitrary iterable from one paused between chunks.
+                        # Conservatively require explicit recovery for both.
+                        "ingestion_complete": 0,
+                    }
+                ],
+            )
 
     def _fetch_retry_state(self, conn: Connection, run_id: str) -> RetryBackoffState:
         row = (
@@ -291,7 +331,23 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
                 .select_from(BATCHES_TABLE)
                 .where(
                     (BATCHES_TABLE.c.run_id == run_id)
-                    & BATCHES_TABLE.c.status.not_in(tuple(self.TERMINAL_BATCH_STATUSES))
+                    & (
+                        BATCHES_TABLE.c.status.not_in(tuple(self.TERMINAL_BATCH_STATUSES))
+                        | exists(
+                            select(ITEMS_TABLE.c.item_id).where(
+                                (ITEMS_TABLE.c.run_id == run_id)
+                                & (ITEMS_TABLE.c.active_batch_id == BATCHES_TABLE.c.provider_batch_id)
+                                & (ITEMS_TABLE.c.status == self.ACTIVE_ITEM_STATUS_SUBMITTED)
+                            )
+                        )
+                        | exists(
+                            select(SUBMISSION_INTENTS_TABLE.c.intent_id).where(
+                                (SUBMISSION_INTENTS_TABLE.c.run_id == run_id)
+                                & (SUBMISSION_INTENTS_TABLE.c.provider_batch_id == BATCHES_TABLE.c.provider_batch_id)
+                                & (SUBMISSION_INTENTS_TABLE.c.capacity_released == 0)
+                            )
+                        )
+                    )
                 )
             ).scalar_one()
         )

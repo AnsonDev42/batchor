@@ -10,7 +10,8 @@ from uuid import uuid4
 
 from batchor.artifacts import ArtifactStore
 from batchor.core.enums import RunControlState
-from batchor.core.models import ItemFailure, OpenAIProviderConfig, PromptParts
+from batchor.core.exceptions import RunSubmissionIndeterminateError
+from batchor.core.models import ItemFailure, OpenAIProviderConfig, PromptParts, openai_enqueue_quota_scope
 from batchor.core.types import BatchRequestLine, JSONObject
 from batchor.runtime.artifacts import (
     RequestArtifactCache,
@@ -22,8 +23,8 @@ from batchor.runtime.artifacts import (
 from batchor.runtime.context import RunContext
 from batchor.runtime.retry import (
     classify_batch_error,
+    is_enqueue_token_limit_error,
     is_insufficient_quota_error,
-    is_retryable_batch_control_plane_error,
 )
 from batchor.runtime.tokens import (
     chunk_request_rows,
@@ -194,14 +195,10 @@ def submit_pending_items(
     )
     submitted_item_ids: set[str] = set()
     submitted_count = 0
-    active_tokens = deps.state.get_active_submitted_token_estimate(run_id=run_id) if inflight_budget is not None else 0
-
     for chunk_index, chunk in enumerate(chunks, start=1):
         if deps.state.get_run_control_state(run_id=run_id) is not RunControlState.RUNNING:
             break
         chunk_tokens = sum(int(row["submission_tokens"]) for row in chunk)
-        if inflight_budget is not None and chunk_tokens > max(inflight_budget - active_tokens, 0):
-            break
         request_lines = [cast(JSONObject, row["request_line"]) for row in chunk]
         request_relative_path = request_artifact_relative_path(run_id)
         deps.artifact_store.write_text(
@@ -223,11 +220,29 @@ def submit_pending_items(
         )
         if deps.state.get_run_control_state(run_id=run_id) is not RunControlState.RUNNING:
             break
+        intent_id = f"submission-{uuid4().hex}"
+        if not deps.state.begin_submission_intent(
+            run_id=run_id,
+            intent_id=intent_id,
+            submissions=[
+                PreparedSubmission(
+                    item_id=str(row["item_id"]),
+                    custom_id=str(row["custom_id"]),
+                    submission_tokens=int(row["submission_tokens"]),
+                )
+                for row in chunk
+            ],
+            quota_scope=submission_quota_scope(config.provider_config) if inflight_budget is not None else None,
+            submission_tokens=chunk_tokens,
+            capacity_limit=inflight_budget,
+        ):
+            break
         with ExitStack() as stack:
             request_file = stack.enter_context(deps.artifact_store.stage_local_copy(request_relative_path.as_posix()))
             try:
                 remote_input_file_id = context.provider.upload_input_file(request_file)
             except Exception as exc:  # noqa: BLE001
+                deps.state.abandon_submission_intent(intent_id=intent_id)
                 if is_insufficient_quota_error(exc):
                     _release_unsubmitted_claimed_items(
                         deps,
@@ -251,8 +266,9 @@ def submit_pending_items(
                     metadata={"run_id": run_id, **context.config.batch_metadata},
                 )
             except Exception as exc:  # noqa: BLE001
-                cleanup_uploaded_input_file(context, remote_input_file_id)
                 if is_insufficient_quota_error(exc):
+                    deps.state.abandon_submission_intent(intent_id=intent_id)
+                    cleanup_uploaded_input_file(context, remote_input_file_id)
                     _release_unsubmitted_claimed_items(
                         deps,
                         run_id=run_id,
@@ -268,35 +284,49 @@ def submit_pending_items(
                         phase="batch_create",
                     )
                     return submitted_count
-                if not is_retryable_batch_control_plane_error(exc):
-                    raise
-                deps.state.record_batch_retry_failure(
-                    run_id=run_id,
-                    error_class=classify_batch_error(exc),
-                    base_delay_sec=config.retry_policy.base_backoff_sec,
-                    max_delay_sec=config.retry_policy.max_backoff_sec,
-                )
-                deps.emit_event(
-                    "batch_submit_retry",
-                    run_id=run_id,
-                    provider_kind=context.config.provider_config.provider_kind,
-                    data={"error_class": classify_batch_error(exc)},
-                )
-                break
+                if is_enqueue_token_limit_error(exc):
+                    # The provider explicitly rejected this create for an
+                    # enqueue-budget violation; no remote batch exists.
+                    deps.state.abandon_submission_intent(intent_id=intent_id)
+                    cleanup_uploaded_input_file(context, remote_input_file_id)
+                    deps.state.record_batch_retry_failure(
+                        run_id=run_id,
+                        error_class=classify_batch_error(exc),
+                        base_delay_sec=config.retry_policy.base_backoff_sec,
+                        max_delay_sec=config.retry_policy.max_backoff_sec,
+                    )
+                    deps.emit_event(
+                        "batch_submit_retry",
+                        run_id=run_id,
+                        provider_kind=context.config.provider_config.provider_kind,
+                        data={"error_class": classify_batch_error(exc)},
+                    )
+                    break
+                # Generic providers cannot prove a failed create call did not
+                # create remote work (timeouts are especially ambiguous).
+                # Leave the durable intent and input artifact for operator
+                # inspection rather than silently issuing a duplicate batch.
+                intent_item_ids = {str(row["item_id"]) for row in chunk}
+                safe_unsubmitted = [
+                    item.item_id
+                    for item in claimed
+                    if item.item_id not in submitted_item_ids
+                    and item.item_id not in failed_item_ids
+                    and item.item_id not in intent_item_ids
+                ]
+                if safe_unsubmitted:
+                    deps.state.release_items_to_pending(run_id=run_id, item_ids=safe_unsubmitted)
+                raise RunSubmissionIndeterminateError(run_id) from exc
 
-        deps.state.clear_batch_retry_backoff(run_id=run_id)
         provider_batch_id = str(batch["id"])
         local_batch_id = f"batch-{chunk_index:04d}-{uuid4().hex[:8]}"
-        deps.state.register_batch(
+        deps.state.finalize_submission_intent(
             run_id=run_id,
+            intent_id=intent_id,
             local_batch_id=local_batch_id,
             provider_batch_id=provider_batch_id,
             status=str(batch.get("status", "submitted")),
             custom_ids=[str(row["custom_id"]) for row in chunk],
-        )
-        deps.state.mark_items_submitted(
-            run_id=run_id,
-            provider_batch_id=provider_batch_id,
             submissions=[
                 PreparedSubmission(
                     item_id=str(row["item_id"]),
@@ -318,7 +348,6 @@ def submit_pending_items(
         )
         submitted_count += len(chunk)
         submitted_item_ids.update(str(row["item_id"]) for row in chunk)
-        active_tokens += chunk_tokens
 
     unsent = [
         item.item_id
@@ -328,6 +357,13 @@ def submit_pending_items(
     if unsent:
         deps.state.release_items_to_pending(run_id=run_id, item_ids=unsent)
     return submitted_count
+
+
+def submission_quota_scope(provider_config: object) -> str:
+    """Return the durable capacity scope for an OpenAI submission."""
+    if not isinstance(provider_config, OpenAIProviderConfig):
+        raise TypeError("OpenAI enqueue capacity requires OpenAIProviderConfig")
+    return openai_enqueue_quota_scope(provider_config)
 
 
 def _release_unsubmitted_claimed_items(

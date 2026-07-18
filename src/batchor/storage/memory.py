@@ -13,10 +13,11 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
+from threading import RLock
 from typing import Callable
 
 from batchor.core.enums import ItemStatus, RunControlState, RunLifecycleStatus
-from batchor.core.models import ItemFailure, RunSummary
+from batchor.core.models import ItemFailure, OpenAIProviderConfig, RunSummary, openai_enqueue_quota_scope
 from batchor.core.types import JSONObject, JSONValue
 from batchor.runtime.retry import compute_backoff_delay
 from batchor.storage.state_models import (
@@ -75,6 +76,20 @@ class _StoredBatch:
 
 
 @dataclass
+class _StoredSubmissionIntent:
+    intent_id: str
+    run_id: str
+    custom_ids: list[str]
+    item_ids: list[str]
+    submissions: list[PreparedSubmission]
+    quota_scope: str | None
+    submission_tokens: int
+    status: str = "creating"
+    provider_batch_id: str | None = None
+    capacity_released: bool = False
+
+
+@dataclass
 class _StoredRun:
     run_id: str
     config: PersistedRunConfig
@@ -109,6 +124,8 @@ class MemoryStateStore(StateStore):
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._runs: dict[str, _StoredRun] = {}
+        self._submission_intents: dict[str, _StoredSubmissionIntent] = {}
+        self._submission_intent_lock = RLock()
         self._now = now or (lambda: datetime.now(UTC))
 
     def has_run(self, *, run_id: str) -> bool:
@@ -123,7 +140,16 @@ class MemoryStateStore(StateStore):
     ) -> None:
         if run_id in self._runs:
             raise ValueError(f"run already exists: {run_id}")
-        run = _StoredRun(run_id=run_id, config=config)
+        run = _StoredRun(
+            run_id=run_id,
+            config=config,
+            ingest_checkpoint=IngestCheckpoint(
+                source_kind="unattached",
+                source_ref="",
+                source_fingerprint="",
+                ingestion_complete=bool(items),
+            ),
+        )
         self._runs[run_id] = run
         self.append_items(run_id=run_id, items=items)
         self._refresh_run_status(run)
@@ -442,6 +468,151 @@ class MemoryStateStore(StateStore):
             item.error = None
         self._refresh_run_status(run)
 
+    def begin_submission_intent(
+        self,
+        *,
+        run_id: str,
+        intent_id: str,
+        submissions: list[PreparedSubmission],
+        quota_scope: str | None,
+        submission_tokens: int,
+        capacity_limit: int | None,
+    ) -> bool:
+        with self._submission_intent_lock:
+            if quota_scope is not None and capacity_limit is not None:
+                reserved = self._legacy_active_submitted_tokens(quota_scope=quota_scope) + sum(
+                    intent.submission_tokens
+                    for intent in self._submission_intents.values()
+                    if intent.quota_scope == quota_scope and not intent.capacity_released
+                )
+                if reserved + submission_tokens > capacity_limit:
+                    return False
+            self._submission_intents[intent_id] = _StoredSubmissionIntent(
+                intent_id=intent_id,
+                run_id=run_id,
+                custom_ids=[submission.custom_id for submission in submissions],
+                item_ids=[submission.item_id for submission in submissions],
+                submissions=list(submissions),
+                quota_scope=quota_scope,
+                submission_tokens=submission_tokens,
+            )
+            return True
+
+    def finalize_submission_intent(
+        self,
+        *,
+        run_id: str,
+        intent_id: str,
+        local_batch_id: str,
+        provider_batch_id: str,
+        status: str,
+        custom_ids: list[str],
+        submissions: list[PreparedSubmission],
+    ) -> None:
+        with self._submission_intent_lock:
+            intent = self._submission_intents.get(intent_id)
+            if intent is None or intent.run_id != run_id or intent.status != "creating":
+                raise ValueError(f"submission intent is not creating: {intent_id}")
+            run = self._get_run(run_id)
+            run.batches[provider_batch_id] = _StoredBatch(
+                local_batch_id=local_batch_id,
+                provider_batch_id=provider_batch_id,
+                status=status,
+                custom_ids=list(custom_ids),
+            )
+            for submission in submissions:
+                item = run.items[submission.item_id]
+                item.status = ItemStatus.SUBMITTED
+                item.active_batch_id = provider_batch_id
+                item.active_custom_id = submission.custom_id
+                item.active_submission_tokens = submission.submission_tokens
+                item.error = None
+            intent.status = "active"
+            intent.provider_batch_id = provider_batch_id
+            self._refresh_run_status(run)
+
+    def abandon_submission_intent(self, *, intent_id: str) -> None:
+        with self._submission_intent_lock:
+            intent = self._submission_intents.get(intent_id)
+            if intent is not None:
+                intent.status = "abandoned"
+                intent.capacity_released = True
+
+    def has_indeterminate_submission_intents(self, *, run_id: str) -> bool:
+        with self._submission_intent_lock:
+            return any(
+                intent.run_id == run_id and intent.status == "creating" for intent in self._submission_intents.values()
+            )
+
+    def release_submission_capacity_for_batch(self, *, run_id: str, provider_batch_id: str) -> None:
+        with self._submission_intent_lock:
+            for intent in self._submission_intents.values():
+                if (
+                    intent.run_id == run_id
+                    and intent.provider_batch_id == provider_batch_id
+                    and intent.status == "active"
+                ):
+                    intent.capacity_released = True
+
+    def abandon_indeterminate_submission_intents(self, *, run_id: str) -> None:
+        with self._submission_intent_lock:
+            abandoned_item_ids: set[str] = set()
+            for intent in self._submission_intents.values():
+                if intent.run_id == run_id and intent.status == "creating":
+                    abandoned_item_ids.update(intent.item_ids)
+                    intent.status = "operator_abandoned"
+                    intent.capacity_released = True
+            run = self._get_run(run_id)
+            for item_id in abandoned_item_ids:
+                item = run.items[item_id]
+                if item.status is ItemStatus.QUEUED_LOCAL:
+                    item.status = ItemStatus.PENDING
+                    item.active_batch_id = None
+                    item.active_custom_id = None
+                    item.active_submission_tokens = 0
+            self._refresh_run_status(run)
+
+    def _legacy_active_submitted_tokens(self, *, quota_scope: str) -> int:
+        """Count submitted rows that predate durable submission intents."""
+        reserved = 0
+        intent_batch_ids = {
+            (intent.run_id, intent.provider_batch_id)
+            for intent in self._submission_intents.values()
+            if intent.provider_batch_id is not None
+        }
+        for run in self._runs.values():
+            provider_config = run.config.provider_config
+            if not isinstance(provider_config, OpenAIProviderConfig):
+                continue
+            if openai_enqueue_quota_scope(provider_config) != quota_scope:
+                continue
+            reserved += sum(
+                item.active_submission_tokens
+                for item in run.items.values()
+                if item.status is ItemStatus.SUBMITTED and (run.run_id, item.active_batch_id) not in intent_batch_ids
+            )
+        return reserved
+
+    def finalize_indeterminate_submission_as_created(self, *, run_id: str, provider_batch_id: str, status: str) -> None:
+        with self._submission_intent_lock:
+            intents = [
+                intent
+                for intent in self._submission_intents.values()
+                if intent.run_id == run_id and intent.status == "creating"
+            ]
+            if len(intents) != 1:
+                raise ValueError("expected exactly one indeterminate submission intent")
+            intent = intents[0]
+            self.finalize_submission_intent(
+                run_id=run_id,
+                intent_id=intent.intent_id,
+                local_batch_id=f"recovered-{intent.intent_id[-8:]}",
+                provider_batch_id=provider_batch_id,
+                status=status,
+                custom_ids=intent.custom_ids,
+                submissions=intent.submissions,
+            )
+
     def update_batch_status(
         self,
         *,
@@ -468,7 +639,20 @@ class MemoryStateStore(StateStore):
                 error_file_id=batch.error_file_id,
             )
             for batch in run.batches.values()
+            # A provider-terminal batch remains active locally until every
+            # submitted item has been consumed.  This makes result download
+            # and item-state mutations safely replayable after a crash.
             if batch.status not in self.TERMINAL_BATCH_STATUSES
+            or any(
+                item.status is ItemStatus.SUBMITTED and item.active_batch_id == batch.provider_batch_id
+                for item in run.items.values()
+            )
+            or any(
+                intent.run_id == run_id
+                and intent.provider_batch_id == batch.provider_batch_id
+                and not intent.capacity_released
+                for intent in self._submission_intents.values()
+            )
         ]
 
     def get_submitted_custom_ids_for_batch(
@@ -497,6 +681,8 @@ class MemoryStateStore(StateStore):
         run = self._get_run(run_id)
         for completion in completions:
             item = self._item_for_custom_id(run, completion.custom_id)
+            if item.status is not ItemStatus.SUBMITTED:
+                continue
             item.attempt_count += 1
             item.status = ItemStatus.COMPLETED
             item.terminal_result_sequence = self._next_terminal_sequence(run)
@@ -520,6 +706,8 @@ class MemoryStateStore(StateStore):
         run = self._get_run(run_id)
         for failure in failures:
             item = self._item_for_custom_id(run, failure.custom_id)
+            if item.status is not ItemStatus.SUBMITTED:
+                continue
             if failure.count_attempt:
                 item.attempt_count += 1
             item.status = self._failed_status(
@@ -597,7 +785,11 @@ class MemoryStateStore(StateStore):
         max_delay_sec: float,
     ) -> RetryBackoffState:
         run = self._get_run(run_id)
-        consecutive = run.backoff.consecutive_failures + 1
+        # Successful work in another batch must not clear this delay.  A new
+        # failure after the previous delay has elapsed begins a fresh streak,
+        # keeping exponential backoff bounded without cross-batch coupling.
+        previous_is_active = run.backoff.next_retry_at is not None and run.backoff.next_retry_at > self._now()
+        consecutive = (run.backoff.consecutive_failures if previous_is_active else 0) + 1
         total = run.backoff.total_failures + 1
         backoff_sec = compute_backoff_delay(
             consecutive_failures=consecutive,
@@ -735,7 +927,7 @@ class MemoryStateStore(StateStore):
 
     def _refresh_run_status(self, run: _StoredRun) -> None:
         all_terminal = all(run.items[item_id].status in self.TERMINAL_ITEM_STATUSES for item_id in run.item_ids)
-        active_batches = any(batch.status not in self.TERMINAL_BATCH_STATUSES for batch in run.batches.values())
+        active_batches = bool(self.get_active_batches(run_id=run.run_id))
         backoff_remaining = self.get_batch_retry_backoff_remaining_sec(run_id=run.run_id)
         ingestion_complete = run.ingest_checkpoint is None or run.ingest_checkpoint.ingestion_complete
         if all_terminal and not active_batches and backoff_remaining <= 0 and ingestion_complete:

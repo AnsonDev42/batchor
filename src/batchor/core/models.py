@@ -157,12 +157,16 @@ class OpenAIEnqueueLimitConfig:
             computing the effective budget.  Defaults to ``0``.
         max_batch_enqueued_tokens: Optional per-batch token ceiling.
             ``0`` means no per-batch limit beyond the inflight budget.
+        quota_scope: Optional stable account/project label.  Set this when
+            multiple OpenAI accounts share one durable store; it is persisted
+            instead of deriving a scope from the credential digest.
     """
 
     enqueued_token_limit: int = 0
     target_ratio: float = 0.7
     headroom: int = 0
     max_batch_enqueued_tokens: int = 0
+    quota_scope: str = ""
 
     def __post_init__(self) -> None:
         if self.enqueued_token_limit < 0:
@@ -175,6 +179,8 @@ class OpenAIEnqueueLimitConfig:
             raise ValueError("headroom must be < enqueued_token_limit")
         if self.max_batch_enqueued_tokens < 0:
             raise ValueError("max_batch_enqueued_tokens must be >= 0")
+        if not isinstance(self.quota_scope, str):
+            raise TypeError("quota_scope must be a string")
         if self.enqueued_token_limit > 0:
             effective_budget = min(
                 int(self.enqueued_token_limit * self.target_ratio),
@@ -202,6 +208,7 @@ class OpenAIEnqueueLimitConfig:
             "target_ratio": self.target_ratio,
             "headroom": self.headroom,
             "max_batch_enqueued_tokens": self.max_batch_enqueued_tokens,
+            "quota_scope": self.quota_scope,
         }
 
     @classmethod
@@ -221,6 +228,7 @@ class OpenAIEnqueueLimitConfig:
         target_ratio = payload.get("target_ratio", 0.7)
         headroom = payload.get("headroom", 0)
         max_batch_enqueued_tokens = payload.get("max_batch_enqueued_tokens", 0)
+        quota_scope = payload.get("quota_scope", "")
         if not isinstance(enqueued_token_limit, int):
             raise TypeError("enqueued_token_limit must be an int")
         if not isinstance(target_ratio, int | float):
@@ -229,11 +237,14 @@ class OpenAIEnqueueLimitConfig:
             raise TypeError("headroom must be an int")
         if not isinstance(max_batch_enqueued_tokens, int):
             raise TypeError("max_batch_enqueued_tokens must be an int")
+        if not isinstance(quota_scope, str):
+            raise TypeError("quota_scope must be a string")
         return cls(
             enqueued_token_limit=enqueued_token_limit,
             target_ratio=float(target_ratio),
             headroom=headroom,
             max_batch_enqueued_tokens=max_batch_enqueued_tokens,
+            quota_scope=quota_scope,
         )
 
 
@@ -549,6 +560,14 @@ class OpenAIProviderConfig(ProviderConfig):
             reasoning_effort=reasoning_effort,
             enqueue_limits=OpenAIEnqueueLimitConfig.from_payload(enqueue_limits),
         )
+
+
+def openai_enqueue_quota_scope(provider_config: OpenAIProviderConfig) -> str:
+    """Return a stable persisted capacity scope without credential material."""
+    configured_scope = provider_config.enqueue_limits.quota_scope.strip()
+    if configured_scope:
+        return f"openai:{provider_config.model}:label:{configured_scope}"
+    return f"openai:{provider_config.model}:default"
 
 
 @dataclass(frozen=True)

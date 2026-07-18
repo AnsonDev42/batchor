@@ -81,6 +81,7 @@ class PostgresStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin
             }
             if "control_reason" not in run_columns:
                 conn.execute(text(f'ALTER TABLE "{self.schema}"."runs" ADD COLUMN control_reason VARCHAR'))
+            self._backfill_missing_ingest_markers(conn)
             existing_schema_row = conn.execute(
                 select(STORAGE_METADATA_TABLE.c.value).where(STORAGE_METADATA_TABLE.c.key == "schema_version")
             ).first()

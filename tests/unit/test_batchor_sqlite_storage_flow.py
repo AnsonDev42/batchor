@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 from sqlalchemy import select
@@ -167,6 +169,75 @@ def test_sqlite_storage_submission_and_terminal_summary(tmp_path: Path) -> None:
     provider_config = config.provider_config
     assert isinstance(provider_config, OpenAIProviderConfig)
     assert provider_config.enqueue_limits.max_batch_enqueued_tokens == 500
+
+
+def test_sqlite_submission_capacity_reservation_is_atomic_across_store_instances(tmp_path: Path) -> None:
+    path = tmp_path / "shared.sqlite3"
+    first = SQLiteStorage(path=path)
+    second = SQLiteStorage(path=path)
+    first.create_run(run_id="capacity_a", config=_config(), items=_items()[:1])
+    second.create_run(run_id="capacity_b", config=_config(), items=_items()[:1])
+    barrier = Barrier(2)
+
+    def reserve(storage: SQLiteStorage, run_id: str) -> bool:
+        barrier.wait()
+        return storage.begin_submission_intent(
+            run_id=run_id,
+            intent_id=f"intent-{run_id}",
+            submissions=[PreparedSubmission(item_id="row1", custom_id=f"{run_id}:a1", submission_tokens=10)],
+            quota_scope="openai:gpt-4.1:team-a",
+            submission_tokens=10,
+            capacity_limit=10,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda args: reserve(*args), [(first, "capacity_a"), (second, "capacity_b")]))
+
+    assert sorted(results) == [False, True]
+
+
+def test_sqlite_upgrade_backfills_empty_legacy_run_as_ingestion_incomplete(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-empty.sqlite3"
+    storage = SQLiteStorage(path=path)
+    storage.create_run(run_id="legacy_empty", config=_config(), items=[])
+    with storage.engine.begin() as conn:
+        conn.execute(
+            storage_sqlite.RUN_INGEST_STATE_TABLE.delete().where(
+                storage_sqlite.RUN_INGEST_STATE_TABLE.c.run_id == "legacy_empty"
+            )
+        )
+        conn.execute(
+            storage_sqlite.RUNS_TABLE.update()
+            .where(storage_sqlite.RUNS_TABLE.c.run_id == "legacy_empty")
+            .values(status=RunLifecycleStatus.COMPLETED)
+        )
+    storage.close()
+
+    upgraded = SQLiteStorage(path=path)
+    checkpoint = upgraded.get_ingest_checkpoint(run_id="legacy_empty")
+    assert checkpoint is not None
+    assert checkpoint.ingestion_complete is False
+    assert upgraded.get_run_summary(run_id="legacy_empty").status is RunLifecycleStatus.RUNNING
+
+
+def test_sqlite_upgrade_backfills_partial_legacy_run_as_ingestion_incomplete(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-partial.sqlite3"
+    storage = SQLiteStorage(path=path)
+    storage.create_run(run_id="legacy_partial", config=_config(), items=_items()[:1])
+    with storage.engine.begin() as conn:
+        conn.execute(
+            storage_sqlite.RUN_INGEST_STATE_TABLE.delete().where(
+                storage_sqlite.RUN_INGEST_STATE_TABLE.c.run_id == "legacy_partial"
+            )
+        )
+    storage.close()
+
+    upgraded = SQLiteStorage(path=path)
+    checkpoint = upgraded.get_ingest_checkpoint(run_id="legacy_partial")
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1
+    assert checkpoint.ingestion_complete is False
+    assert upgraded.get_run_summary(run_id="legacy_partial").status is RunLifecycleStatus.RUNNING
 
 
 def test_sqlite_storage_reset_and_backoff(tmp_path: Path) -> None:

@@ -664,6 +664,65 @@ class StateStore(ABC):
         ...
 
     @abstractmethod
+    def begin_submission_intent(
+        self,
+        *,
+        run_id: str,
+        intent_id: str,
+        submissions: list[PreparedSubmission],
+        quota_scope: str | None,
+        submission_tokens: int,
+        capacity_limit: int | None,
+    ) -> bool:
+        """Persist intent before remote creation and reserve shared capacity.
+
+        Returns ``False`` when the durable quota scope cannot admit the
+        reservation.  A successful call is intentionally not retryable until
+        the intent is finalized or explicitly abandoned.
+        """
+        ...
+
+    @abstractmethod
+    def finalize_submission_intent(
+        self,
+        *,
+        run_id: str,
+        intent_id: str,
+        local_batch_id: str,
+        provider_batch_id: str,
+        status: str,
+        custom_ids: list[str],
+        submissions: list[PreparedSubmission],
+    ) -> None:
+        """Atomically register a remote batch and link its submitted items."""
+        ...
+
+    @abstractmethod
+    def abandon_submission_intent(self, *, intent_id: str) -> None:
+        """Release a pre-create intent after a known-safe remote failure."""
+        ...
+
+    @abstractmethod
+    def has_indeterminate_submission_intents(self, *, run_id: str) -> bool:
+        """Return whether recovery would risk duplicate remote execution."""
+        ...
+
+    @abstractmethod
+    def release_submission_capacity_for_batch(self, *, run_id: str, provider_batch_id: str) -> None:
+        """Release a finalized reservation once every linked item is drained."""
+        ...
+
+    @abstractmethod
+    def abandon_indeterminate_submission_intents(self, *, run_id: str) -> None:
+        """Mark creating intents operator-verified as not remotely created."""
+        ...
+
+    @abstractmethod
+    def finalize_indeterminate_submission_as_created(self, *, run_id: str, provider_batch_id: str, status: str) -> None:
+        """Atomically link the sole operator-confirmed creating intent."""
+        ...
+
+    @abstractmethod
     def update_batch_status(
         self,
         *,

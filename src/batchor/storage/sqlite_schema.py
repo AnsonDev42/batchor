@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Float, Index, Integer, MetaData, String, Table, Text
 
 METADATA = MetaData()
-SQLITE_SCHEMA_VERSION = 4
+SQLITE_SCHEMA_VERSION = 6
 
 STORAGE_METADATA_TABLE = Table(
     "storage_metadata",
@@ -99,4 +99,37 @@ RUN_INGEST_STATE_TABLE = Table(
     Column("next_item_index", Integer, nullable=False),
     Column("checkpoint_payload_json", Text, nullable=True),
     Column("ingestion_complete", Integer, nullable=False),
+)
+
+# A submission intent is written before the provider-side create call.  A
+# ``creating`` row means the remote outcome is indeterminate and must not be
+# silently retried after a crash.  It also acts as the durable reservation for
+# shared OpenAI enqueue capacity until the linked batch drains.
+SUBMISSION_INTENTS_TABLE = Table(
+    "submission_intents",
+    METADATA,
+    Column("intent_id", String, primary_key=True),
+    Column("run_id", String, nullable=False),
+    Column("status", String, nullable=False),
+    Column("provider_batch_id", String, nullable=True),
+    Column("custom_ids_json", Text, nullable=False),
+    Column("item_ids_json", Text, nullable=False),
+    Column("submissions_json", Text, nullable=False),
+    Column("quota_scope", String, nullable=True),
+    Column("submission_tokens", Integer, nullable=False),
+    Column("capacity_released", Integer, nullable=False, default=0),
+    Column("created_at", String, nullable=False),
+)
+Index(
+    "ix_submission_intents_scope_active",
+    SUBMISSION_INTENTS_TABLE.c.quota_scope,
+    SUBMISSION_INTENTS_TABLE.c.capacity_released,
+)
+Index("ix_submission_intents_run_status", SUBMISSION_INTENTS_TABLE.c.run_id, SUBMISSION_INTENTS_TABLE.c.status)
+
+CAPACITY_SCOPES_TABLE = Table(
+    "capacity_scopes",
+    METADATA,
+    Column("quota_scope", String, primary_key=True),
+    Column("reserved_tokens", Integer, nullable=False),
 )

@@ -23,6 +23,7 @@ This page explains what each document is for so readers do not have to guess whi
 | `design_docs/GEMINI_BATCHING.md` | Gemini text-only request construction, batch polling, response parsing, and current limits. |
 | `design_docs/STORAGE_AND_RUNS.md` | Durable `Run` lifecycle, rehydration, checkpoints, control state, artifact retention, and operator semantics. |
 | `design_docs/STORAGE_MIGRATIONS.md` | SQLite schema-versioning and migration guidance. |
+| `design_docs/RUNTIME_DURABILITY_0_0_7.md` | Release design, boundaries, and verification contract for the 0.0.7 runtime-durability changes. |
 | `design_docs/ROADMAP.md` | Intentionally unimplemented areas and planned work. |
 
 ## Validation and project policy

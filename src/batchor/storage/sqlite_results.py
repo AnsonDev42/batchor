@@ -39,6 +39,7 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                 and_(
                     ITEMS_TABLE.c.run_id == bindparam("b_run_id"),
                     ITEMS_TABLE.c.active_custom_id == bindparam("b_custom_id"),
+                    ITEMS_TABLE.c.status == self.ACTIVE_ITEM_STATUS_SUBMITTED,
                 )
             )
             .values(
@@ -98,6 +99,7 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                     and_(
                         ITEMS_TABLE.c.run_id == run_id,
                         ITEMS_TABLE.c.active_custom_id.in_(custom_ids),
+                        ITEMS_TABLE.c.status == self.ACTIVE_ITEM_STATUS_SUBMITTED,
                     )
                 )
             ).mappings()
@@ -280,7 +282,11 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
     ) -> RetryBackoffState:
         with self.engine.begin() as conn:
             current = self._fetch_retry_state(conn, run_id)
-            consecutive = current.consecutive_failures + 1
+            # A success elsewhere must not clear this run-level delay.  Once
+            # its deadline has elapsed, the next failure starts a fresh
+            # streak instead of retaining an unrelated historical exponent.
+            previous_is_active = current.next_retry_at is not None and current.next_retry_at > self._now()
+            consecutive = (current.consecutive_failures if previous_is_active else 0) + 1
             total = current.total_failures + 1
             backoff_sec = compute_backoff_delay(
                 consecutive_failures=consecutive,

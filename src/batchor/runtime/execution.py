@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from pydantic import BaseModel
 
 from batchor.core.enums import RunControlState
-from batchor.core.exceptions import RunIngestionSourceRequiredError
+from batchor.core.exceptions import RunIngestionSourceRequiredError, RunSubmissionIndeterminateError
 from batchor.core.models import BatchJob, RunSummary
 from batchor.runtime.context import RunContext, build_persisted_config
 from batchor.runtime.ingestion import IngestionDeps, resume_existing_run
@@ -48,7 +49,7 @@ class RunExecutor:
         """Attach the source-bearing job to an execution owner in this process."""
         self._jobs[run_id] = job
 
-    def resume_attached_ingestion(self, run_id: str) -> None:
+    def resume_attached_ingestion(self, run_id: str, *, deadline: float | None = None) -> None:
         """Continue incomplete ingestion when this process still owns its source."""
         job = self._jobs.get(run_id)
         checkpoint = self._state.get_ingest_checkpoint(run_id=run_id)
@@ -62,6 +63,7 @@ class RunExecutor:
             job=job,
             config=build_persisted_config(job),
             context=self._context_for_run(run_id),
+            deadline=deadline,
         )
         self._owners.add(run_id)
 
@@ -71,9 +73,13 @@ class RunExecutor:
         if checkpoint is not None and not checkpoint.ingestion_complete and run_id not in self._jobs:
             raise RunIngestionSourceRequiredError(run_id)
 
-    def advance(self, run_id: str) -> CycleOutcome:
+    def advance(self, run_id: str, *, deadline: float | None = None) -> CycleOutcome:
         """Advance one run in recovery, poll, control, ingest, submit order."""
         before = self._state.get_run_summary(run_id=run_id)
+        if _deadline_expired(deadline):
+            return CycleOutcome(summary=before, progressed=False)
+        if self._state.has_indeterminate_submission_intents(run_id=run_id):
+            raise RunSubmissionIndeterminateError(run_id)
         if run_id not in self._owners:
             self._state.requeue_local_items(run_id=run_id)
             self._owners.add(run_id)
@@ -84,13 +90,18 @@ class RunExecutor:
             return CycleOutcome(summary=summary, progressed=False)
         if control_state is not RunControlState.CANCEL_REQUESTED:
             self.require_attached_source(run_id)
-            self.resume_attached_ingestion(run_id)
+            self.resume_attached_ingestion(run_id, deadline=deadline)
+
+        if _deadline_expired(deadline):
+            summary = self._state.get_run_summary(run_id=run_id)
+            return CycleOutcome(summary=summary, progressed=_summary_made_progress(before, summary))
 
         summary = refresh_run(
             self._polling_deps,
             run_id=run_id,
             context=self._context_for_run(run_id),
             submit_pending_items=self._submit_pending_items,
+            deadline=deadline,
         )
         progressed = _summary_made_progress(before, summary)
         return CycleOutcome(summary=summary, progressed=progressed)
@@ -103,3 +114,7 @@ def _summary_made_progress(before: RunSummary, after: RunSummary) -> bool:
         or after.active_batches != before.active_batches
         or after.status_counts != before.status_counts
     )
+
+
+def _deadline_expired(deadline: float | None) -> bool:
+    return deadline is not None and time.monotonic() >= deadline

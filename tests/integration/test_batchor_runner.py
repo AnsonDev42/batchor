@@ -35,6 +35,7 @@ from batchor import (
     RunLifecycleStatus,
     RunNotFinishedError,
     RunPausedError,
+    RunSubmissionIndeterminateError,
     SQLiteStorage,
 )
 from batchor.providers.openai import OpenAIBatchProvider
@@ -443,10 +444,11 @@ def test_sqlite_subprocess_resume_retries_from_persisted_request_artifact(
         ),
         temp_root=artifact_root,
     ).get_run(run_id)
-    resumed.wait(poll_interval=0)
-    result = resumed.results()[0]
-    assert result.status is ItemStatus.COMPLETED
-    assert result.output_text == '{"label": "row1", "score": 0.9}' or result.output_text is not None
+    with pytest.raises(RunSubmissionIndeterminateError):
+        resumed.wait(poll_interval=0)
+    resumed.resolve_indeterminate_submission_as_not_created()
+    with pytest.raises(RunIngestionSourceRequiredError):
+        resumed.wait(poll_interval=0)
 
 
 def test_transient_poll_failures_do_not_block_new_submissions(tmp_path: Path) -> None:
@@ -1279,15 +1281,18 @@ def test_sqlite_resume_retries_from_persisted_request_artifact(tmp_path: Path) -
         storage=storage,
         provider_factory=lambda _cfg: first_provider,
     )
-    started = first_runner.start(
-        BatchJob(
-            items=[BatchItem(item_id="row1", payload={"text": "hello"})],
-            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
-            structured_output=ClassificationResult,
-            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
-            retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=0, max_backoff_sec=0),
+    run_id = "artifact_resume_indeterminate"
+    with pytest.raises(RunSubmissionIndeterminateError):
+        first_runner.start(
+            BatchJob(
+                items=[BatchItem(item_id="row1", payload={"text": "hello"})],
+                build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+                structured_output=ClassificationResult,
+                provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+                retry_policy=RetryPolicy(max_attempts=2, base_backoff_sec=0, max_backoff_sec=0),
+            ),
+            run_id=run_id,
         )
-    )
 
     with storage.engine.begin() as conn:
         row = (
@@ -1298,7 +1303,7 @@ def test_sqlite_resume_retries_from_persisted_request_artifact(tmp_path: Path) -
                     storage_sqlite.ITEMS_TABLE.c.request_artifact_line,
                     storage_sqlite.ITEMS_TABLE.c.request_sha256,
                     storage_sqlite.ITEMS_TABLE.c.status,
-                ).where(storage_sqlite.ITEMS_TABLE.c.run_id == started.run_id)
+                ).where(storage_sqlite.ITEMS_TABLE.c.run_id == run_id)
             )
             .mappings()
             .one()
@@ -1307,7 +1312,7 @@ def test_sqlite_resume_retries_from_persisted_request_artifact(tmp_path: Path) -
     assert row["request_artifact_path"] is not None
     assert row["request_artifact_line"] == 1
     assert row["request_sha256"] is not None
-    assert row["status"] == ItemStatus.PENDING
+    assert row["status"] == ItemStatus.QUEUED_LOCAL
 
     second_provider = _ArtifactOnlyBatchProvider(
         record_factory=lambda custom_id: _success_record(json.dumps({"label": custom_id.split(":")[0], "score": 0.9}))
@@ -1315,12 +1320,12 @@ def test_sqlite_resume_retries_from_persisted_request_artifact(tmp_path: Path) -
     resumed = BatchRunner(
         storage=SQLiteStorage(path=storage.path),
         provider_factory=lambda _cfg: second_provider,
-    ).get_run(started.run_id)
-    resumed.wait(poll_interval=0)
-    result = resumed.results()[0]
-    assert result.status is ItemStatus.COMPLETED
-    assert result.output is not None
-    assert result.output.label == "row1"
+    ).get_run(run_id)
+    with pytest.raises(RunSubmissionIndeterminateError):
+        resumed.wait(poll_interval=0)
+    resumed.resolve_indeterminate_submission_as_not_created()
+    with pytest.raises(RunIngestionSourceRequiredError):
+        resumed.wait(poll_interval=0)
 
 
 def test_completed_run_can_prune_persisted_request_artifacts(tmp_path: Path) -> None:
