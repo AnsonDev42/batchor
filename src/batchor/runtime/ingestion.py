@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, cast
 
@@ -34,7 +35,9 @@ class IngestionDeps:
         emit_event: Observer callback used for coarse lifecycle events.
         submit_pending_items: Callback used to submit items during ingestion.
         poll_active_batches: Callback used to reconcile already-submitted
-            batches before resume materializes or submits new local work.
+            batches before resume or durable ingestion chunks submit new local
+            work.
+        monotonic: Monotonic clock used to enforce ingestion polling cadence.
         configs_match_for_resume: Predicate used to validate resume
             compatibility.
     """
@@ -44,6 +47,7 @@ class IngestionDeps:
     submit_pending_items: Callable[[str, RunContext], int]
     configs_match_for_resume: Callable[[PersistedRunConfig, PersistedRunConfig], bool]
     poll_active_batches: Callable[[str, RunContext], None] = _noop_poll_active_batches
+    monotonic: Callable[[], float] = time.monotonic
 
 
 def finalize_cancelled_ingestion(state: StateStore, *, run_id: str) -> None:
@@ -149,6 +153,7 @@ def ingest_job_items(
     next_checkpoint_payload = checkpoint_payload
     checkpointed = checkpointed_source(job) is not None
     ingestion_complete = True
+    last_poll_at = deps.monotonic()
     for item_chunk, next_item_index, next_checkpoint_payload in materialize_item_chunks(
         job,
         start_index=start_index,
@@ -177,6 +182,24 @@ def ingest_job_items(
         if control_state is RunControlState.CANCEL_REQUESTED:
             ingestion_complete = False
             break
+        if (
+            control_state is RunControlState.RUNNING
+            and deps.state.get_batch_retry_backoff_remaining_sec(run_id=run_id) <= 0
+            and deps.state.get_active_batches(run_id=run_id)
+        ):
+            now = deps.monotonic()
+            poll_interval_sec = context.config.provider_config.poll_interval_sec
+            if now - last_poll_at >= poll_interval_sec:
+                deps.poll_active_batches(run_id, context)
+                last_poll_at = now
+                control_state = deps.state.get_run_control_state(run_id=run_id)
+                backoff_remaining_sec = deps.state.get_batch_retry_backoff_remaining_sec(run_id=run_id)
+                if control_state is RunControlState.CANCEL_REQUESTED:
+                    ingestion_complete = False
+                    break
+                if checkpointed and (control_state is not RunControlState.RUNNING or backoff_remaining_sec > 0):
+                    ingestion_complete = False
+                    break
         deps.submit_pending_items(run_id, context)
         control_state = deps.state.get_run_control_state(run_id=run_id)
         if control_state is RunControlState.CANCEL_REQUESTED:

@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -57,6 +58,14 @@ class _FakeClock:
     def sleep(self, seconds: float) -> None:
         self.sleeps.append(float(seconds))
         self.current += timedelta(seconds=float(seconds))
+
+
+class _IngestionMonotonicClock:
+    def __init__(self, *readings: float) -> None:
+        self._readings = iter(readings)
+
+    def __call__(self) -> float:
+        return next(self._readings)
 
 
 def _success_record(text: str) -> dict[str, object]:
@@ -199,6 +208,23 @@ class _FakeBatchProvider:
         if not isinstance(prompt, str):
             raise TypeError("request input must be a string")
         return max(len(prompt), 1)
+
+
+class _IngestionAwareBatchProvider(_FakeBatchProvider):
+    def __init__(
+        self,
+        *,
+        record_factory: Callable[[str], dict[str, object] | None],
+        materialized_count: Callable[[], int],
+    ) -> None:
+        super().__init__(record_factory=record_factory)
+        self.materialized_count = materialized_count
+        self.materialized_counts_at_create: list[int] = []
+
+    def create_batch(self, *, input_file_id: str, metadata: dict[str, str] | None = None) -> dict[str, object]:
+        batch = super().create_batch(input_file_id=input_file_id, metadata=metadata)
+        self.materialized_counts_at_create.append(self.materialized_count())
+        return batch
 
 
 class _ArtifactOnlyBatchProvider(_FakeBatchProvider):
@@ -464,6 +490,54 @@ def test_transient_poll_failures_do_not_block_new_submissions(tmp_path: Path) ->
     summary = run.summary()
     assert summary.completed_items == 4
     assert summary.status_counts[ItemStatus.SUBMITTED] == 2
+
+
+def test_ingestion_poll_releases_capacity_before_source_is_fully_materialized(
+    tmp_path: Path,
+) -> None:
+    materialized_count = 0
+
+    def build_prompt(item: BatchItem[str]) -> PromptParts:
+        nonlocal materialized_count
+        materialized_count += 1
+        return PromptParts(prompt=item.payload)
+
+    provider = _IngestionAwareBatchProvider(
+        record_factory=lambda custom_id: _success_record(f"text:{custom_id}"),
+        materialized_count=lambda: materialized_count,
+    )
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path,
+    )
+    runner._ingestion_deps = replace(
+        runner._ingestion_deps,
+        monotonic=_IngestionMonotonicClock(0.0, 1.0, 2.0),
+    )
+
+    runner.start(
+        BatchJob(
+            items=[BatchItem(item_id=f"row{index}", payload="x") for index in range(2001)],
+            build_prompt=build_prompt,
+            provider_config=OpenAIProviderConfig(
+                api_key="k",
+                model="gpt-4.1",
+                poll_interval_sec=1,
+                enqueue_limits=OpenAIEnqueueLimitConfig(
+                    enqueued_token_limit=1000,
+                    target_ratio=1.0,
+                    headroom=0,
+                    max_batch_enqueued_tokens=1000,
+                ),
+            ),
+            chunk_policy=ChunkPolicy(max_requests=1000, max_file_bytes=1024 * 1024),
+        )
+    )
+
+    assert provider.created_batches == ["batch_0", "batch_1", "batch_2"]
+    assert provider.materialized_counts_at_create == [1000, 2000, 2001]
+    assert provider.materialized_counts_at_create[1] < 2001
 
 
 def test_wait_keeps_draining_after_progress_without_idle_sleep(tmp_path: Path) -> None:

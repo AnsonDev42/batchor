@@ -13,11 +13,13 @@ from batchor import (
     MemoryStateStore,
     OpenAIProviderConfig,
     PromptParts,
+    RunControlState,
 )
 from batchor.core.types import JSONValue
 from batchor.runtime.context import build_persisted_config, build_run_context
 from batchor.runtime.ingestion import (
     IngestionDeps,
+    ingest_job_items,
     materialize_item_chunks,
     resume_existing_run,
     validate_checkpoint_source,
@@ -28,6 +30,14 @@ from batchor.storage.state import IngestCheckpoint, MaterializedItem
 
 class _NoopProvider:
     pass
+
+
+class _MonotonicClock:
+    def __init__(self, *readings: float) -> None:
+        self._readings = iter(readings)
+
+    def __call__(self) -> float:
+        return next(self._readings)
 
 
 class _CompleteCheckpointSource(CheckpointedItemSource[dict[str, str]]):
@@ -327,6 +337,249 @@ def test_resume_existing_run_polls_active_batches_before_materializing() -> None
     checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
     assert checkpoint is not None
     assert checkpoint.ingestion_complete is False
+
+
+def test_ingest_job_items_polls_on_cadence_before_chunk_submission() -> None:
+    job = BatchJob(
+        items=[BatchItem(item_id=f"row{index}", payload="x") for index in range(2001)],
+        build_prompt=lambda item: PromptParts(prompt=item.payload),
+        provider_config=OpenAIProviderConfig(
+            api_key="k",
+            model="gpt-4.1",
+            poll_interval_sec=5.0,
+        ),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    run_id = "cadenced_ingestion_run"
+    storage.create_run(run_id=run_id, config=config, items=[])
+    storage.register_batch(
+        run_id=run_id,
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="submitted",
+        custom_ids=[],
+    )
+    calls: list[str] = []
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda *args, **kwargs: None,
+        submit_pending_items=lambda _run_id, _context: calls.append("submit") or 0,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+        poll_active_batches=lambda _run_id, _context: calls.append("poll"),
+        monotonic=_MonotonicClock(0.0, 1.0, 6.0, 7.0),
+    )
+    context = build_run_context(
+        config=config,
+        output_model=None,
+        create_provider=lambda _cfg: _NoopProvider(),
+    )
+
+    ingest_job_items(
+        deps,
+        run_id=run_id,
+        job=job,
+        context=context,
+        start_index=0,
+        checkpoint_payload=None,
+    )
+
+    assert calls == ["submit", "poll", "submit", "submit"]
+
+
+def test_ingest_job_items_does_not_poll_without_active_batches() -> None:
+    job = BatchJob(
+        items=[BatchItem(item_id=f"row{index}", payload="x") for index in range(1001)],
+        build_prompt=lambda item: PromptParts(prompt=item.payload),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    run_id = "no_active_ingestion_run"
+    storage.create_run(run_id=run_id, config=config, items=[])
+    poll_calls: list[str] = []
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda *args, **kwargs: None,
+        submit_pending_items=lambda _run_id, _context: 0,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+        poll_active_batches=lambda polled_run_id, _context: poll_calls.append(polled_run_id),
+        monotonic=_MonotonicClock(0.0),
+    )
+    context = build_run_context(
+        config=config,
+        output_model=None,
+        create_provider=lambda _cfg: _NoopProvider(),
+    )
+
+    ingest_job_items(
+        deps,
+        run_id=run_id,
+        job=job,
+        context=context,
+        start_index=0,
+        checkpoint_payload=None,
+    )
+
+    assert poll_calls == []
+
+
+@pytest.mark.parametrize(
+    "poll_control_state",
+    [RunControlState.PAUSED, RunControlState.CANCEL_REQUESTED],
+)
+def test_ingest_job_items_stops_checkpointed_ingestion_when_poll_changes_control(
+    tmp_path: Path,
+    poll_control_state: RunControlState,
+) -> None:
+    path = tmp_path / "items.jsonl"
+    path.write_text(
+        "\n".join(json.dumps({"id": f"row{index}", "text": "x"}) for index in range(1500)) + "\n",
+        encoding="utf-8",
+    )
+    source = JsonlItemSource(
+        path,
+        item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+        payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+    )
+    job = BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1", poll_interval_sec=1),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    run_id = f"poll_{poll_control_state.value}_run"
+    storage.create_run(run_id=run_id, config=config, items=[])
+    identity = source.source_identity()
+    storage.set_ingest_checkpoint(
+        run_id=run_id,
+        checkpoint=IngestCheckpoint(
+            source_kind=identity.source_kind,
+            source_ref=identity.source_ref,
+            source_fingerprint=identity.source_fingerprint,
+            checkpoint_payload=source.initial_checkpoint(),
+        ),
+    )
+    storage.register_batch(
+        run_id=run_id,
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="submitted",
+        custom_ids=[],
+    )
+    submitted_runs: list[str] = []
+
+    def poll_and_change_control(polled_run_id: str, _context: object) -> None:
+        storage.set_run_control_state(run_id=polled_run_id, control_state=poll_control_state)
+
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda *args, **kwargs: None,
+        submit_pending_items=lambda submitted_run_id, _context: submitted_runs.append(submitted_run_id) or 0,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+        poll_active_batches=poll_and_change_control,
+        monotonic=_MonotonicClock(0.0, 1.0),
+    )
+    context = build_run_context(
+        config=config,
+        output_model=None,
+        create_provider=lambda _cfg: _NoopProvider(),
+    )
+
+    ingest_job_items(
+        deps,
+        run_id=run_id,
+        job=job,
+        context=context,
+        start_index=0,
+        checkpoint_payload=source.initial_checkpoint(),
+    )
+
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1000
+    assert checkpoint.ingestion_complete is False
+    assert submitted_runs == []
+
+
+def test_ingest_job_items_stops_checkpointed_ingestion_when_poll_records_backoff(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "items.jsonl"
+    path.write_text(
+        "\n".join(json.dumps({"id": f"row{index}", "text": "x"}) for index in range(1500)) + "\n",
+        encoding="utf-8",
+    )
+    source = JsonlItemSource(
+        path,
+        item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+        payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+    )
+    job = BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1", poll_interval_sec=1),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    run_id = "poll_backoff_run"
+    storage.create_run(run_id=run_id, config=config, items=[])
+    identity = source.source_identity()
+    storage.set_ingest_checkpoint(
+        run_id=run_id,
+        checkpoint=IngestCheckpoint(
+            source_kind=identity.source_kind,
+            source_ref=identity.source_ref,
+            source_fingerprint=identity.source_fingerprint,
+            checkpoint_payload=source.initial_checkpoint(),
+        ),
+    )
+    storage.register_batch(
+        run_id=run_id,
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="submitted",
+        custom_ids=[],
+    )
+    submitted_runs: list[str] = []
+
+    def poll_and_backoff(polled_run_id: str, _context: object) -> None:
+        storage.record_batch_retry_failure(
+            run_id=polled_run_id,
+            error_class="provider_unavailable",
+            base_delay_sec=10.0,
+            max_delay_sec=10.0,
+        )
+
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda *args, **kwargs: None,
+        submit_pending_items=lambda submitted_run_id, _context: submitted_runs.append(submitted_run_id) or 0,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+        poll_active_batches=poll_and_backoff,
+        monotonic=_MonotonicClock(0.0, 1.0),
+    )
+    context = build_run_context(
+        config=config,
+        output_model=None,
+        create_provider=lambda _cfg: _NoopProvider(),
+    )
+
+    ingest_job_items(
+        deps,
+        run_id=run_id,
+        job=job,
+        context=context,
+        start_index=0,
+        checkpoint_payload=source.initial_checkpoint(),
+    )
+
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 1000
+    assert checkpoint.ingestion_complete is False
+    assert submitted_runs == []
 
 
 # ---------------------------------------------------------------------------

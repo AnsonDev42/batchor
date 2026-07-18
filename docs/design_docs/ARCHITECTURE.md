@@ -145,13 +145,16 @@ Internally that expands to:
 1. Resolve provider and storage implementations.
 2. Persist run config and ingest items into durable state.
 3. On resume, poll any already-active provider batches before ingesting or submitting new work.
-4. Claim a bounded submission window from pending items.
-5. Build or replay request JSONL rows.
-6. Persist request artifacts before upload.
-7. Submit one or more provider batch files.
-8. Poll active batches.
-9. Download output/error files.
-10. Parse terminal item results back into the state store.
+4. Persist source items in durable chunks; at each chunk boundary, poll active batches before submission when the monotonic provider cadence is due.
+5. Claim a bounded submission window from pending items.
+6. Build or replay request JSONL rows.
+7. Persist request artifacts before upload.
+8. Submit one or more provider batch files.
+9. Poll active batches.
+10. Download output/error files.
+11. Parse terminal item results back into the state store.
+
+Ingestion polling stays inside the ingestion module behind its existing poll callback. Its local monotonic cadence state does not add storage schema or background-thread coordination. After each ingestion poll, control state and retry backoff are re-read before any submission or further checkpointed-source materialization.
 
 When a caller uses `Run.wait()`, the runtime repeats that poll-and-submit pass until the run is terminal. A pass that changes durable work state, such as consuming completed batches or submitting more items, immediately triggers the next pass rather than sleeping for the configured poll interval.
 
@@ -172,6 +175,14 @@ sequenceDiagram
     ItemSource-->>BatchRunner: BatchItem stream
     BatchRunner->>StateStore: append_items(materialized_items)
     BatchRunner->>StateStore: set_ingest_checkpoint()
+
+    opt active batch exists and monotonic poll cadence is due
+        BatchRunner->>Provider: get_batch(batch_id)
+        Provider-->>BatchRunner: BatchRemoteRecord
+        BatchRunner->>StateStore: consume terminal batch state
+    end
+
+    BatchRunner->>StateStore: claim pending items within freed capacity
 
     loop refresh() cycle (polling + submission)
         BatchRunner->>StateStore: get_active_batches()

@@ -78,6 +78,7 @@ Use this when touching provider wiring, storage wiring, token budgeting, or run 
 uv run ty check src
 uv run pytest tests/unit/test_batchor_tokens.py tests/unit/test_batchor_sqlite_storage_flow.py tests/unit/test_batchor_validation.py --no-cov -q
 uv run pytest tests/unit/test_batchor_artifacts.py tests/unit/test_batchor_storage_contracts.py --no-cov -q
+uv run pytest tests/unit/test_batchor_runtime_ingestion.py --no-cov -q
 uv run pytest tests/integration/test_batchor_runner.py --no-cov -q
 uv run pytest tests/unit/test_batchor_gemini_provider.py tests/integration/test_batchor_gemini_runner.py --no-cov -q
 uv run pytest tests/unit/test_batchor_anthropic_provider.py --no-cov -q
@@ -94,6 +95,8 @@ Expected:
 - Parquet source adapters can resume from opaque checkpoints and project only required columns
 - retry/resume from persisted request artifacts still works for SQLite-backed runs
 - resumed runs reconcile existing active batches and persisted backoff before materializing more source rows
+- long-running ingestion polls active batches on a monotonic cadence at durable chunk boundaries, before submission, so completed remote work frees local enqueue-token capacity before full source materialization
+- poll-induced pause, cancellation, or retry backoff leaves checkpointed ingestion incomplete at its last durable chunk and prevents unsafe submission
 - transient batch-poll failures do not block unrelated pending submissions from being sent when capacity remains
 - paused runs stop polling/submission until resumed
 - OpenAI control-plane and batch-level insufficient-quota provider failures auto-pause with a durable `control_reason` and do not consume item attempts

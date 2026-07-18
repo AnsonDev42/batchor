@@ -57,7 +57,7 @@ Before request artifacts exist, built-in deterministic sources can resume ingest
 That currently includes CSV, JSONL, Parquet, and `CompositeItemSource` for ordered composition of checkpointed sources.
 When `CompositeItemSource` is used, child-source row IDs are auto-namespaced into run-unique `item_id` values, while the original row ID is preserved in lineage metadata.
 Custom non-file sources must implement a durable checkpoint contract explicitly; arbitrary iterables and live DB cursors are still `TBD`.
-Before resumed ingestion continues, active OpenAI batches are polled once. If that poll consumes terminal batches or records enqueue/backoff failures, those state changes are applied before any new prompt rendering, request replay, or submission happens.
+Before resumed ingestion continues, active OpenAI batches are polled once. If that poll consumes terminal batches or records enqueue/backoff failures, those state changes are applied before any new prompt rendering, request replay, or submission happens. Long-running ingestion then continues reconciliation at durable item-chunk boundaries whenever `poll_interval_sec` is due on a monotonic clock. The poll precedes the chunk's submission attempt, so completed OpenAI batches release their locally counted enqueue tokens immediately enough for the same boundary to submit more work. Fast chunks inside the positive interval do not trigger provider requests.
 The execution cycle reports durable progress explicitly to `Run.wait()`, so the
 wait loop immediately drains productive poll/submission cycles and sleeps only
 when a cycle makes no durable progress, respecting any persisted retry backoff.

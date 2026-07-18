@@ -181,6 +181,8 @@ This recovery happens when an execution owner advances the run, not when a
 caller merely reads a handle with `get_run()` or changes control state.
 When `start(job, run_id=...)` resumes a run with active provider batches, it first performs a poll-only reconciliation pass. Terminal provider batches are consumed, failed batches update retry backoff, and any active backoff prevents new source materialization or submission until the backoff expires.
 
+While checkpointed ingestion is active, every materialized chunk and its next source checkpoint are persisted atomically before reconciliation is considered. At that durable boundary, active provider batches are polled before submission only when the provider's monotonic `poll_interval_sec` cadence is due. Terminal consumption therefore releases local inflight-token accounting before the same boundary submits pending work. A poll-induced pause, cancellation, or batch retry backoff blocks that submission and leaves the checkpoint incomplete at the last durable position. This scheduling state is process-local and requires no storage schema change; fresh-process resume still begins with its unconditional reconciliation pass.
+
 Resume compatibility intentionally ignores non-persisted secret fields such as provider API keys. Rehydrated OpenAI runs need `OPENAI_API_KEY` when no explicit in-memory config is supplied. Gemini Developer API runs need `GEMINI_API_KEY`; Vertex runs need Application Default Credentials plus the persisted or ambient project, location, and GCS prefix configuration.
 
 For deterministic-source resume, the caller must also reuse the same `run_id` and provide the same source identity/fingerprint.
