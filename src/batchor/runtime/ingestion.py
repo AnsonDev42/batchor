@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator, cast
+from typing import Any, Callable, Iterator, Protocol, cast
 
 from pydantic import BaseModel
 
@@ -24,12 +24,25 @@ from batchor.storage.state import (
 
 
 def _noop_poll_active_batches(
-    _run_id: str,
-    _context: RunContext,
+    run_id: str,
+    context: RunContext,
     *,
     deadline: float | None = None,
 ) -> None:
+    del run_id, context, deadline
     return
+
+
+class ActiveBatchPoller(Protocol):
+    """Callable seam for reconciling active batches during ingestion."""
+
+    def __call__(
+        self,
+        run_id: str,
+        context: RunContext,
+        *,
+        deadline: float | None = None,
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -52,7 +65,7 @@ class IngestionDeps:
     emit_event: Callable[..., None]
     submit_pending_items: Callable[[str, RunContext], int]
     configs_match_for_resume: Callable[[PersistedRunConfig, PersistedRunConfig], bool]
-    poll_active_batches: Callable[..., None] = _noop_poll_active_batches
+    poll_active_batches: ActiveBatchPoller = _noop_poll_active_batches
     monotonic: Callable[[], float] = time.monotonic
     work_slice_max_items: int = 1000
     work_slice_max_seconds: float | None = None
@@ -122,6 +135,8 @@ def resume_existing_run(
         return
     if control_state is RunControlState.RUNNING and deps.state.get_active_batches(run_id=run_id):
         _poll_active_batches(deps, run_id=run_id, context=context, deadline=deadline)
+        if _deadline_reached(deps, deadline):
+            return
         summary = deps.state.get_run_summary(run_id=run_id)
         if summary.backoff_remaining_sec > 0:
             return
@@ -156,6 +171,8 @@ def resume_existing_run(
                 checkpoint_payload=checkpoint.checkpoint_payload,
                 ingestion_complete=True,
             )
+            if _deadline_reached(deps, deadline):
+                return
             deps.submit_pending_items(run_id, context)
             return
         ingest_job_items(
@@ -169,6 +186,8 @@ def resume_existing_run(
         )
         return
     if control_state is RunControlState.PAUSED:
+        return
+    if _deadline_reached(deps, deadline):
         return
     deps.submit_pending_items(run_id, context)
 

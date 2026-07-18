@@ -1989,11 +1989,15 @@ def test_start_with_same_run_id_resumes_incomplete_composite_ingestion(
 
     checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
     assert checkpoint is not None
-    assert checkpoint.next_item_index == 1000
-    assert checkpoint.checkpoint_payload == {
-        "source_index": 1,
-        "child_checkpoint": 1,
-    }
+    expected_source_items = list(build_source())
+    assert 0 < checkpoint.next_item_index <= len(first_records) + 1
+    assert checkpoint.checkpoint_payload is not None
+    resumed_source_items = list(build_source().iter_from_checkpoint(checkpoint.checkpoint_payload))
+    assert [source_item.item.item_id for source_item in resumed_source_items] == [
+        item.item_id for item in expected_source_items[checkpoint.next_item_index :]
+    ]
+    persisted_before_resume = storage.get_item_records(run_id=run_id)
+    assert [record.item_index for record in persisted_before_resume] == list(range(checkpoint.next_item_index))
     assert checkpoint.ingestion_complete is False
 
     resumed = runner.start(
@@ -2017,6 +2021,7 @@ def test_start_with_same_run_id_resumes_incomplete_composite_ingestion(
     assert checkpoint.ingestion_complete is True
 
     item_records = storage.get_item_records(run_id=run_id)
+    assert [record.item_index for record in item_records] == list(range(len(expected_source_items)))
     last_three = item_records[-3:]
     assert [record.item_index for record in last_three] == [999, 1000, 1001]
     assert [record.metadata["batchor_lineage"]["source_ref"] for record in last_three] == [
@@ -2029,6 +2034,7 @@ def test_start_with_same_run_id_resumes_incomplete_composite_ingestion(
     ]
 
     results = resumed.results()
+    assert [result.item_id for result in results] == [item.item_id for item in expected_source_items]
     second_namespace = results[-1].item_id.split("__", maxsplit=1)[0]
     assert [result.item_id for result in results[-3:]] == [
         f"{second_namespace}__row0",

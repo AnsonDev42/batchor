@@ -40,6 +40,14 @@ class _MonotonicClock:
         return next(self._readings)
 
 
+class _MutableClock:
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+
 class _CompleteCheckpointSource(CheckpointedItemSource[dict[str, str]]):
     def source_identity(self) -> SourceIdentity:
         return SourceIdentity(
@@ -333,6 +341,151 @@ def test_resume_existing_run_polls_active_batches_before_materializing() -> None
     )
 
     assert poll_calls == [run_id]
+    assert submitted_runs == []
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.ingestion_complete is False
+
+
+def test_resume_existing_run_stops_after_active_poll_reaches_deadline() -> None:
+    """A poll that overruns the deadline cannot begin source work or submission."""
+    source = _ExplodingSource()
+    job = BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    clock = _MutableClock(0.0)
+
+    class _DeadlineAdvancingProvider:
+        def __init__(self) -> None:
+            self.polled_batches: list[str] = []
+
+        def get_batch(self, batch_id: str) -> object:
+            self.polled_batches.append(batch_id)
+            clock.value = 1.0
+            return object()
+
+    provider = _DeadlineAdvancingProvider()
+    submitted_runs: list[str] = []
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda *args, **kwargs: None,
+        submit_pending_items=lambda run_id, _context: submitted_runs.append(run_id) or 0,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+        poll_active_batches=lambda _run_id, _context, *, deadline=None: provider.get_batch("provider_1"),
+        monotonic=clock,
+    )
+    context = build_run_context(
+        config=config,
+        output_model=None,
+        create_provider=lambda _cfg: _NoopProvider(),
+    )
+    run_id = "resume_deadline_poll_run"
+    storage.create_run(run_id=run_id, config=config, items=[])
+    identity = source.source_identity()
+    storage.set_ingest_checkpoint(
+        run_id=run_id,
+        checkpoint=IngestCheckpoint(
+            source_kind=identity.source_kind,
+            source_ref=identity.source_ref,
+            source_fingerprint=identity.source_fingerprint,
+            next_item_index=0,
+            checkpoint_payload=0,
+            ingestion_complete=False,
+        ),
+    )
+    storage.register_batch(
+        run_id=run_id,
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="submitted",
+        custom_ids=[],
+    )
+
+    resume_existing_run(
+        deps,
+        run_id=run_id,
+        job=job,
+        config=config,
+        context=context,
+        deadline=1.0,
+    )
+
+    assert provider.polled_batches == ["provider_1"]
+    assert submitted_runs == []
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 0
+    assert checkpoint.ingestion_complete is False
+
+
+def test_resume_existing_run_skips_direct_submit_after_deadline_expiring_poll() -> None:
+    """The checkpoint-complete resume path observes a poll-overrun deadline."""
+    source = _CompleteCheckpointSource()
+    job = BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    clock = _MutableClock(0.0)
+
+    class _DeadlineAdvancingProvider:
+        def get_batch(self, batch_id: str) -> object:
+            assert batch_id == "provider_1"
+            clock.value = 1.0
+            return object()
+
+    provider = _DeadlineAdvancingProvider()
+    submitted_runs: list[str] = []
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda *args, **kwargs: None,
+        submit_pending_items=lambda run_id, _context: submitted_runs.append(run_id) or 0,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+        poll_active_batches=lambda _run_id, _context, *, deadline=None: provider.get_batch("provider_1"),
+        monotonic=clock,
+    )
+    context = build_run_context(
+        config=config,
+        output_model=None,
+        create_provider=lambda _cfg: _NoopProvider(),
+    )
+    run_id = "resume_deadline_direct_submit_run"
+    storage.create_run(run_id=run_id, config=config, items=[])
+    identity = source.source_identity()
+    storage.set_ingest_checkpoint(
+        run_id=run_id,
+        checkpoint=IngestCheckpoint(
+            source_kind=identity.source_kind,
+            source_ref=identity.source_ref,
+            source_fingerprint=identity.source_fingerprint,
+            next_item_index=0,
+            checkpoint_payload={"done": True},
+            ingestion_complete=False,
+        ),
+    )
+    storage.register_batch(
+        run_id=run_id,
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="submitted",
+        custom_ids=[],
+    )
+
+    resume_existing_run(
+        deps,
+        run_id=run_id,
+        job=job,
+        config=config,
+        context=context,
+        deadline=1.0,
+    )
+
     assert submitted_runs == []
     checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
     assert checkpoint is not None
