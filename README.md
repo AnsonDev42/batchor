@@ -79,7 +79,7 @@ Durability is split on purpose:
 - the artifact store keeps replayable request JSONL and downloaded raw batch payloads
 
 That split is what allows retries and fresh-process resume without keeping every request inline in the control-plane store.
-On resume, existing active provider batches are polled before `batchor` materializes or submits new local work, so completed batches and retry backoff are reconciled first. Deterministic sources also use stored checkpoint completion metadata to avoid opening a fully materialized Parquet or composite source just to discover there are no rows left.
+On resume, existing active provider batches are polled before `batchor` materializes or submits new local work, so completed batches and retry backoff are reconciled first. During long ingestion, active batches are also reconciled at durable item-chunk boundaries when the configured provider polling interval is due. Polling happens before that chunk's submission attempt, so terminal remote work releases locally accounted enqueue tokens without waiting for the entire source to be materialized. Deterministic sources also use stored checkpoint completion metadata to avoid opening a fully materialized Parquet or composite source just to discover there are no rows left.
 Incomplete checkpointed ingestion keeps the run non-terminal. In the process that
 started the job, `Run.resume()` can continue from the attached source. After a
 fresh-process rehydration, call `start(job, run_id=...)`; `refresh()` otherwise
@@ -338,7 +338,7 @@ run.wait()
 print(run.results()[0].output)
 ```
 
-While waiting, `batchor` polls active batches before submitting more work. If a refresh consumes a completed batch, records terminal item state, or submits another provider batch, `Run.wait()` immediately continues draining instead of sleeping for the next poll interval.
+While ingesting or waiting, `batchor` polls active batches before submitting more work when the provider's monotonic polling cadence is due. This avoids one provider request per fast ingestion chunk while allowing long ingestion to reuse capacity released by completed batches. If a refresh consumes a completed batch, records terminal item state, or submits another provider batch, `Run.wait()` immediately continues draining instead of sleeping for the next poll interval.
 
 Structured-output models are validated up front against the OpenAI strict-schema subset used by `batchor`.
 
