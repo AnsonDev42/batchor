@@ -424,6 +424,53 @@ def test_storage_contract_completion_counts_consumed_attempts(storage) -> None:
     assert records[0].attempt_count == 1
 
 
+def test_storage_contract_stale_terminal_failure_replay_is_idempotent(storage) -> None:
+    """A second consumer can safely replay a result parsed before the first committed."""
+    storage.create_run(run_id="run_terminal_failure_replay", config=_config(), items=_items()[:1])
+    claimed = storage.claim_items_for_submission(run_id="run_terminal_failure_replay", max_attempts=1)
+    storage.register_batch(
+        run_id="run_terminal_failure_replay",
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="completed",
+        custom_ids=["row1:a1"],
+    )
+    storage.mark_items_submitted(
+        run_id="run_terminal_failure_replay",
+        provider_batch_id="provider_1",
+        submissions=[PreparedSubmission(item_id=claimed[0].item_id, custom_id="row1:a1", submission_tokens=10)],
+    )
+    failure = ItemFailureRecord(
+        custom_id="row1:a1",
+        error=ItemFailure(
+            error_class="provider_item_error",
+            message="terminal provider error",
+            retryable=True,
+            raw_error={"status": 500},
+        ),
+        count_attempt=True,
+    )
+
+    storage.mark_items_failed(
+        run_id="run_terminal_failure_replay",
+        failures=[failure],
+        max_attempts=1,
+    )
+    # This represents a stale concurrent consumer that parsed the same
+    # terminal artifact before the first consumer committed its transition.
+    storage.mark_items_failed(
+        run_id="run_terminal_failure_replay",
+        failures=[failure],
+        max_attempts=1,
+    )
+
+    record = storage.get_item_records(run_id="run_terminal_failure_replay")[0]
+    assert record.status is ItemStatus.FAILED_PERMANENT
+    assert record.attempt_count == 1
+    assert record.error is not None
+    assert record.error.error_class == "provider_item_error"
+
+
 def test_storage_contract_retry_then_completion_counts_all_consumed_attempts(storage) -> None:
     storage.create_run(run_id="run_retry_then_success", config=_config(), items=_items()[:1])
     claimed = storage.claim_items_for_submission(run_id="run_retry_then_success", max_attempts=2)

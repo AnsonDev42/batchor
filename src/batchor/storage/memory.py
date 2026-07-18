@@ -705,7 +705,12 @@ class MemoryStateStore(StateStore):
     ) -> None:
         run = self._get_run(run_id)
         for failure in failures:
-            item = self._item_for_custom_id(run, failure.custom_id)
+            try:
+                item = self._item_for_custom_id(run, failure.custom_id)
+            except KeyError:
+                # Replaying a provider-terminal artifact after another
+                # consumer already cleared the active correlation is safe.
+                continue
             if item.status is not ItemStatus.SUBMITTED:
                 continue
             if failure.count_attempt:

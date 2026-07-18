@@ -587,11 +587,14 @@ class BatchRunner:
         self,
         run_id: str,
         context: RunContext,
+        *,
+        deadline: float | None = None,
     ) -> None:
         poll_once(
             self._polling_deps,
             run_id=run_id,
             context=context,
+            deadline=deadline,
         )
 
     def _results_for_run(self, run_id: str) -> list[BatchResultItem]:

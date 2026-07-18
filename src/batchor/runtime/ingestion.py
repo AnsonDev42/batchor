@@ -23,7 +23,12 @@ from batchor.storage.state import (
 )
 
 
-def _noop_poll_active_batches(_run_id: str, _context: RunContext) -> None:
+def _noop_poll_active_batches(
+    _run_id: str,
+    _context: RunContext,
+    *,
+    deadline: float | None = None,
+) -> None:
     return
 
 
@@ -47,7 +52,7 @@ class IngestionDeps:
     emit_event: Callable[..., None]
     submit_pending_items: Callable[[str, RunContext], int]
     configs_match_for_resume: Callable[[PersistedRunConfig, PersistedRunConfig], bool]
-    poll_active_batches: Callable[[str, RunContext], None] = _noop_poll_active_batches
+    poll_active_batches: Callable[..., None] = _noop_poll_active_batches
     monotonic: Callable[[], float] = time.monotonic
     work_slice_max_items: int = 1000
     work_slice_max_seconds: float | None = None
@@ -116,7 +121,7 @@ def resume_existing_run(
     if _deadline_reached(deps, deadline):
         return
     if control_state is RunControlState.RUNNING and deps.state.get_active_batches(run_id=run_id):
-        deps.poll_active_batches(run_id, context)
+        _poll_active_batches(deps, run_id=run_id, context=context, deadline=deadline)
         summary = deps.state.get_run_summary(run_id=run_id)
         if summary.backoff_remaining_sec > 0:
             return
@@ -479,7 +484,7 @@ def _persist_and_advance_boundary(
     ):
         if _deadline_reached(deps, deadline):
             return False, last_poll_at
-        deps.poll_active_batches(run_id, context)
+        _poll_active_batches(deps, run_id=run_id, context=context, deadline=deadline)
         last_poll_at = now
         if _deadline_reached(deps, deadline):
             return False, last_poll_at
@@ -502,6 +507,25 @@ def _persist_and_advance_boundary(
     if checkpointed and control_state is not RunControlState.RUNNING:
         return False, last_poll_at
     return True, last_poll_at
+
+
+def _poll_active_batches(
+    deps: IngestionDeps,
+    *,
+    run_id: str,
+    context: RunContext,
+    deadline: float | None,
+) -> None:
+    """Reconcile active batches without dropping a wait-cycle deadline.
+
+    The optional deadline keeps older internal test adapters usable for
+    ordinary ingestion while ensuring deadline-bound refreshes pass the same
+    absolute limit down to the provider-polling seam.
+    """
+    if deadline is None:
+        deps.poll_active_batches(run_id, context)
+        return
+    deps.poll_active_batches(run_id, context, deadline=deadline)
 
 
 def materialize_item_chunks(

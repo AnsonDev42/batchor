@@ -624,6 +624,54 @@ def test_pause_blocks_polling_and_wait_raises_paused_error(tmp_path: Path) -> No
     assert provider.created_batches == ["batch_0", "batch_1"]
 
 
+def test_wait_deadline_reaches_resume_boundary_polling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Attached incomplete ingestion must not begin a provider poll after expiry."""
+    path = tmp_path / "items.jsonl"
+    path.write_text(json.dumps({"id": "row1", "text": "one"}) + "\n", encoding="utf-8")
+    source = JsonlItemSource(
+        path,
+        item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
+        payload_from_row=lambda row: {"text": row["text"]} if isinstance(row, dict) else {},
+    )
+    provider = _ControlledBatchProvider(record_factory=lambda custom_id: _success_record(f"text:{custom_id}"))
+    runner = BatchRunner(
+        storage="memory",
+        provider_factory=lambda _cfg: provider,
+        temp_root=tmp_path,
+    )
+    run = runner.start(
+        BatchJob(
+            items=source,
+            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+        )
+    )
+    checkpoint = runner.state.get_ingest_checkpoint(run_id=run.run_id)
+    assert checkpoint is not None
+    runner.state.update_ingest_checkpoint(
+        run_id=run.run_id,
+        next_item_index=checkpoint.next_item_index,
+        checkpoint_payload=checkpoint.checkpoint_payload,
+        ingestion_complete=False,
+    )
+
+    calls = 0
+
+    def wait_clock() -> float:
+        nonlocal calls
+        calls += 1
+        return 0.0 if calls < 5 else 1.0
+
+    monkeypatch.setattr("batchor.runtime.run_handle.time.monotonic", wait_clock)
+    monkeypatch.setattr("batchor.runtime.polling.monotonic", lambda: 1.0)
+
+    with pytest.raises(TimeoutError):
+        run.wait(timeout=1, poll_interval=0)
+
+    assert provider.polled_batches == []
+    assert runner.state.get_active_batches(run_id=run.run_id)
+
+
 def test_insufficient_quota_create_failure_auto_pauses_and_resume_continues(tmp_path: Path) -> None:
     provider = _FakeBatchProvider(
         record_factory=lambda custom_id: _success_record(f"text:{custom_id}"),
