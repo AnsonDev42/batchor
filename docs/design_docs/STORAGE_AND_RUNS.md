@@ -155,7 +155,9 @@ There is still one ingest-checkpoint row per run, not one row per child source.
 
 This enables `start(job, run_id=...)` to resume ingestion rather than rematerializing already-ingested rows, as long as the source still matches the stored identity.
 
-Non-checkpointable iterables do not yet support the same mid-ingest crash recovery behavior.
+Every run receives a generic incomplete-ingestion row atomically with run creation, including arbitrary iterables. This prevents the empty-run terminal calculation from winning while the first slice is still being rendered. Non-checkpointable iterables still do not support fresh-process mid-ingest recovery; manual pause retains their iterator only in the execution owner process and resumes it exactly once.
+
+Schema upgrade backfills every run missing a generic marker as ingestion-incomplete and records its current materialized item count. Storage cannot distinguish a completed arbitrary iterable from one paused between chunks, even when some items already exist, so assuming completion would preserve the false-terminal race. An empty source can be safely reattached from index zero; a partially materialized non-checkpointable legacy source must be treated as an abandoned tail and explicitly cancelled after any active batches drain.
 
 ## Rehydration rules
 
@@ -181,7 +183,13 @@ This recovery happens when an execution owner advances the run, not when a
 caller merely reads a handle with `get_run()` or changes control state.
 When `start(job, run_id=...)` resumes a run with active provider batches, it first performs a poll-only reconciliation pass. Terminal provider batches are consumed, failed batches update retry backoff, and any active backoff prevents new source materialization or submission until the backoff expires.
 
-While checkpointed ingestion is active, every materialized chunk and its next source checkpoint are persisted atomically before reconciliation is considered. At that durable boundary, active provider batches are polled before submission only when the provider's monotonic `poll_interval_sec` cadence is due. Terminal consumption therefore releases local inflight-token accounting before the same boundary submits pending work. A poll-induced pause, cancellation, or batch retry backoff blocks that submission and leaves the checkpoint incomplete at the last durable position. This scheduling state is process-local and requires no storage schema change; fresh-process resume still begins with its unconditional reconciliation pass.
+While ingestion is active, the normal fast path persists 1,000 items at once. A separate work clock flushes a smaller atomic slice when slow source or prompt work crosses the cooperative time budget. At each durable boundary, active provider batches are polled when the provider cadence is due even if submission retry backoff is active. Poll-induced pause, cancellation, or retry backoff blocks further checkpointed materialization/submission and leaves the source incomplete at its last durable position.
+
+Provider batch creation uses a durable intent written before the remote call. Successful creation is finalized in one local transaction that registers the batch and links every submitted item. A crash or ambiguous connection failure between the remote call and finalization leaves an indeterminate intent; advancement raises `RunSubmissionIndeterminateError` until an operator either attaches the confirmed remote batch or verifies that no batch exists. This is the explicit boundary where a generic provider cannot supply exactly-once creation or discovery.
+
+Finalized intents also reserve OpenAI enqueue capacity in an atomic counter keyed by provider, model, and configured quota scope. The reservation spans runs and is released idempotently only after terminal batch consumption/reset succeeds. Provider-terminal batches with submitted items or unreleased capacity remain locally reconcilable, so download, parsing, partial item writes, and post-consumption crashes replay safely.
+
+Active submitted rows created before submission intents existed are included dynamically as legacy reservations when a scope admits new work. This prevents an upgrade from granting the full configured budget on top of already-enqueued provider batches.
 
 Resume compatibility intentionally ignores non-persisted secret fields such as provider API keys. Rehydrated OpenAI runs need `OPENAI_API_KEY` when no explicit in-memory config is supplied. Gemini Developer API runs need `GEMINI_API_KEY`; Vertex runs need Application Default Credentials plus the persisted or ambient project, location, and GCS prefix configuration.
 
@@ -263,7 +271,9 @@ Auto-pause must not overwrite `cancel_requested`. Cancellation is non-reversible
 
 For non-checkpointed finite iterables, ingestion continues materializing remaining items after an auto-pause so `resume()` cannot silently lose input rows that were not yet persisted. Checkpointed sources may stop on pause because their stored checkpoint can resume materialization later.
 
-`wait()` fails fast on paused runs instead of sleeping indefinitely. The raised `RunPausedError` carries the same `control_reason` as the summary.
+Manual pause stops both checkpointed and arbitrary ingestion at a cooperative boundary. Arbitrary iterators are retained only in-process; automatic quota pause still materializes their finite tail to avoid losing rows that cannot be reconstructed.
+
+`wait()` fails fast on paused runs instead of sleeping indefinitely. The raised `RunPausedError` carries the same `control_reason` as the summary. Its optional timeout is propagated through ingestion and polling, caps sleeps, and prevents starting another library-controlled operation after expiry. It cannot safely preempt an arbitrary callback or provider SDK call already executing in the current thread; those operations retain their own timeout contract.
 Provider-side remote cancellation is still `TBD`.
 
 ## Python API versus CLI

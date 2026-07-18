@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from batchor import (
     BatchItem,
     BatchJob,
@@ -16,6 +18,7 @@ from batchor import (
     PromptParts,
     RetryPolicy,
     RunControlState,
+    RunSubmissionIndeterminateError,
 )
 from batchor.runtime.artifacts import request_sha256
 from batchor.runtime.context import build_persisted_config, build_run_context
@@ -337,7 +340,7 @@ def test_submit_pending_items_marks_oversized_rows_and_releases_unsent_items(tmp
     assert provider.created_batches == ["batch_0"]
 
 
-def test_submit_pending_items_cleans_up_uploaded_input_on_retryable_create_failure(tmp_path: Path) -> None:
+def test_submit_pending_items_preserves_indeterminate_create_intent(tmp_path: Path) -> None:
     provider = _FakeSubmissionProvider(
         create_failures=[RuntimeError("temporary service unavailable")],
     )
@@ -367,13 +370,16 @@ def test_submit_pending_items_cleans_up_uploaded_input_on_retryable_create_failu
         items=[_materialized_text_item("row1", 0, "hello")],
     )
 
-    submitted = submit_pending_items(deps, run_id=run_id, context=context)
+    with pytest.raises(RunSubmissionIndeterminateError):
+        submit_pending_items(deps, run_id=run_id, context=context)
 
     record = storage.get_item_records(run_id=run_id)[0]
-    assert submitted == 0
-    assert record.status is ItemStatus.PENDING
-    assert provider.deleted_files == ["file_0"]
-    assert storage.get_run_summary(run_id=run_id).backoff_remaining_sec > 0
+    assert record.status is ItemStatus.QUEUED_LOCAL
+    assert provider.deleted_files == []
+    assert storage.has_indeterminate_submission_intents(run_id=run_id)
+    storage.abandon_indeterminate_submission_intents(run_id=run_id)
+    storage.requeue_local_items(run_id=run_id)
+    assert storage.get_item_records(run_id=run_id)[0].status is ItemStatus.PENDING
 
 
 def test_submit_pending_items_auto_pauses_on_insufficient_quota_create_failure(tmp_path: Path) -> None:

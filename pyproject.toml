@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "batchor"
-version = "0.0.6"
+version = "0.0.7"
 description = "Structured-first provider Batch runner with typed Pydantic results."
 readme = "README.md"
 license = { file = "LICENSE" }

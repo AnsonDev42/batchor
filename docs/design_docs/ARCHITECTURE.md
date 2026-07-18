@@ -145,16 +145,16 @@ Internally that expands to:
 1. Resolve provider and storage implementations.
 2. Persist run config and ingest items into durable state.
 3. On resume, poll any already-active provider batches before ingesting or submitting new work.
-4. Persist source items in durable chunks; at each chunk boundary, poll active batches before submission when the monotonic provider cadence is due.
+4. Persist source items in durable work slices; keep the 1,000-item fast path, but flush a smaller atomic slice when the time/control budget requires it.
 5. Claim a bounded submission window from pending items.
 6. Build or replay request JSONL rows.
 7. Persist request artifacts before upload.
-8. Submit one or more provider batch files.
+8. Atomically reserve quota-scoped capacity and persist a submission intent before remote creation, then atomically register the returned batch with its item linkage.
 9. Poll active batches.
 10. Download output/error files.
 11. Parse terminal item results back into the state store.
 
-Ingestion polling stays inside the ingestion module behind its existing poll callback. Its local monotonic cadence state does not add storage schema or background-thread coordination. After each ingestion poll, control state and retry backoff are re-read before any submission or further checkpointed-source materialization.
+Ingestion polling stays inside the ingestion module behind its existing poll callback. Provider cadence and work-slice clocks are separate: fast sources retain normal batch granularity, while slow sources reach durable cooperative boundaries on a time budget. After each ingestion poll, control state and retry backoff are re-read before submission or further checkpointed-source materialization. Submission backoff blocks materialization/submission but never active-batch reconciliation.
 
 When a caller uses `Run.wait()`, the runtime repeats that poll-and-submit pass until the run is terminal. A pass that changes durable work state, such as consuming completed batches or submitting more items, immediately triggers the next pass rather than sleeping for the configured poll interval.
 
@@ -473,6 +473,10 @@ That split gives `batchor`:
     can advance, unless cancellation intentionally abandons the unmaterialized
     source tail and finalizes the checkpoint.
 21. `BatchItem.metadata["batchor_lineage"]` is reserved for lightweight source/join metadata when provided by built-in adapters or callers.
+22. Provider-terminal status and local result consumption are distinct: a terminal batch remains locally active while submitted items or an unreleased capacity reservation still require replay.
+23. Remote batch creation is preceded by a durable submission intent. An ambiguous create outcome requires explicit operator resolution as either the known remote batch or verified-not-created; the runtime never guesses and resubmits.
+24. OpenAI enqueue capacity is reserved atomically across runs by a stable provider/model/quota scope without persisting credential-derived identities.
+25. `wait(timeout=...)` is cooperative: the deadline bounds sleeps and prevents new library-controlled work, while an already-running user callback or provider SDK call is governed by its own timeout.
 
 ## Extension seams
 

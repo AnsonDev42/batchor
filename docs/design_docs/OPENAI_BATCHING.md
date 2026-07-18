@@ -125,13 +125,14 @@ OpenAI-specific enqueue settings live on `OpenAIProviderConfig.enqueue_limits`:
 - `target_ratio`
 - `headroom`
 - `max_batch_enqueued_tokens`
+- `quota_scope`
 
 From those settings, `batchor` derives:
 
 - an effective inflight token budget
 - an effective per-batch token limit
 
-Submission is constrained by both token budget and generic chunking rules such as max request count and max request file size.
+Submission is constrained by both token budget and generic chunking rules such as max request count and max request file size. Capacity is reserved atomically in durable storage before upload/create, so concurrent runs sharing the same model and quota scope cannot each claim the full account budget. The default scope is conservative and store-wide per model; set a stable `quota_scope` when one store serves multiple OpenAI accounts or projects.
 During `Run.wait()`, each drain cycle polls active batches before submitting new work, so capacity freed by completed batches is visible before the next submit attempt. If that cycle makes durable progress, the wait loop immediately runs another cycle instead of sleeping.
 
 ## Batch splitting
@@ -155,7 +156,8 @@ Not all failures are treated the same way.
 
 Control-plane failures:
 
-- transient upload/create/poll failures are treated as retryable batch-control-plane failures
+- transient upload/poll failures are treated as retryable batch-control-plane failures
+- a create-call outcome that may have reached the provider is recorded as an indeterminate durable intent and requires explicit operator resolution instead of automatic resubmission
 - retryable control-plane failures do not consume item attempts
 - batch submit failures can trigger batch-level backoff
 - transient poll failures do not stall unrelated submissions when other capacity remains
@@ -174,9 +176,10 @@ Item-level failures:
 
 Cleanup behavior:
 
-- if upload succeeds but batch creation fails, `batchor` makes a best-effort attempt to delete the uploaded OpenAI input file
+- if upload succeeds but a known provider rejection proves batch creation did not occur, `batchor` makes a best-effort attempt to delete the uploaded OpenAI input file
 - if upload or batch creation fails because OpenAI reports insufficient quota, local queued items are released back to pending before the run is paused
-- if a process dies after local artifact persistence but before durable batch registration, fresh-process resume requeues those items and resubmits from persisted request artifacts
+- if creation may have succeeded but local registration did not, `RunSubmissionIndeterminateError` blocks duplicate execution until the operator attaches the confirmed remote batch with `resolve_indeterminate_submission_as_created(...)` or verifies absence with `resolve_indeterminate_submission_as_not_created()`
+- terminal result download, parsing, item persistence, and capacity release are replayable; the batch remains locally reconcilable until all linked work is durably consumed
 
 ## Run control
 

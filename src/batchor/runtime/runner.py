@@ -111,6 +111,8 @@ class BatchRunner:
             submit_pending_items=self._submit_pending_items,
             configs_match_for_resume=self._configs_match_for_resume,
             poll_active_batches=self._poll_active_batches,
+            work_slice_max_items=1000,
+            work_slice_max_seconds=0.25,
         )
         self._executor = RunExecutor(
             state=self.state,
@@ -269,6 +271,26 @@ class BatchRunner:
             run_id=run_id,
             control_state=RunControlState.CANCEL_REQUESTED,
             control_reason=None,
+        )
+        return self.get_run(run_id)
+
+    def resolve_indeterminate_submission_as_not_created(self, run_id: str) -> Run:
+        """Release an intent only after the operator verified no remote batch exists."""
+        self.state.abandon_indeterminate_submission_intents(run_id=run_id)
+        return self.get_run(run_id)
+
+    def resolve_indeterminate_submission_as_created(
+        self,
+        run_id: str,
+        *,
+        provider_batch_id: str,
+        status: str = "submitted",
+    ) -> Run:
+        """Link an operator-confirmed remote batch to its persisted intent."""
+        self.state.finalize_indeterminate_submission_as_created(
+            run_id=run_id,
+            provider_batch_id=provider_batch_id,
+            status=status,
         )
         return self.get_run(run_id)
 
@@ -558,18 +580,21 @@ class BatchRunner:
             context=context or self._context_for_run(run_id),
         )
 
-    def _advance_run(self, run_id: str) -> CycleOutcome:
-        return self._executor.advance(run_id)
+    def _advance_run(self, run_id: str, *, deadline: float | None = None) -> CycleOutcome:
+        return self._executor.advance(run_id, deadline=deadline)
 
     def _poll_active_batches(
         self,
         run_id: str,
         context: RunContext,
+        *,
+        deadline: float | None = None,
     ) -> None:
         poll_once(
             self._polling_deps,
             run_id=run_id,
             context=context,
+            deadline=deadline,
         )
 
     def _results_for_run(self, run_id: str) -> list[BatchResultItem]:

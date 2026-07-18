@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import text
 
 from batchor import (
+    ItemStatus,
     MemoryStateStore,
     OpenAIEnqueueLimitConfig,
     OpenAIProviderConfig,
@@ -227,6 +228,99 @@ def test_storage_contract_incomplete_ingestion_prevents_terminal_status(storage)
     assert storage.get_run_summary(run_id="run_incomplete").status is RunLifecycleStatus.COMPLETED
 
 
+def test_storage_contract_attaches_operator_confirmed_indeterminate_batch(storage) -> None:
+    storage.create_run(run_id="run_indeterminate", config=_config(), items=_items()[:1])
+    claimed = storage.claim_items_for_submission(run_id="run_indeterminate", max_attempts=2)
+    submissions = [
+        PreparedSubmission(
+            item_id=claimed[0].item_id,
+            custom_id="row1:a1",
+            submission_tokens=10,
+        )
+    ]
+    assert storage.begin_submission_intent(
+        run_id="run_indeterminate",
+        intent_id="intent-indeterminate",
+        submissions=submissions,
+        quota_scope="openai:gpt-4.1:contract",
+        submission_tokens=10,
+        capacity_limit=10,
+    )
+    assert storage.has_indeterminate_submission_intents(run_id="run_indeterminate")
+
+    storage.finalize_indeterminate_submission_as_created(
+        run_id="run_indeterminate",
+        provider_batch_id="provider-recovered",
+        status="submitted",
+    )
+
+    assert not storage.has_indeterminate_submission_intents(run_id="run_indeterminate")
+    assert storage.get_submitted_custom_ids_for_batch(
+        run_id="run_indeterminate",
+        provider_batch_id="provider-recovered",
+    ) == ["row1:a1"]
+    assert storage.get_active_submitted_token_estimate(run_id="run_indeterminate") == 10
+
+
+def test_storage_contract_not_created_resolution_requeues_claimed_items(storage) -> None:
+    storage.create_run(run_id="run_not_created", config=_config(), items=_items())
+    claimed = storage.claim_items_for_submission(run_id="run_not_created", max_attempts=2)
+    assert storage.begin_submission_intent(
+        run_id="run_not_created",
+        intent_id="intent-not-created",
+        submissions=[
+            PreparedSubmission(
+                item_id=claimed[0].item_id,
+                custom_id="row1:a1",
+                submission_tokens=10,
+            )
+        ],
+        quota_scope="openai:gpt-4.1:default",
+        submission_tokens=10,
+        capacity_limit=10,
+    )
+
+    storage.abandon_indeterminate_submission_intents(run_id="run_not_created")
+
+    reclaimed = storage.claim_items_for_submission(run_id="run_not_created", max_attempts=2)
+    assert [item.item_id for item in reclaimed] == ["row1"]
+    records = {record.item_id: record for record in storage.get_item_records(run_id="run_not_created")}
+    assert records["row2"].status is ItemStatus.QUEUED_LOCAL
+
+
+def test_storage_contract_capacity_includes_legacy_submitted_items(storage) -> None:
+    storage.create_run(run_id="legacy_active", config=_config(), items=_items()[:1])
+    claimed = storage.claim_items_for_submission(run_id="legacy_active", max_attempts=2)
+    storage.register_batch(
+        run_id="legacy_active",
+        local_batch_id="legacy-local",
+        provider_batch_id="legacy-provider",
+        status="submitted",
+        custom_ids=["row1:a1"],
+    )
+    storage.mark_items_submitted(
+        run_id="legacy_active",
+        provider_batch_id="legacy-provider",
+        submissions=[
+            PreparedSubmission(
+                item_id=claimed[0].item_id,
+                custom_id="row1:a1",
+                submission_tokens=10,
+            )
+        ],
+    )
+    storage.create_run(run_id="new_capacity", config=_config(), items=_items()[:1])
+
+    assert not storage.begin_submission_intent(
+        run_id="new_capacity",
+        intent_id="intent-new-capacity",
+        submissions=[PreparedSubmission(item_id="row1", custom_id="row1:a1", submission_tokens=1)],
+        quota_scope="openai:gpt-4.1:default",
+        submission_tokens=1,
+        capacity_limit=10,
+    )
+
+
 def test_storage_contract_artifact_pointers_and_summary_rehydration(storage) -> None:
     storage.create_run(run_id="run_2", config=_config(), items=_items()[:1])
     storage.record_request_artifacts(
@@ -328,6 +422,53 @@ def test_storage_contract_completion_counts_consumed_attempts(storage) -> None:
 
     records = storage.get_item_records(run_id="run_attempts")
     assert records[0].attempt_count == 1
+
+
+def test_storage_contract_stale_terminal_failure_replay_is_idempotent(storage) -> None:
+    """A second consumer can safely replay a result parsed before the first committed."""
+    storage.create_run(run_id="run_terminal_failure_replay", config=_config(), items=_items()[:1])
+    claimed = storage.claim_items_for_submission(run_id="run_terminal_failure_replay", max_attempts=1)
+    storage.register_batch(
+        run_id="run_terminal_failure_replay",
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="completed",
+        custom_ids=["row1:a1"],
+    )
+    storage.mark_items_submitted(
+        run_id="run_terminal_failure_replay",
+        provider_batch_id="provider_1",
+        submissions=[PreparedSubmission(item_id=claimed[0].item_id, custom_id="row1:a1", submission_tokens=10)],
+    )
+    failure = ItemFailureRecord(
+        custom_id="row1:a1",
+        error=ItemFailure(
+            error_class="provider_item_error",
+            message="terminal provider error",
+            retryable=True,
+            raw_error={"status": 500},
+        ),
+        count_attempt=True,
+    )
+
+    storage.mark_items_failed(
+        run_id="run_terminal_failure_replay",
+        failures=[failure],
+        max_attempts=1,
+    )
+    # This represents a stale concurrent consumer that parsed the same
+    # terminal artifact before the first consumer committed its transition.
+    storage.mark_items_failed(
+        run_id="run_terminal_failure_replay",
+        failures=[failure],
+        max_attempts=1,
+    )
+
+    record = storage.get_item_records(run_id="run_terminal_failure_replay")[0]
+    assert record.status is ItemStatus.FAILED_PERMANENT
+    assert record.attempt_count == 1
+    assert record.error is not None
+    assert record.error.error_class == "provider_item_error"
 
 
 def test_storage_contract_retry_then_completion_counts_all_consumed_attempts(storage) -> None:

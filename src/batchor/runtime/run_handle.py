@@ -97,13 +97,13 @@ class Run:
         """
         return self.status in (RunLifecycleStatus.COMPLETED, RunLifecycleStatus.COMPLETED_WITH_FAILURES)
 
-    def refresh(self) -> RunSummary:
+    def refresh(self, *, deadline: float | None = None) -> RunSummary:
         """Perform one poll-and-submit cycle and return the updated summary.
 
         Returns:
             Updated run summary.
         """
-        outcome = self._runner._advance_run(self.run_id)
+        outcome = self._runner._advance_run(self.run_id, deadline=deadline)
         self._summary = outcome.summary
         self._last_cycle_progressed = outcome.progressed
         return self._summary
@@ -129,7 +129,9 @@ class Run:
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            self.refresh()
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(f"timed out waiting for run {self.run_id}")
+            self.refresh(deadline=deadline)
             if self.is_finished:
                 return self
             if self.control_state is RunControlState.PAUSED:
@@ -146,7 +148,10 @@ class Run:
                 else:
                     sleep_for = self._summary.backoff_remaining_sec
             if sleep_for > 0:
-                self._runner.sleep(sleep_for)
+                if deadline is not None:
+                    sleep_for = min(sleep_for, max(0.0, deadline - time.monotonic()))
+                if sleep_for > 0:
+                    self._runner.sleep(sleep_for)
 
     def summary(self) -> RunSummary:
         """Read the latest persisted summary for the run from storage.
@@ -233,6 +238,27 @@ class Run:
         """
         self._summary = self._runner.pause_run(self.run_id).summary()
         return self._summary
+
+    def resolve_indeterminate_submission_as_not_created(self) -> Run:
+        """Acknowledge an operator-verified absent remote batch and allow retry."""
+        resolved = self._runner.resolve_indeterminate_submission_as_not_created(self.run_id)
+        self._summary = resolved.summary()
+        return self
+
+    def resolve_indeterminate_submission_as_created(
+        self,
+        *,
+        provider_batch_id: str,
+        status: str = "submitted",
+    ) -> Run:
+        """Link an operator-confirmed remote batch and resume normal polling."""
+        resolved = self._runner.resolve_indeterminate_submission_as_created(
+            self.run_id,
+            provider_batch_id=provider_batch_id,
+            status=status,
+        )
+        self._summary = resolved.summary()
+        return self
 
     def resume(self) -> RunSummary:
         """Resume this run after it has been paused.

@@ -39,6 +39,7 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                 and_(
                     ITEMS_TABLE.c.run_id == bindparam("b_run_id"),
                     ITEMS_TABLE.c.active_custom_id == bindparam("b_custom_id"),
+                    ITEMS_TABLE.c.status == self.ACTIVE_ITEM_STATUS_SUBMITTED,
                 )
             )
             .values(
@@ -98,6 +99,7 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                     and_(
                         ITEMS_TABLE.c.run_id == run_id,
                         ITEMS_TABLE.c.active_custom_id.in_(custom_ids),
+                        ITEMS_TABLE.c.status == self.ACTIVE_ITEM_STATUS_SUBMITTED,
                     )
                 )
             ).mappings()
@@ -109,8 +111,13 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                 for row in rows
             }
             payloads: list[dict[str, object | None]] = []
-            for index, failure in enumerate(failures):
-                current = attempts_by_custom_id[failure.custom_id]
+            for failure in failures:
+                # Another consumer may have durably consumed this terminal
+                # row after this caller parsed the same provider artifact.
+                # Such stale replay is a no-op, not an invalid transition.
+                current = attempts_by_custom_id.get(failure.custom_id)
+                if current is None:
+                    continue
                 attempt_count = int(current["attempt_count"])
                 if failure.count_attempt:
                     attempt_count += 1
@@ -124,10 +131,12 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                     {
                         "b_run_id": run_id,
                         "b_item_id": str(current["item_id"]),
+                        "b_active_custom_id": failure.custom_id,
+                        "b_expected_attempt_count": int(current["attempt_count"]),
                         "b_attempt_count": attempt_count,
                         "b_status": status,
                         "b_terminal_result_sequence": (
-                            next_sequence + index if status in self.TERMINAL_ITEM_STATUSES else None
+                            next_sequence + len(payloads) if status in self.TERMINAL_ITEM_STATUSES else None
                         ),
                         "b_terminalized_at": (terminalized_at if status in self.TERMINAL_ITEM_STATUSES else None),
                         "b_error_json": _encode_json(serialize_item_failure(failure.error)),
@@ -139,6 +148,9 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                     and_(
                         ITEMS_TABLE.c.run_id == bindparam("b_run_id"),
                         ITEMS_TABLE.c.item_id == bindparam("b_item_id"),
+                        ITEMS_TABLE.c.active_custom_id == bindparam("b_active_custom_id"),
+                        ITEMS_TABLE.c.attempt_count == bindparam("b_expected_attempt_count"),
+                        ITEMS_TABLE.c.status == self.ACTIVE_ITEM_STATUS_SUBMITTED,
                     )
                 )
                 .values(
@@ -152,7 +164,8 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
                     active_submission_tokens=0,
                 )
             )
-            conn.execute(statement, payloads)
+            if payloads:
+                conn.execute(statement, payloads)
 
     def mark_queued_items_failed(
         self,
@@ -280,7 +293,11 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
     ) -> RetryBackoffState:
         with self.engine.begin() as conn:
             current = self._fetch_retry_state(conn, run_id)
-            consecutive = current.consecutive_failures + 1
+            # A success elsewhere must not clear this run-level delay.  Once
+            # its deadline has elapsed, the next failure starts a fresh
+            # streak instead of retaining an unrelated historical exponent.
+            previous_is_active = current.next_retry_at is not None and current.next_retry_at > self._now()
+            consecutive = (current.consecutive_failures if previous_is_active else 0) + 1
             total = current.total_failures + 1
             backoff_sec = compute_backoff_delay(
                 consecutive_failures=consecutive,

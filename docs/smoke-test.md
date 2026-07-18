@@ -91,14 +91,19 @@ Expected:
 - replaying multiple items from the same persisted request artifact does not require rereading that artifact file for each item
 - deterministic source ingestion can resume from a persisted checkpoint when rerun with the same `run_id`
 - incomplete checkpointed ingestion cannot become terminal, and fresh-process advancement requires reattaching the source with `start(job, run_id=...)`
+- generic ingestion markers keep empty and partially materializing arbitrary-iterable runs non-terminal
+- schema upgrade conservatively backfills missing empty and partially materialized ingestion markers
 - composite deterministic sources can namespace duplicate row IDs across explicit inputs and resume across source boundaries
 - Parquet source adapters can resume from opaque checkpoints and project only required columns
 - retry/resume from persisted request artifacts still works for SQLite-backed runs
 - resumed runs reconcile existing active batches and persisted backoff before materializing more source rows
 - long-running ingestion polls active batches on a monotonic cadence at durable chunk boundaries, before submission, so completed remote work frees local enqueue-token capacity before full source materialization
+- slow ingestion flushes bounded partial work slices while fast ingestion retains the normal 1,000-item batch granularity
+- submission backoff blocks new materialization/submission without suppressing active-batch reconciliation
 - poll-induced pause, cancellation, or retry backoff leaves checkpointed ingestion incomplete at its last durable chunk and prevents unsafe submission
 - transient batch-poll failures do not block unrelated pending submissions from being sent when capacity remains
 - paused runs stop polling/submission until resumed
+- manual pause stops a non-checkpointed iterator and same-process resume continues it exactly once
 - OpenAI control-plane and batch-level insufficient-quota provider failures auto-pause with a durable `control_reason` and do not consume item attempts
 - OpenAI row-level insufficient-quota records in completed batch output remain retryable, do not consume attempts, and back off without pausing the run
 - quota auto-pause preserves `cancel_requested` and does not strand non-checkpointed input rows during initial ingestion
@@ -111,9 +116,14 @@ Expected:
 - shared storage-contract behavior remains aligned across SQLite and opt-in Postgres
 - completed submitted items report consumed attempts consistently across storage backends
 - OpenAI request splitting and enqueue-limit logic still behave as expected
+- concurrent runs atomically share OpenAI capacity by quota scope, and terminal replay releases reservations idempotently
+- pre-intent active batches continue consuming shared capacity after schema upgrade
+- terminal batches replay after download/parse/partial-state crashes without duplicating consumed attempts
+- ambiguous provider creation requires explicit created/not-created resolution and never silently submits a duplicate
 - Gemini text-only request construction, batch polling normalization, response parsing, and structured-output validation still behave as expected
 - Anthropic request construction, safe correlation IDs, polling normalization, result parsing, and structured-output validation still behave as expected
 - wait-mode refresh cycles keep draining immediately after poll/submission progress, without introducing idle poll sleeps while more local work can be sent
+- wait deadlines cap sleeps and prevent new ingestion/poll/download work after expiry, subject to already-running callback/SDK operation timeouts
 - structured-output parsing remains stable
 
 Notes:

@@ -92,6 +92,7 @@ nav:
       - Anthropic Batching: design_docs/ANTHROPIC_BATCHING.md
       - Storage & Runs: design_docs/STORAGE_AND_RUNS.md
       - Storage Migrations: design_docs/STORAGE_MIGRATIONS.md
+      - Runtime Durability 0.0.7: design_docs/RUNTIME_DURABILITY_0_0_7.md
       - Roadmap: design_docs/ROADMAP.md
   - Project:
       - Support Policy: policies/support.md

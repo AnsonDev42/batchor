@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from time import monotonic
 from typing import Callable, cast
 
 from batchor.artifacts import ArtifactStore
@@ -50,12 +51,21 @@ class CompletedBatchConsumeResult:
     quota_error_count: int = 0
 
 
+class _PollingDeadlineExpired(Exception):
+    """Internal sentinel used to stop before beginning another provider call."""
+
+
+def _deadline_expired(deadline: float | None) -> bool:
+    return deadline is not None and monotonic() >= deadline
+
+
 def refresh_run(
     deps: PollingDeps,
     *,
     run_id: str,
     context: RunContext,
     submit_pending_items: Callable[[str, RunContext], int],
+    deadline: float | None = None,
 ) -> RunSummary:
     """Perform one poll-and-submit cycle and return the updated summary.
 
@@ -72,7 +82,7 @@ def refresh_run(
     control_state = deps.state.get_run_control_state(run_id=run_id)
     if control_state is RunControlState.PAUSED:
         return deps.state.get_run_summary(run_id=run_id)
-    poll_once(deps, run_id=run_id, context=context)
+    poll_once(deps, run_id=run_id, context=context, deadline=deadline)
     if control_state is RunControlState.CANCEL_REQUESTED:
         if not deps.state.get_active_batches(run_id=run_id):
             deps.state.mark_nonterminal_items_cancelled(
@@ -85,8 +95,13 @@ def refresh_run(
                 ),
             )
             finalize_cancelled_ingestion(deps.state, run_id=run_id)
+            # Cancellation is irreversible once no remote work remains.  A
+            # retry delay left by the final terminal batch must not keep an
+            # otherwise terminal cancelled run artificially running.
+            deps.state.clear_batch_retry_backoff(run_id=run_id)
         return deps.state.get_run_summary(run_id=run_id)
-    submit_pending_items(run_id, context)
+    if not _deadline_expired(deadline):
+        submit_pending_items(run_id, context)
     return deps.state.get_run_summary(run_id=run_id)
 
 
@@ -95,6 +110,7 @@ def poll_once(
     *,
     run_id: str,
     context: RunContext,
+    deadline: float | None = None,
 ) -> None:
     """Poll all active provider batches and consume any terminal ones.
 
@@ -103,13 +119,26 @@ def poll_once(
         run_id: Durable run identifier.
         context: Runtime context for the run.
     """
+    if _deadline_expired(deadline):
+        return
     batches = deps.state.get_active_batches(run_id=run_id)
     if not batches:
         return
 
     remote_by_batch_id: dict[str, BatchRemoteRecord] = {}
     poll_errors: dict[str, Exception] = {}
-    if len(batches) == 1:
+    if deadline is not None:
+        # Deadline-aware polling is deliberately sequential so the check is
+        # made immediately before every provider call without spawning work
+        # that may outlive ``Run.wait(timeout=...)``.
+        for batch in batches:
+            if _deadline_expired(deadline):
+                break
+            try:
+                remote_by_batch_id[batch.provider_batch_id] = context.provider.get_batch(batch.provider_batch_id)
+            except Exception as exc:  # noqa: BLE001
+                poll_errors[batch.provider_batch_id] = exc
+    elif len(batches) == 1:
         batch = batches[0]
         try:
             remote_by_batch_id[batch.provider_batch_id] = context.provider.get_batch(batch.provider_batch_id)
@@ -130,8 +159,18 @@ def poll_once(
                 except Exception as exc:  # noqa: BLE001
                     poll_errors[provider_batch_id] = exc
 
+    # A polling pass must never clear a retry delay merely because a different
+    # batch happened to succeed.  Retry state is run-wide today, so a success
+    # has no unambiguous failure domain to acknowledge.  Delays expire on
+    # their own; ``record_batch_retry_failure`` starts a fresh streak after an
+    # expired delay.
     row_quota_backoff_recorded = False
     for batch in batches:
+        if _deadline_expired(deadline):
+            return
+        if batch.provider_batch_id not in remote_by_batch_id and batch.provider_batch_id not in poll_errors:
+            # Deadline-aware fetch stopped before this batch.
+            return
         if batch.provider_batch_id in poll_errors:
             exc = poll_errors[batch.provider_batch_id]
             if is_insufficient_quota_error(exc):
@@ -177,13 +216,25 @@ def poll_once(
             error_file_id=remote.get("error_file_id"),
         )
         if status == "completed":
-            consume_result = consume_completed_batch(
-                deps,
+            try:
+                consume_result = consume_completed_batch(
+                    deps,
+                    run_id=run_id,
+                    context=context,
+                    provider_batch_id=batch.provider_batch_id,
+                    output_file_id=remote.get("output_file_id"),
+                    error_file_id=remote.get("error_file_id"),
+                    deadline=deadline,
+                )
+            except _PollingDeadlineExpired:
+                return
+            # The shared enqueue reservation is held until the terminal
+            # result has been durably consumed.  Releasing it earlier would
+            # let a failed download/parse strand submitted work while another
+            # run spends the same capacity.
+            deps.state.release_submission_capacity_for_batch(
                 run_id=run_id,
-                context=context,
                 provider_batch_id=batch.provider_batch_id,
-                output_file_id=remote.get("output_file_id"),
-                error_file_id=remote.get("error_file_id"),
             )
             if consume_result.quota_error_count > 0 and not row_quota_backoff_recorded:
                 row_quota_backoff_recorded = True
@@ -193,8 +244,6 @@ def poll_once(
                     base_delay_sec=context.config.retry_policy.base_backoff_sec,
                     max_delay_sec=context.config.retry_policy.max_backoff_sec,
                 )
-            if not row_quota_backoff_recorded:
-                deps.state.clear_batch_retry_backoff(run_id=run_id)
             deps.emit_event(
                 "batch_completed",
                 run_id=run_id,
@@ -202,11 +251,15 @@ def poll_once(
                 data={"provider_batch_id": batch.provider_batch_id},
             )
         elif status in {"failed", "cancelled", "expired"}:
-            output_content, error_content = download_batch_file_contents(
-                context=context,
-                output_file_id=remote.get("output_file_id"),
-                error_file_id=remote.get("error_file_id"),
-            )
+            try:
+                output_content, error_content = download_batch_file_contents(
+                    context=context,
+                    output_file_id=remote.get("output_file_id"),
+                    error_file_id=remote.get("error_file_id"),
+                    deadline=deadline,
+                )
+            except _PollingDeadlineExpired:
+                return
             output_artifact_path, error_artifact_path = write_batch_result_artifacts(
                 artifact_store=deps.artifact_store,
                 run_id=run_id,
@@ -231,6 +284,10 @@ def poll_once(
                 run_id=run_id,
                 provider_batch_id=batch.provider_batch_id,
                 error=error,
+            )
+            deps.state.release_submission_capacity_for_batch(
+                run_id=run_id,
+                provider_batch_id=batch.provider_batch_id,
             )
             deps.emit_event(
                 "batch_terminal_failure",
@@ -265,6 +322,7 @@ def download_batch_file_contents(
     context: RunContext,
     output_file_id: object,
     error_file_id: object,
+    deadline: float | None = None,
 ) -> tuple[str | None, str | None]:
     """Download the output and error files for a provider batch.
 
@@ -279,15 +337,20 @@ def download_batch_file_contents(
     """
     output_id = output_file_id if isinstance(output_file_id, str) else None
     error_id = error_file_id if isinstance(error_file_id, str) else None
+    if _deadline_expired(deadline):
+        raise _PollingDeadlineExpired
     if output_id is None and error_id is None:
         return None, None
-    if output_id is not None and error_id is not None:
+    if output_id is not None and error_id is not None and deadline is None:
         with ThreadPoolExecutor(max_workers=2) as executor:
             output_future = executor.submit(context.provider.download_file_content, output_id)
             error_future = executor.submit(context.provider.download_file_content, error_id)
             return output_future.result(), error_future.result()
     if output_id is not None:
-        return context.provider.download_file_content(output_id), None
+        output_content = context.provider.download_file_content(output_id)
+        if _deadline_expired(deadline):
+            raise _PollingDeadlineExpired
+        return output_content, (context.provider.download_file_content(error_id) if error_id is not None else None)
     if error_id is None:
         return None, None
     return None, context.provider.download_file_content(error_id)
@@ -301,6 +364,7 @@ def consume_completed_batch(
     provider_batch_id: str,
     output_file_id: object,
     error_file_id: object,
+    deadline: float | None = None,
 ) -> CompletedBatchConsumeResult:
     """Download, persist, and parse a completed provider batch.
 
@@ -320,6 +384,7 @@ def consume_completed_batch(
         context=context,
         output_file_id=output_file_id,
         error_file_id=error_file_id,
+        deadline=deadline,
     )
     output_artifact_path, error_artifact_path = write_batch_result_artifacts(
         artifact_store=deps.artifact_store,
@@ -356,7 +421,13 @@ def consume_completed_batch(
     processed_custom_ids: set[str] = set()
     quota_error_count = 0
 
+    # A terminal batch may be replayed after any failure between recording the
+    # remote terminal state and mutating local items.  Only consume records
+    # that still belong to submitted items: already terminalized rows must not
+    # be parsed again or have their attempt count incremented a second time.
     for custom_id, record in successes.items():
+        if custom_id not in submitted_custom_ids:
+            continue
         processed_custom_ids.add(custom_id)
         if context.output_model is None:
             completions.append(
@@ -401,6 +472,8 @@ def consume_completed_batch(
         )
 
     for custom_id, error_record in errors.items():
+        if custom_id not in submitted_custom_ids:
+            continue
         processed_custom_ids.add(custom_id)
         quota_error = is_insufficient_quota_error(error_record)
         if quota_error:

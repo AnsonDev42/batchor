@@ -40,6 +40,14 @@ class _MonotonicClock:
         return next(self._readings)
 
 
+class _MutableClock:
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+
 class _CompleteCheckpointSource(CheckpointedItemSource[dict[str, str]]):
     def source_identity(self) -> SourceIdentity:
         return SourceIdentity(
@@ -333,6 +341,151 @@ def test_resume_existing_run_polls_active_batches_before_materializing() -> None
     )
 
     assert poll_calls == [run_id]
+    assert submitted_runs == []
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.ingestion_complete is False
+
+
+def test_resume_existing_run_stops_after_active_poll_reaches_deadline() -> None:
+    """A poll that overruns the deadline cannot begin source work or submission."""
+    source = _ExplodingSource()
+    job = BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    clock = _MutableClock(0.0)
+
+    class _DeadlineAdvancingProvider:
+        def __init__(self) -> None:
+            self.polled_batches: list[str] = []
+
+        def get_batch(self, batch_id: str) -> object:
+            self.polled_batches.append(batch_id)
+            clock.value = 1.0
+            return object()
+
+    provider = _DeadlineAdvancingProvider()
+    submitted_runs: list[str] = []
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda *args, **kwargs: None,
+        submit_pending_items=lambda run_id, _context: submitted_runs.append(run_id) or 0,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+        poll_active_batches=lambda _run_id, _context, *, deadline=None: provider.get_batch("provider_1"),
+        monotonic=clock,
+    )
+    context = build_run_context(
+        config=config,
+        output_model=None,
+        create_provider=lambda _cfg: _NoopProvider(),
+    )
+    run_id = "resume_deadline_poll_run"
+    storage.create_run(run_id=run_id, config=config, items=[])
+    identity = source.source_identity()
+    storage.set_ingest_checkpoint(
+        run_id=run_id,
+        checkpoint=IngestCheckpoint(
+            source_kind=identity.source_kind,
+            source_ref=identity.source_ref,
+            source_fingerprint=identity.source_fingerprint,
+            next_item_index=0,
+            checkpoint_payload=0,
+            ingestion_complete=False,
+        ),
+    )
+    storage.register_batch(
+        run_id=run_id,
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="submitted",
+        custom_ids=[],
+    )
+
+    resume_existing_run(
+        deps,
+        run_id=run_id,
+        job=job,
+        config=config,
+        context=context,
+        deadline=1.0,
+    )
+
+    assert provider.polled_batches == ["provider_1"]
+    assert submitted_runs == []
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 0
+    assert checkpoint.ingestion_complete is False
+
+
+def test_resume_existing_run_skips_direct_submit_after_deadline_expiring_poll() -> None:
+    """The checkpoint-complete resume path observes a poll-overrun deadline."""
+    source = _CompleteCheckpointSource()
+    job = BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    clock = _MutableClock(0.0)
+
+    class _DeadlineAdvancingProvider:
+        def get_batch(self, batch_id: str) -> object:
+            assert batch_id == "provider_1"
+            clock.value = 1.0
+            return object()
+
+    provider = _DeadlineAdvancingProvider()
+    submitted_runs: list[str] = []
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda *args, **kwargs: None,
+        submit_pending_items=lambda run_id, _context: submitted_runs.append(run_id) or 0,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+        poll_active_batches=lambda _run_id, _context, *, deadline=None: provider.get_batch("provider_1"),
+        monotonic=clock,
+    )
+    context = build_run_context(
+        config=config,
+        output_model=None,
+        create_provider=lambda _cfg: _NoopProvider(),
+    )
+    run_id = "resume_deadline_direct_submit_run"
+    storage.create_run(run_id=run_id, config=config, items=[])
+    identity = source.source_identity()
+    storage.set_ingest_checkpoint(
+        run_id=run_id,
+        checkpoint=IngestCheckpoint(
+            source_kind=identity.source_kind,
+            source_ref=identity.source_ref,
+            source_fingerprint=identity.source_fingerprint,
+            next_item_index=0,
+            checkpoint_payload={"done": True},
+            ingestion_complete=False,
+        ),
+    )
+    storage.register_batch(
+        run_id=run_id,
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="submitted",
+        custom_ids=[],
+    )
+
+    resume_existing_run(
+        deps,
+        run_id=run_id,
+        job=job,
+        config=config,
+        context=context,
+        deadline=1.0,
+    )
+
     assert submitted_runs == []
     checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
     assert checkpoint is not None
@@ -1186,3 +1339,148 @@ def test_materialize_item_chunks_rejects_non_resumable_source_with_nonzero_start
 
     with pytest.raises(ValueError, match="non-resumable item sources cannot start from a checkpoint"):
         list(materialize_item_chunks(job, start_index=1))
+
+
+def test_ingestion_time_budget_persists_a_partial_slice_before_old_chunk_limit() -> None:
+    job = BatchJob(
+        items=[BatchItem(item_id=f"row{index}", payload="x") for index in range(5)],
+        build_prompt=lambda item: PromptParts(prompt=item.payload),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    run_id = "time_sliced_ingestion"
+    storage.create_run(run_id=run_id, config=config, items=[])
+    chunk_sizes: list[int] = []
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda _event_type, **kwargs: chunk_sizes.append(kwargs["data"]["chunk_item_count"]),
+        submit_pending_items=lambda _run_id, _context: 0,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+        work_monotonic=_MonotonicClock(0.0, 0.1, 0.2, 0.3, 0.3, 0.4, 0.5),
+        work_slice_max_items=1000,
+        work_slice_max_seconds=0.25,
+    )
+    context = build_run_context(config=config, output_model=None, create_provider=lambda _cfg: _NoopProvider())
+
+    ingest_job_items(
+        deps,
+        run_id=run_id,
+        job=job,
+        context=context,
+        start_index=0,
+        checkpoint_payload=None,
+    )
+
+    assert chunk_sizes == [3, 2]
+    assert [record.item_id for record in storage.get_item_records(run_id=run_id)] == [
+        "row0",
+        "row1",
+        "row2",
+        "row3",
+        "row4",
+    ]
+
+
+def test_manual_pause_stops_noncheckpointed_source_and_same_process_resume_is_exactly_once() -> None:
+    source = (BatchItem(item_id=f"row{index}", payload="x") for index in range(5))
+    job = BatchJob(
+        items=source,
+        build_prompt=lambda item: PromptParts(prompt=item.payload),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    run_id = "manual_pause_noncheckpointed"
+    storage.create_run(run_id=run_id, config=config, items=[])
+    submitted: list[str] = []
+
+    def pause_after_first_slice(submitted_run_id: str, _context: object) -> int:
+        submitted.append(submitted_run_id)
+        if len(submitted) > 1:
+            return 0
+        storage.set_run_control_state(
+            run_id=submitted_run_id,
+            control_state=RunControlState.PAUSED,
+            control_reason="manual",
+        )
+        return 0
+
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda *args, **kwargs: None,
+        submit_pending_items=pause_after_first_slice,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+        work_slice_max_items=2,
+    )
+    context = build_run_context(config=config, output_model=None, create_provider=lambda _cfg: _NoopProvider())
+
+    ingest_job_items(
+        deps,
+        run_id=run_id,
+        job=job,
+        context=context,
+        start_index=0,
+        checkpoint_payload=None,
+    )
+    checkpoint = storage.get_ingest_checkpoint(run_id=run_id)
+    assert checkpoint is not None
+    assert checkpoint.next_item_index == 2
+    assert checkpoint.ingestion_complete is False
+    assert [record.item_id for record in storage.get_item_records(run_id=run_id)] == ["row0", "row1"]
+
+    storage.set_run_control_state(run_id=run_id, control_state=RunControlState.RUNNING)
+    resume_existing_run(deps, run_id=run_id, job=job, config=config, context=context)
+
+    assert [record.item_id for record in storage.get_item_records(run_id=run_id)] == [
+        "row0",
+        "row1",
+        "row2",
+        "row3",
+        "row4",
+    ]
+    assert storage.get_ingest_checkpoint(run_id=run_id).ingestion_complete is True  # type: ignore[union-attr]
+    assert submitted == [run_id, run_id, run_id]
+
+
+def test_submission_backoff_does_not_suppress_ingestion_reconciliation() -> None:
+    job = BatchJob(
+        items=[BatchItem(item_id=f"row{index}", payload="x") for index in range(1000)],
+        build_prompt=lambda item: PromptParts(prompt=item.payload),
+        provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1", poll_interval_sec=1),
+    )
+    config = build_persisted_config(job)
+    storage = MemoryStateStore()
+    run_id = "backoff_still_polls"
+    storage.create_run(run_id=run_id, config=config, items=[])
+    storage.register_batch(
+        run_id=run_id,
+        local_batch_id="local_1",
+        provider_batch_id="provider_1",
+        status="submitted",
+        custom_ids=[],
+    )
+    storage.record_batch_retry_failure(
+        run_id=run_id, error_class="provider_unavailable", base_delay_sec=10, max_delay_sec=10
+    )
+    calls: list[str] = []
+    deps = IngestionDeps(
+        state=storage,
+        emit_event=lambda *args, **kwargs: None,
+        submit_pending_items=lambda _run_id, _context: calls.append("submit") or 0,
+        configs_match_for_resume=lambda stored, supplied: stored == supplied,
+        poll_active_batches=lambda _run_id, _context: calls.append("poll"),
+        monotonic=_MonotonicClock(0.0, 1.0),
+    )
+    context = build_run_context(config=config, output_model=None, create_provider=lambda _cfg: _NoopProvider())
+
+    ingest_job_items(
+        deps,
+        run_id=run_id,
+        job=job,
+        context=context,
+        start_index=0,
+        checkpoint_payload=None,
+    )
+
+    assert calls == ["poll"]

@@ -81,6 +81,17 @@ class RunIngestionSourceRequiredError(RuntimeError):
         self.run_id = run_id
 
 
+class RunSubmissionIndeterminateError(RuntimeError):
+    """Raised when a provider batch-create call may have succeeded before a crash."""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(
+            f"run {run_id} has an indeterminate provider batch creation; inspect the provider before "
+            "calling resolve_indeterminate_submission_as_not_created()"
+        )
+        self.run_id = run_id
+
+
 class StructuredOutputSchemaError(ValueError):
     """Raised when a Pydantic model produces a schema incompatible with OpenAI.
 

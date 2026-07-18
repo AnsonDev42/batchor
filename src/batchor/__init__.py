@@ -36,6 +36,7 @@ from batchor.core.exceptions import (
     RunIngestionSourceRequiredError,
     RunNotFinishedError,
     RunPausedError,
+    RunSubmissionIndeterminateError,
     StructuredOutputSchemaError,
 )
 from batchor.core.models import (
@@ -129,6 +130,7 @@ __all__ = [
     "RunEvent",
     "RunLifecycleStatus",
     "RunIngestionSourceRequiredError",
+    "RunSubmissionIndeterminateError",
     "RunNotFinishedError",
     "RunPausedError",
     "RunSnapshot",

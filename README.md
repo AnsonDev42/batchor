@@ -79,8 +79,8 @@ Durability is split on purpose:
 - the artifact store keeps replayable request JSONL and downloaded raw batch payloads
 
 That split is what allows retries and fresh-process resume without keeping every request inline in the control-plane store.
-On resume, existing active provider batches are polled before `batchor` materializes or submits new local work, so completed batches and retry backoff are reconciled first. During long ingestion, active batches are also reconciled at durable item-chunk boundaries when the configured provider polling interval is due. Polling happens before that chunk's submission attempt, so terminal remote work releases locally accounted enqueue tokens without waiting for the entire source to be materialized. Deterministic sources also use stored checkpoint completion metadata to avoid opening a fully materialized Parquet or composite source just to discover there are no rows left.
-Incomplete checkpointed ingestion keeps the run non-terminal. In the process that
+On resume, existing active provider batches are polled before `batchor` materializes or submits new local work, so completed batches and retry backoff are reconciled first. During long ingestion, active batches are also reconciled at durable work-slice boundaries when the configured provider polling interval is due. Submission backoff never suppresses reconciliation. Fast sources retain the normal 1,000-item persistence path, while slow sources flush partial atomic slices on a time budget so pause, cancellation, polling, and deadlines can be observed. Provider-terminal batches remain locally consumable until every linked item transition and capacity release succeeds, making result consumption replayable after a crash.
+Every newly created run has an incomplete ingestion marker, so even an empty run cannot appear terminal while its first source slice is still being rendered. Incomplete checkpointed ingestion keeps the run non-terminal. In the process that
 started the job, `Run.resume()` can continue from the attached source. After a
 fresh-process rehydration, call `start(job, run_id=...)`; `refresh()` otherwise
 raises `RunIngestionSourceRequiredError` instead of silently completing only the
@@ -329,6 +329,7 @@ run = runner.start(
                 target_ratio=0.7,
                 headroom=50_000,
                 max_batch_enqueued_tokens=500_000,
+                quota_scope="research-account-a",
             ),
         ),
     )
@@ -338,7 +339,7 @@ run.wait()
 print(run.results()[0].output)
 ```
 
-While ingesting or waiting, `batchor` polls active batches before submitting more work when the provider's monotonic polling cadence is due. This avoids one provider request per fast ingestion chunk while allowing long ingestion to reuse capacity released by completed batches. If a refresh consumes a completed batch, records terminal item state, or submits another provider batch, `Run.wait()` immediately continues draining instead of sleeping for the next poll interval.
+While ingesting or waiting, `batchor` polls active batches before submitting more work when the provider's monotonic polling cadence is due. This avoids one provider request per fast ingestion chunk while allowing long ingestion to reuse capacity released by completed batches. OpenAI capacity reservations are atomic and shared across runs by model and `quota_scope`; omit the scope for a conservative store-wide default, or assign stable labels when one store serves multiple accounts/projects. If a refresh consumes a completed batch, records terminal item state, or submits another provider batch, `Run.wait()` immediately continues draining instead of sleeping for the next poll interval.
 
 Structured-output models are validated up front against the OpenAI strict-schema subset used by `batchor`.
 
@@ -583,6 +584,8 @@ Current events include run creation/resume, automatic quota pause, item ingestio
 - Item `attempt_count` means consumed provider attempts: successful submitted completions increment it, counted item-level failures increment it, and local or batch-level retry/reset paths that did not consume an item attempt leave it unchanged.
 - Durable artifacts now go through an `ArtifactStore` seam. The built-in implementation is `LocalArtifactStore`, intended for local disk or a shared mounted volume.
 - Fresh-process resume requeues any locally claimed but not yet submitted items before continuing, so a process crash after request-artifact persistence does not strand work in `queued_local`.
+- Batch creation uses a durable submission intent. If the process or connection fails after the provider may have created remote work, advancement raises `RunSubmissionIndeterminateError` instead of silently duplicating execution. After inspecting the provider, resolve the intent with `resolve_indeterminate_submission_as_created(provider_batch_id=..., status=...)` or `resolve_indeterminate_submission_as_not_created()`.
+- `Run.wait(timeout=...)` propagates its deadline through library-controlled ingestion and polling boundaries and never starts another provider operation after expiry. An already-running arbitrary Python callback or provider SDK call remains subject to that operation's own timeout and cannot be forcibly interrupted safely.
 
 ## Durable artifacts
 
