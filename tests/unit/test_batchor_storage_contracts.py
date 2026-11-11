@@ -601,3 +601,121 @@ def test_postgres_dsn_normalization_uses_psycopg3_driver() -> None:
     assert _normalize_postgres_dsn("postgresql+psycopg://user:pass@localhost/db") == (
         "postgresql+psycopg://user:pass@localhost/db"
     )
+
+
+def test_sql_storage_concurrent_terminal_results_have_distinct_cursors(storage, monkeypatch):
+    if isinstance(storage, MemoryStateStore):
+        pytest.skip("SQL transaction ordering regression")
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Event
+
+    storage.create_run(run_id="concurrent_results", config=_config(), items=_items())
+    storage.claim_items_for_submission(run_id="concurrent_results", max_attempts=2)
+    storage.register_batch(
+        run_id="concurrent_results",
+        local_batch_id="local",
+        provider_batch_id="remote",
+        status="submitted",
+        custom_ids=["row1:a1", "row2:a1"],
+    )
+    storage.mark_items_submitted(
+        run_id="concurrent_results",
+        provider_batch_id="remote",
+        submissions=[
+            PreparedSubmission(item_id="row1", custom_id="row1:a1", submission_tokens=1),
+            PreparedSubmission(item_id="row2", custom_id="row2:a1", submission_tokens=1),
+        ],
+    )
+    original = storage._next_terminal_sequence
+    start = Barrier(2)
+    read_once = Event()
+    read_twice = Event()
+
+    def delayed_sequence(conn, run_id):
+        sequence = original(conn, run_id)
+        if read_once.is_set():
+            read_twice.set()
+        else:
+            read_once.set()
+            read_twice.wait(timeout=0.2)
+        return sequence
+
+    monkeypatch.setattr(storage, "_next_terminal_sequence", delayed_sequence)
+
+    def complete(custom_id):
+        start.wait(timeout=5)
+        storage.mark_items_completed(
+            run_id="concurrent_results",
+            completions=[CompletedItemRecord(custom_id=custom_id, output_text="ok", raw_response={})],
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(complete, ["row1:a1", "row2:a1"]))
+    first = storage.get_terminal_item_records(run_id="concurrent_results", after_sequence=0, limit=1)
+    second = storage.get_terminal_item_records(
+        run_id="concurrent_results", after_sequence=first[0].terminal_result_sequence, limit=1
+    )
+    assert len(second) == 1
+    assert first[0].item_id != second[0].item_id
+    assert [first[0].terminal_result_sequence, second[0].terminal_result_sequence] == [1, 2]
+
+
+def test_sqlite_concurrent_claims_do_not_duplicate_items(storage):
+    if not isinstance(storage, SQLiteStorage):
+        pytest.skip("SQLite claim transaction regression")
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from time import sleep
+
+    from sqlalchemy import event
+
+    storage.create_run(run_id="concurrent_claims", config=_config(), items=_items())
+    start = Barrier(2)
+
+    def delay_select(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("SELECT items."):
+            sleep(0.05)
+
+    event.listen(storage.engine, "after_cursor_execute", delay_select)
+
+    def claim(_):
+        start.wait(timeout=5)
+        return storage.claim_items_for_submission(run_id="concurrent_claims", max_attempts=2, limit=1)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            claims = list(pool.map(claim, range(2)))
+        assert sorted(item.item_id for chunk in claims for item in chunk) == ["row1", "row2"]
+    finally:
+        event.remove(storage.engine, "after_cursor_execute", delay_select)
+
+
+def test_sql_storage_refuses_to_downgrade_a_newer_schema(storage):
+    if isinstance(storage, MemoryStateStore):
+        pytest.skip("SQL schema version regression")
+    from sqlalchemy import select, update
+
+    from batchor.storage.sqlite_schema import STORAGE_METADATA_TABLE
+
+    with storage.engine.begin() as conn:
+        conn.execute(
+            update(STORAGE_METADATA_TABLE).where(STORAGE_METADATA_TABLE.c.key == "schema_version").values(value="999")
+        )
+    with pytest.raises(ValueError, match="newer.*schema|schema.*newer"):
+        storage._ensure_schema()
+    with storage.engine.begin() as conn:
+        assert (
+            conn.execute(
+                select(STORAGE_METADATA_TABLE.c.value).where(STORAGE_METADATA_TABLE.c.key == "schema_version")
+            ).scalar_one()
+            == "999"
+        )
+
+
+@pytest.mark.parametrize("control_state", [RunControlState.PAUSED, RunControlState.RUNNING])
+def test_cancellation_cannot_be_reversed_by_a_later_control_write(storage, control_state):
+    storage.create_run(run_id="sticky_cancel", config=_config(), items=_items())
+    storage.set_run_control_state(run_id="sticky_cancel", control_state=RunControlState.CANCEL_REQUESTED)
+    with pytest.raises(ValueError, match="cancelling"):
+        storage.set_run_control_state(run_id="sticky_cancel", control_state=control_state)
+    assert storage.get_run_control_state(run_id="sticky_cancel") is RunControlState.CANCEL_REQUESTED

@@ -1484,3 +1484,43 @@ def test_submission_backoff_does_not_suppress_ingestion_reconciliation() -> None
     )
 
     assert calls == ["poll"]
+
+
+def test_checkpoint_deadline_persists_partial_slice_before_advancing(tmp_path):
+    clock = _MutableClock(0)
+    path = tmp_path / "deadline.jsonl"
+    path.write_text('{"id":"row0"}\n{"id":"row1"}\n', encoding="utf-8")
+    source = JsonlItemSource(path, item_id_from_row=lambda row: row["id"], payload_from_row=lambda row: row)
+
+    def prompt(item):
+        clock.value = 2
+        return item.item_id
+
+    job = BatchJob(items=source, build_prompt=prompt, provider_config=OpenAIProviderConfig(model="m"))
+    config = build_persisted_config(job)
+    state = MemoryStateStore()
+    state.create_run(run_id="deadline", config=config, items=[])
+    identity = source.source_identity()
+    state.set_ingest_checkpoint(
+        run_id="deadline",
+        checkpoint=IngestCheckpoint(
+            source_kind=identity.source_kind,
+            source_ref=identity.source_ref,
+            source_fingerprint=identity.source_fingerprint,
+            checkpoint_payload=0,
+        ),
+    )
+    deps = IngestionDeps(
+        state=state,
+        emit_event=lambda *a, **k: None,
+        submit_pending_items=lambda *a, **k: pytest.fail("deadline expired"),
+        configs_match_for_resume=lambda a, b: a == b,
+        monotonic=clock,
+    )
+    context = build_run_context(config=config, output_model=None, create_provider=lambda _: _NoopProvider())
+    ingest_job_items(deps, run_id="deadline", job=job, context=context, start_index=0, checkpoint_payload=0, deadline=1)
+    assert [item.item_id for item in state.get_item_records(run_id="deadline")] == ["row0"]
+    checkpoint = state.get_ingest_checkpoint(run_id="deadline")
+    assert checkpoint.next_item_index == 1
+    assert checkpoint.checkpoint_payload == 1
+    assert not checkpoint.ingestion_complete

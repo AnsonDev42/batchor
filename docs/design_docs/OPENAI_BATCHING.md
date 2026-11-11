@@ -62,6 +62,24 @@ The execution cycle reports durable progress explicitly to `Run.wait()`, so the
 wait loop immediately drains productive poll/submission cycles and sleeps only
 when a cycle makes no durable progress, respecting any persisted retry backoff.
 
+Capacity admission now precedes writing the next request artifact, so a run
+blocked by another run's reservation does not accumulate a new file on each
+refresh. Preparation, write, staging, and upload failures release claims and
+reservations; ambiguous create outcomes retain the durable intent. Replay uses
+direct indexed access to cached lines.
+
+A request exceeding `ChunkPolicy.max_file_bytes` is rejected locally with
+`request_exceeds_max_file_bytes`, zero consumed attempts, and no provider
+upload. The low-level chunking utility still preserves oversized singleton
+rows for callers that use it directly; submission enforces the configured cap.
+
+The built-in OpenAI adapter uses `with_options(max_retries=0)` for batch
+creation when the client exposes that SDK API. Automatic SDK retries of a
+transient POST could otherwise create multiple remote batches inside a single
+Batchor call. Polling/upload retain their existing client retry settings.
+Custom client/provider implementations must preserve this create-once-call
+boundary themselves; an ambiguous response still requires operator resolution.
+
 ## Raw output retention
 
 When OpenAI output or error files are downloaded, `batchor` persists them as raw artifacts unless the run opts out through `ArtifactPolicy(persist_raw_output_artifacts=False)`.
@@ -85,6 +103,10 @@ When raw retention is enabled, those files are only prunable after `Run.export_a
 ## Response parsing
 
 `batchor` treats OpenAI response parsing as a compatibility surface rather than assuming one rigid payload shape.
+
+A non-null top-level `error` in an output JSONL row is an item failure even
+when `response` is null. It must not become a completed text item with empty
+output. HTTP error responses continue to follow the item-error path.
 
 For text extraction it currently handles:
 

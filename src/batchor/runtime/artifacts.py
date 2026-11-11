@@ -104,18 +104,15 @@ def load_request_artifact_line(
             encoding="utf-8",
         ).splitlines()
         cache.lines_by_path[artifact_path] = lines
-    for index, raw_line in enumerate(lines, start=1):
-        if index != line_number:
-            continue
-        record = json.loads(raw_line)
-        if not isinstance(record, dict):
-            raise TypeError(f"request artifact line must be a JSON object: {artifact_path}:{line_number}")
-        request_line = cast(JSONObject, record)
-        actual_sha256 = request_sha256(request_line)
-        if actual_sha256 != expected_sha256:
-            raise ValueError(f"request artifact hash mismatch for {artifact_path}:{line_number}")
-        return request_line
-    raise FileNotFoundError(f"request artifact line missing: {artifact_path}:{line_number}")
+    if line_number > len(lines):
+        raise FileNotFoundError(f"request artifact line missing: {artifact_path}:{line_number}")
+    record = json.loads(lines[line_number - 1])
+    if not isinstance(record, dict):
+        raise TypeError(f"request artifact line must be a JSON object: {artifact_path}:{line_number}")
+    request_line = cast(JSONObject, record)
+    if request_sha256(request_line) != expected_sha256:
+        raise ValueError(f"request artifact hash mismatch for {artifact_path}:{line_number}")
+    return request_line
 
 
 def write_batch_result_artifacts(

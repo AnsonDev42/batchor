@@ -20,6 +20,7 @@ from batchor.runtime.retry import (
     is_insufficient_quota_error,
     is_retryable_batch_control_plane_error,
 )
+from batchor.runtime.submission import PendingItemSubmitter, submit_with_deadline
 from batchor.runtime.validation import parse_structured_response
 from batchor.storage.state import (
     BatchArtifactPointer,
@@ -64,7 +65,7 @@ def refresh_run(
     *,
     run_id: str,
     context: RunContext,
-    submit_pending_items: Callable[[str, RunContext], int],
+    submit_pending_items: PendingItemSubmitter,
     deadline: float | None = None,
 ) -> RunSummary:
     """Perform one poll-and-submit cycle and return the updated summary.
@@ -101,7 +102,7 @@ def refresh_run(
             deps.state.clear_batch_retry_backoff(run_id=run_id)
         return deps.state.get_run_summary(run_id=run_id)
     if not _deadline_expired(deadline):
-        submit_pending_items(run_id, context)
+        submit_with_deadline(submit_pending_items, run_id, context, deadline=deadline)
     return deps.state.get_run_summary(run_id=run_id)
 
 

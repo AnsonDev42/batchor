@@ -59,6 +59,8 @@ Vertex AI:
 3. poll with `client.batches.get`
 4. read every output object from the returned `output_info.gcs_output_directory`
 
+A JSONL row containing `error: null` and a response object is a success; only a non-null error overrides that response.
+
 Terminal states normalize to batchor's generic `completed`, `failed`, `cancelled`, and `expired` states. Vertex rows with a non-empty `status` become item errors; rows with an object `response` and empty status become successes.
 
 ## Durable replay

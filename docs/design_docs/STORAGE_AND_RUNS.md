@@ -122,6 +122,18 @@ Important operational rule:
 
 Postgres stores the control plane, not the large request/output files themselves.
 
+Both SQL backends serialize terminal-result cursor allocation with the item
+write by locking the run within the same transaction. Concurrent result
+consumers therefore cannot publish the same cursor and cause paginated exports
+to skip an item. SQLite also obtains its write transaction before selecting
+claimable items. Postgres retains its `FOR UPDATE SKIP LOCKED` claim path.
+Startup refuses schema metadata newer than the supported version instead of
+silently overwriting it. This change keeps schema version 6 and adds no columns.
+
+Use one execution owner per run. Shared stores can coordinate distinct runs;
+per-run distributed execution leases are `TBD`, and storage transaction
+protections do not authorize concurrent runtime advancement of the same run.
+
 ## Attempt accounting
 
 Item `attempt_count` records consumed provider attempts.
@@ -159,6 +171,23 @@ Every run receives a generic incomplete-ingestion row atomically with run creati
 
 Schema upgrade backfills every run missing a generic marker as ingestion-incomplete and records its current materialized item count. Storage cannot distinguish a completed arbitrary iterable from one paused between chunks, even when some items already exist, so assuming completion would preserve the false-terminal race. An empty source can be safely reattached from index zero; a partially materialized non-checkpointable legacy source must be treated as an abandoned tail and explicitly cancelled after any active batches drain.
 
+On each identity check, a composite source reads its children's current
+identities instead of reusing fingerprints from construction. Namespace IDs
+remain stable for the same ordered source paths. File fingerprints still use
+path, size, and modification time, so inputs must remain immutable during a run.
+
+An arbitrary iterator's in-process session retains both its uncommitted slice
+and the item whose prompt failed. Atomic append failure can be retried without
+skipping those rows. If the iterator itself raises, subsequent advancement
+raises `RunIngestionSourceRequiredError`; a closed generator must not silently
+turn a partial source into a successful run. Cancel that run or restart with a
+new run ID / checkpointable source. These buffers are not durable across a
+process crash. Jobs are detached once ingestion completes or cancellation
+finalizes the checkpoint.
+
+A checkpointed slice rendered before deadline expiry is persisted before its
+checkpoint advances, even when no upload is permitted in that cycle.
+
 ## Rehydration rules
 
 `runner.get_run(run_id)` must work from a fresh runner when it points at the same durable storage.
@@ -170,6 +199,11 @@ Resume happens at multiple layers:
 - fresh-process recovery requeues local-but-not-submitted items back to `pending`
 - deterministic built-in sources can resume ingestion from a checkpoint when the
   source fingerprint still matches
+
+Resume validates config and incomplete-source identity before replacing an
+attached context or polling active batches. A rejected attachment leaves the
+previous executable context and job in place. Cancellation can abandon the
+source tail without requiring the source to remain available.
 
 Successful rehydration depends on:
 
@@ -238,6 +272,20 @@ After a terminal run, the usual flow is:
 3. Call `prune_artifacts(include_raw_output_artifacts=True)` only after export
    if you also want to remove raw provider payloads.
 
+Local artifact writes use a private temporary file, flush it, and atomically
+replace the destination; encoding/write failures preserve a prior artifact.
+Created directories use `0700` and files use `0600`. Existing symlinks escaping
+the artifact/export root are rejected. Generated `results.jsonl` and
+`manifest.json` paths are both checked before any export writes, preserving
+existing files and export metadata if either leaf escapes. This assumes the private store directory
+is not concurrently modified by another actor.
+
+Run IDs must be non-empty relative paths without `..` or absolute roots.
+Raw-prune export prerequisites are checked before deleting any request/raw
+artifact or clearing any pointer. A failed precondition is side-effect free;
+filesystem deletion failures during an approved prune can still leave partial
+progress and can be retried.
+
 ## Run control semantics
 
 Run lifecycle status and control state are separate:
@@ -266,6 +314,10 @@ source.
 Manual pauses record `control_reason="manual"`. OpenAI upload/create/polling and batch-level insufficient-quota pauses record `control_reason="openai_insufficient_quota"`, clear batch-control-plane backoff, and preserve affected items for later retry without consuming attempts.
 
 Row-level insufficient-quota records inside completed batch outputs do not pause the run. Those items are stored as `failed_retryable` with `error_class="openai_insufficient_quota"`, do not consume attempts, and rely on retry backoff before they are submitted again.
+
+The state stores reject attempts to change `cancel_requested` back to paused or
+running. In particular, `cancel()` followed by `pause()` cannot reopen a run for
+`resume()`. The SQL guard is part of the update itself.
 
 Auto-pause must not overwrite `cancel_requested`. Cancellation is non-reversible, so quota errors observed while draining already-submitted batches leave the run in cancel flow.
 

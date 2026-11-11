@@ -253,6 +253,10 @@ class ParquetItemSource(CheckpointedItemSource[PayloadT], Generic[PayloadT]):
 
         parquet_file = pq.ParquetFile(self.path)
         source_ref = str(self.path.resolve())
+        source_item_offset = sum(
+            parquet_file.metadata.row_group(index).num_rows
+            for index in range(min(row_group_index, parquet_file.num_row_groups))
+        )
         for current_row_group_index in range(row_group_index, parquet_file.num_row_groups):
             table = parquet_file.read_row_group(current_row_group_index, columns=self.columns)
             payload_by_column = table.to_pydict()
@@ -278,16 +282,13 @@ class ParquetItemSource(CheckpointedItemSource[PayloadT], Generic[PayloadT]):
                         metadata=_lineage_metadata(
                             metadata,
                             source_ref=source_ref,
-                            source_item_index=sum(
-                                parquet_file.metadata.row_group(index).num_rows
-                                for index in range(current_row_group_index)
-                            )
-                            + current_row_index,
+                            source_item_index=source_item_offset + current_row_index,
                             source_primary_key=row_id,
                             partition_id=str(current_row_group_index),
                         ),
                     ),
                 )
+            source_item_offset += table.num_rows
 
     def checkpoint_is_complete(self, checkpoint: JSONValue) -> bool:
         """Return whether a Parquet checkpoint points beyond the last row group."""

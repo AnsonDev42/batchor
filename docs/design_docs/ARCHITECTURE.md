@@ -478,6 +478,38 @@ That split gives `batchor`:
 24. OpenAI enqueue capacity is reserved atomically across runs by a stable provider/model/quota scope without persisting credential-derived identities.
 25. `wait(timeout=...)` is cooperative: the deadline bounds sleeps and prevents new library-controlled work, while an already-running user callback or provider SDK call is governed by its own timeout.
 
+## Failure boundaries verified in the 2026-11 review
+
+- Resume compatibility is checked before provider construction, context/job
+  replacement, claim recovery, or polling. Composite sources refresh child
+  identities when checked.
+- Arbitrary-iterator sessions own an uncommitted materialization buffer and the
+  item currently being rendered. The buffer is cleared only after atomic
+  append, before polling/submission. An iterator error cannot become a
+  successful EOF on the next refresh. Completed ingestion releases the job.
+- Submission has one cleanup owner for local claims and a per-chunk intent
+  boundary. Capacity is reserved before writing another request artifact.
+  Before remote create, failures abandon the reservation; after create may have
+  started, the intent remains protected until linkage or operator resolution.
+- OpenAI and Anthropic creation disable SDK automatic retries when supported;
+  the durable intent layer owns ambiguous create recovery.
+- The same deadline reaches polling and submission. A confirmed create is
+  finalized even if its SDK call crosses the deadline. Best-effort cleanup of
+  an uploaded but unsubmitted input can also extend the deadline.
+- SQLite claims acquire a write transaction before selecting candidates.
+  Terminal-result writers in both SQL backends lock the run before allocating
+  a cursor and hold that lock through the item update.
+- Export preflight validates the run directory and both generated result and
+  manifest paths before copying artifacts or replacing an earlier export.
+- Request replay indexes cached lines directly instead of rescanning from the
+  start for each row. Parquet lineage offsets are accumulated once per row
+  group. Anthropic polling returns a result pointer; downloads happen at the
+  runtime download boundary without retaining every completed batch in memory.
+
+The existing provider/runtime/storage boundaries are retained. The SQL mixins
+still have historical SQLite names although Postgres reuses them; renaming or
+replacing this layer would add churn without resolving another proven failure.
+
 ## Extension seams
 
 The code is shaped for future providers and backends, but within explicit boundaries:
@@ -495,6 +527,12 @@ The code is shaped for future providers and backends, but within explicit bounda
 - the only built-in artifact backend is local filesystem storage
 - arbitrary non-checkpointable iterables do not support mid-ingest crash recovery
 - the CLI does not expose the full Python API surface
+
+Execution currently assumes one active owner per run. Concurrent quota
+reservations across separate runs and transaction-safe storage operations do
+not make concurrent `start()`/`refresh()` calls on the same run safe. Recovery
+can requeue another owner's `queued_local` work. Distributed run leases are
+`TBD`.
 
 ## TBD
 

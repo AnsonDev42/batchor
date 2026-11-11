@@ -356,7 +356,7 @@ class GeminiBatchProvider(BatchProvider):
                 continue
             status = record.get("status")
             failed = (
-                "error" in record
+                record.get("error") is not None
                 or (isinstance(status, str) and bool(status.strip()))
                 or not isinstance(record.get("response"), dict)
             )

@@ -39,10 +39,11 @@ from batchor.runtime.ingestion import (
     checkpointed_source,
     ingest_job_items,
     resume_existing_run,
+    validate_resume,
 )
 from batchor.runtime.polling import PollingDeps, poll_once
 from batchor.runtime.results import result_from_record, results_for_records, serialize_result, write_results_export
-from batchor.runtime.run_handle import Run, generate_run_id
+from batchor.runtime.run_handle import Run, generate_run_id, validate_run_id
 from batchor.runtime.submission import SubmissionDeps, submit_pending_items
 from batchor.storage.registry import StorageRegistry, build_default_storage_registry
 from batchor.storage.state import IngestCheckpoint, PersistedRunConfig, StateStore
@@ -137,8 +138,12 @@ class BatchRunner:
         Returns:
             Durable run handle for the run.
         """
-        resolved_run_id = run_id or generate_run_id()
+        resolved_run_id = generate_run_id() if run_id is None else run_id
+        validate_run_id(resolved_run_id)
         config = build_persisted_config(job)
+        exists = self.state.has_run(run_id=resolved_run_id)
+        if exists:
+            validate_resume(self._ingestion_deps, run_id=resolved_run_id, job=job, config=config)
         context = build_run_context(
             config=config,
             output_model=job.structured_output,
@@ -146,7 +151,7 @@ class BatchRunner:
         )
         self._contexts[resolved_run_id] = context
         self._executor.start_or_attach(run_id=resolved_run_id, job=job)
-        if self.state.has_run(run_id=resolved_run_id):
+        if exists:
             self._emit_event(
                 "run_resumed",
                 run_id=resolved_run_id,
@@ -186,6 +191,7 @@ class BatchRunner:
                 start_index=0,
                 checkpoint_payload=source.initial_checkpoint() if source is not None else None,
             )
+        self._executor.release_ingested_source(resolved_run_id)
         return self._run_handle(resolved_run_id)
 
     def run_and_wait(
@@ -389,7 +395,17 @@ class BatchRunner:
         summary = self.state.get_run_summary(run_id=run_id)
         self._require_artifact_terminal_status(run_id=run_id, status=summary.status)
         destination_root = Path(destination_dir).expanduser().resolve()
+        validate_run_id(run_id)
         export_root = destination_root / run_id
+        if not export_root.resolve().is_relative_to(destination_root):
+            raise ValueError("run export directory must not escape destination through a symlink")
+        results_path = export_root / "results.jsonl"
+        manifest_path = export_root / "manifest.json"
+        # Check both generated leaves before copying artifacts or replacing an
+        # earlier export: a safe run directory can contain an escaping symlink.
+        for generated_path in (results_path, manifest_path):
+            if not generated_path.resolve().is_relative_to(export_root.resolve()):
+                raise ValueError("generated export file must not escape export directory through a symlink")
         export_root.mkdir(parents=True, exist_ok=True)
         inventory = self.state.get_artifact_inventory(run_id=run_id)
         exported_artifact_paths: list[str] = []
@@ -398,12 +414,10 @@ class BatchRunner:
         ):
             self.artifact_store.export_to_directory(artifact_path, export_root)
             exported_artifact_paths.append(artifact_path)
-        results_path = export_root / "results.jsonl"
         write_results_export(
             results_path=results_path,
             results=self._results_for_run(run_id),
         )
-        manifest_path = export_root / "manifest.json"
         manifest_path.write_text(
             json.dumps(
                 {
@@ -455,6 +469,8 @@ class BatchRunner:
         summary = self.state.get_run_summary(run_id=run_id)
         self._require_artifact_terminal_status(run_id=run_id, status=summary.status)
         inventory = self.state.get_artifact_inventory(run_id=run_id)
+        if include_raw_output_artifacts and (inventory.exported_at is None or inventory.export_root is None):
+            raise ValueError(f"raw output artifacts require export before pruning: {run_id}")
         removed: list[str] = []
         missing: list[str] = []
         request_artifact_paths = inventory.request_artifact_paths
@@ -468,8 +484,6 @@ class BatchRunner:
             cleared_item_pointers = 0
         cleared_batch_pointers = 0
         if include_raw_output_artifacts:
-            if inventory.exported_at is None or inventory.export_root is None:
-                raise ValueError(f"raw output artifacts require export before pruning: {run_id}")
             raw_artifact_paths = inventory.output_artifact_paths + inventory.error_artifact_paths
             if raw_artifact_paths:
                 raw_removed, raw_missing = remove_artifacts(self.artifact_store, raw_artifact_paths)
@@ -573,11 +587,14 @@ class BatchRunner:
         self,
         run_id: str,
         context: RunContext | None = None,
+        *,
+        deadline: float | None = None,
     ) -> int:
         return submit_pending_items(
             self._submission_deps,
             run_id=run_id,
             context=context or self._context_for_run(run_id),
+            deadline=deadline,
         )
 
     def _advance_run(self, run_id: str, *, deadline: float | None = None) -> CycleOutcome:

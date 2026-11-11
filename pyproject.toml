@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "batchor"
-version = "0.0.7"
+version = "0.0.8"
 description = "Structured-first provider Batch runner with typed Pydantic results."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -66,6 +66,9 @@ docs = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/batchor"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/handoff"]
 
 [tool.pytest.ini_options]
 addopts = "-q -n auto --strict-config --strict-markers --cov=src --cov-report=term-missing --cov-fail-under=85"

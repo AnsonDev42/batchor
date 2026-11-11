@@ -245,14 +245,13 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
         control_reason: str | None = None,
     ) -> None:
         with self.engine.begin() as conn:
-            conn.execute(
-                update(RUNS_TABLE)
-                .where(RUNS_TABLE.c.run_id == run_id)
-                .values(
-                    control_state=control_state,
-                    control_reason=control_reason,
-                )
-            )
+            statement = update(RUNS_TABLE).where(RUNS_TABLE.c.run_id == run_id)
+            if control_state is not RunControlState.CANCEL_REQUESTED:
+                statement = statement.where(RUNS_TABLE.c.control_state != RunControlState.CANCEL_REQUESTED)
+            updated = conn.execute(statement.values(control_state=control_state, control_reason=control_reason))
+            if updated.rowcount == 0:
+                self._fetch_run_row(conn, run_id)
+                raise ValueError(f"run {run_id} is cancelling and cannot change control state")
 
     def claim_items_for_submission(
         self,
@@ -262,6 +261,10 @@ class SQLiteLifecycleMixin(SQLiteStorageProtocol):
         limit: int | None = None,
     ) -> list[ClaimedItem]:
         with self.engine.begin() as conn:
+            # Acquire SQLite's write transaction before reading candidates.
+            # A deferred SELECT followed by UPDATE lets two connections claim
+            # the same pending rows. Postgres overrides this with SKIP LOCKED.
+            conn.execute(update(RUNS_TABLE).where(RUNS_TABLE.c.run_id == run_id).values(status=RUNS_TABLE.c.status))
             query = (
                 select(ITEMS_TABLE)
                 .where(

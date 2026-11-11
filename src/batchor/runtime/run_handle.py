@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -27,6 +28,16 @@ from batchor.core.models import (
 
 if TYPE_CHECKING:
     from batchor.runtime.runner import BatchRunner
+
+
+def validate_run_id(run_id: str) -> None:
+    """Run identifiers are also relative artifact/export directory names."""
+    if not isinstance(run_id, str) or not run_id.strip() or "\0" in run_id:
+        raise ValueError("run_id must be a non-empty relative path")
+    for path_type in (PurePosixPath, PureWindowsPath):
+        path = path_type(run_id)
+        if path.anchor or ".." in path.parts or str(path) == ".":
+            raise ValueError("run_id must be a relative path without parent traversal")
 
 
 def generate_run_id() -> str:

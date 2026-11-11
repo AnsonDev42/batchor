@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from contextlib import AbstractContextManager
 from pathlib import Path
 
@@ -69,9 +70,23 @@ class LocalArtifactStore(ArtifactStore):
         """
         path = self.resolve_path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._restrict_permissions(path.parent, is_dir=True)
-        path.write_text(content, encoding=encoding)
-        self._restrict_permissions(path, is_dir=False)
+        for directory in (path.parent, *path.parent.parents):
+            if directory == self.root:
+                break
+            self._restrict_permissions(directory, is_dir=True)
+        # Never truncate a retained artifact until its complete replacement
+        # has been encoded and flushed. The temporary file starts at 0o600.
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding=encoding, dir=path.parent, delete=False) as handle:
+                temporary_path = Path(handle.name)
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def read_text(self, key: str, *, encoding: str = "utf-8") -> str:
         """Read text content from ``root / key``.
@@ -141,7 +156,9 @@ class LocalArtifactStore(ArtifactStore):
             Absolute path to the copied file.
         """
         source_path = self.resolve_path(key)
-        target_path = Path(destination_root).expanduser().resolve() / self._validated_relative_path(key)
+        destination = Path(destination_root).expanduser().resolve()
+        target_path = destination / self._validated_relative_path(key)
+        self._require_contained_path(target_path, destination)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, target_path)
         return target_path
@@ -158,7 +175,14 @@ class LocalArtifactStore(ArtifactStore):
         Raises:
             ValueError: If *key* is invalid.
         """
-        return self.root / self._validated_relative_path(key)
+        path = self.root / self._validated_relative_path(key)
+        self._require_contained_path(path, self.root)
+        return path
+
+    @staticmethod
+    def _require_contained_path(path: Path, root: Path) -> None:
+        if not path.resolve().is_relative_to(root):
+            raise ValueError(f"artifact path must not escape root through a symlink: {path}")
 
     @staticmethod
     def _validated_relative_path(key: str) -> Path:

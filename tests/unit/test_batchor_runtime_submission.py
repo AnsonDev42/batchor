@@ -429,3 +429,133 @@ def test_submit_pending_items_auto_pauses_on_insufficient_quota_create_failure(t
     assert summary.control_reason == "openai_insufficient_quota"
     assert summary.backoff_remaining_sec == 0.0
     assert any(event_type == "run_auto_paused" for event_type, _kwargs in events)
+
+
+@pytest.mark.parametrize("phase", ["build", "write", "stage", "upload"])
+def test_precreate_failure_releases_claims_and_capacity(tmp_path, monkeypatch, phase):
+    provider = _FakeSubmissionProvider()
+    storage = MemoryStateStore()
+    artifacts = LocalArtifactStore(tmp_path / "artifacts")
+    job = BatchJob(
+        items=[],
+        build_prompt=str,
+        provider_config=OpenAIProviderConfig(
+            model="gpt-4.1", enqueue_limits=OpenAIEnqueueLimitConfig(enqueued_token_limit=100, target_ratio=1)
+        ),
+    )
+    config = build_persisted_config(job)
+    context = build_run_context(config=config, output_model=None, create_provider=lambda _: provider)
+    storage.create_run(run_id="review_submit", config=config, items=[_materialized_text_item("row", 0, "hello")])
+    target, method = {
+        "build": (provider, "build_request_line"),
+        "write": (artifacts, "write_text"),
+        "stage": (artifacts, "stage_local_copy"),
+        "upload": (provider, "upload_input_file"),
+    }[phase]
+    original = getattr(target, method)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected failure")
+
+    monkeypatch.setattr(target, method, fail)
+    deps = SubmissionDeps(state=storage, artifact_store=artifacts, emit_event=lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match="injected failure"):
+        submit_pending_items(deps, run_id="review_submit", context=context)
+    assert storage.get_item_records(run_id="review_submit")[0].status is ItemStatus.PENDING
+    assert not storage.has_indeterminate_submission_intents(run_id="review_submit")
+    monkeypatch.setattr(target, method, original)
+    assert submit_pending_items(deps, run_id="review_submit", context=context) == 1
+
+
+@pytest.mark.parametrize("phase", ["prepare", "upload", "create"])
+def test_submission_deadline_stops_new_remote_work_but_finalizes_created_batch(tmp_path, monkeypatch, phase):
+    clock = [0.0]
+    monkeypatch.setattr("batchor.runtime.submission.monotonic", lambda: clock[0])
+    provider = _FakeSubmissionProvider()
+    state = MemoryStateStore()
+    artifacts = LocalArtifactStore(tmp_path / "artifacts")
+    job = BatchJob(
+        items=[],
+        build_prompt=str,
+        provider_config=OpenAIProviderConfig(model="m"),
+        chunk_policy=ChunkPolicy(max_requests=1),
+    )
+    config = build_persisted_config(job)
+    context = build_run_context(config=config, output_model=None, create_provider=lambda _: provider)
+    state.create_run(
+        run_id="deadline",
+        config=config,
+        items=[_materialized_text_item("row0", 0, "hello"), _materialized_text_item("row1", 1, "hello")],
+    )
+    method = {"prepare": "build_request_line", "upload": "upload_input_file", "create": "create_batch"}[phase]
+    original = getattr(provider, method)
+
+    def slow(*args, **kwargs):
+        result = original(*args, **kwargs)
+        clock[0] = 2
+        return result
+
+    monkeypatch.setattr(provider, method, slow)
+    count = submit_pending_items(
+        SubmissionDeps(state=state, artifact_store=artifacts, emit_event=lambda *a, **k: None),
+        run_id="deadline",
+        context=context,
+        deadline=1,
+    )
+    assert count == (1 if phase == "create" else 0)
+    assert len(provider.created_batches) == count
+    assert not state.has_indeterminate_submission_intents(run_id="deadline")
+    assert state.get_run_summary(run_id="deadline").status_counts.get(ItemStatus.QUEUED_LOCAL, 0) == 0
+    if phase == "upload":
+        assert provider.deleted_files == ["file_0"]
+
+
+def test_capacity_blocked_cycles_do_not_accumulate_request_artifacts(tmp_path):
+    provider = _FakeSubmissionProvider()
+    state = MemoryStateStore()
+    artifacts = LocalArtifactStore(tmp_path / "artifacts")
+    job = BatchJob(
+        items=[],
+        build_prompt=str,
+        chunk_policy=ChunkPolicy(max_requests=1),
+        provider_config=OpenAIProviderConfig(
+            model="m", enqueue_limits=OpenAIEnqueueLimitConfig(enqueued_token_limit=7, target_ratio=1)
+        ),
+    )
+    config = build_persisted_config(job)
+    state.create_run(
+        run_id="capacity",
+        config=config,
+        items=[_materialized_text_item("row0", 0, "hello"), _materialized_text_item("row1", 1, "hello")],
+    )
+    context = build_run_context(config=config, output_model=None, create_provider=lambda _: provider)
+    deps = SubmissionDeps(state=state, artifact_store=artifacts, emit_event=lambda *a, **k: None)
+    assert submit_pending_items(deps, run_id="capacity", context=context) == 1
+    for _ in range(3):
+        assert submit_pending_items(deps, run_id="capacity", context=context) == 0
+    files = list(artifacts.root.rglob("*.jsonl"))
+    assert len(files) == 1
+    assert state.get_run_summary(run_id="capacity").status_counts[ItemStatus.PENDING] == 1
+
+
+def test_request_exceeding_file_limit_fails_locally_without_an_attempt(tmp_path):
+    provider = _FakeSubmissionProvider()
+    state = MemoryStateStore()
+    job = BatchJob(
+        items=[],
+        build_prompt=str,
+        provider_config=OpenAIProviderConfig(model="m"),
+        chunk_policy=ChunkPolicy(max_file_bytes=1),
+    )
+    config = build_persisted_config(job)
+    state.create_run(run_id="oversized", config=config, items=[_materialized_text_item("row", 0, "hello")])
+    context = build_run_context(config=config, output_model=None, create_provider=lambda _: provider)
+    deps = SubmissionDeps(
+        state=state, artifact_store=LocalArtifactStore(tmp_path / "artifacts"), emit_event=lambda *a, **k: None
+    )
+    assert submit_pending_items(deps, run_id="oversized", context=context) == 0
+    [record] = state.get_item_records(run_id="oversized")
+    assert record.status is ItemStatus.FAILED_PERMANENT
+    assert record.error.error_class == "request_exceeds_max_file_bytes"
+    assert record.attempt_count == 0
+    assert provider.created_batches == []

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -353,3 +354,11 @@ def test_resolve_gemini_api_key_requires_explicit_or_environment(
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(ValueError, match="Gemini API key is required"):
         resolve_gemini_api_key(GeminiProviderConfig(model="gemini-2.5-flash"))
+
+
+def test_gemini_null_error_does_not_override_success():
+    provider = GeminiBatchProvider(GeminiProviderConfig(model="gemini-2.5-flash"), client=object())
+    row = {"key": "row:a1", "response": {"text": "ok"}, "error": None}
+    success, errors, _ = provider.parse_batch_output(output_content=json.dumps(row), error_content=None)
+    assert success == {"row:a1": row}
+    assert errors == {}

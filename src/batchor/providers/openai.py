@@ -124,7 +124,11 @@ class OpenAIBatchProvider(BatchProvider):
         metadata: dict[str, str] | None = None,
     ) -> BatchRemoteRecord:
         """Create an OpenAI batch from a previously uploaded input file."""
-        batch = self.client.batches.create(
+        # The SDK normally retries transient POST failures. A timed-out
+        # create may already exist remotely, so let the durable intent layer
+        # handle ambiguity instead of silently creating another batch.
+        client = self.client.with_options(max_retries=0) if hasattr(self.client, "with_options") else self.client
+        batch = client.batches.create(
             input_file_id=input_file_id,
             endpoint=self.config.endpoint,
             completion_window=self.config.completion_window,
@@ -179,7 +183,7 @@ class OpenAIBatchProvider(BatchProvider):
                 continue
             response = record.get("response")
             status_code = response.get("status_code") if isinstance(response, dict) else None
-            if isinstance(status_code, int) and status_code >= 400:
+            if record.get("error") is not None or (isinstance(status_code, int) and status_code >= 400):
                 errors[custom_id] = record
             else:
                 success[custom_id] = record
