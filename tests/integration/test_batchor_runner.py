@@ -1824,6 +1824,9 @@ def test_resume_polls_active_batches_before_materializing_more_source(tmp_path: 
         storage=storage,
         provider_factory=lambda _cfg: provider,
     )
+    # Exercise the count boundary independently of CI load. Time-budget
+    # slicing is covered separately with controlled clocks.
+    runner._ingestion_deps = replace(runner._ingestion_deps, work_monotonic=lambda: 0.0)
     run_id = "resume_poll_first"
 
     def crash_after_first_chunk(item: BatchItem[dict[str, str]]) -> PromptParts:
