@@ -2129,6 +2129,31 @@ def test_unsafe_run_id_rejected_before_creating_state(tmp_path, run_id):
     assert not storage.has_run(run_id=run_id)
 
 
+@pytest.mark.parametrize("filename", ["results.jsonl", "manifest.json"])
+def test_export_rejects_generated_file_symlinks_before_writing(review_storage, tmp_path, filename):
+    runner = BatchRunner(storage=review_storage, provider_factory=lambda _: object(), temp_root=tmp_path / "artifacts")
+    run = runner.start(
+        BatchJob(items=[], build_prompt=str, provider_config=OpenAIProviderConfig(model="m")), run_id="safe"
+    )
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside preserved", encoding="utf-8")
+    destination = tmp_path / "export"
+    export_root = destination / run.run_id
+    export_root.mkdir(parents=True)
+    (export_root / filename).symlink_to(outside)
+    other_name = "manifest.json" if filename == "results.jsonl" else "results.jsonl"
+    other = export_root / other_name
+    other.write_text("existing export preserved", encoding="utf-8")
+    before = review_storage.get_artifact_inventory(run_id=run.run_id)
+
+    with pytest.raises(ValueError, match="escape"):
+        run.export_artifacts(destination)
+
+    assert outside.read_text(encoding="utf-8") == "outside preserved"
+    assert other.read_text(encoding="utf-8") == "existing export preserved"
+    assert review_storage.get_artifact_inventory(run_id=run.run_id) == before
+
+
 def test_noncheckpointed_source_exception_cannot_become_success(review_storage, tmp_path):
     def source():
         yield BatchItem(item_id="row0", payload="hello")

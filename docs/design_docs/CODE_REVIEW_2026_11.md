@@ -78,7 +78,7 @@ uv run pytest tests/integration/test_batchor_runner.py \
 ```
 
 The supplemental suites used `--no-cov` only after the main smoke passed. No
-coverage policy or test gate was weakened. There are **53 new parametrized
+coverage policy or test gate was weakened. The initial review added **53 parametrized
 cases** relative to the baseline (50 regressions plus three backend-specific
 skips in the ordinary smoke). Intermediate red runs were repaired; the final
 checks above have no outstanding failures or environment blockers. The isolated
@@ -144,7 +144,35 @@ One existing deadline test now creates a genuinely interrupted source instead
 of manually changing a completed checkpoint back to incomplete. This retains
 its original assertion while allowing completed jobs to be detached.
 
+### Independent delivery review
+
+Independent review found that generated export leaves still followed escaping
+symlinks. Both `results.jsonl` and `manifest.json` are now preflighted before any
+export writes. Four additional memory/SQLite regressions failed before this
+repair and verify that outside files, earlier export files and export metadata
+remain unchanged on rejection. The complete change now adds **57 parametrized
+cases** relative to the baseline.
+
+Inspection of the actual locally built sdist also found ignored private
+`handoff/` records included by Hatchling. The sdist now excludes that directory
+explicitly. The rebuilt archive was inspected for handoff, dotenv and SQLite
+files, and the wheel's runtime sources were compared with the checkout before
+publication. No private handoff files were committed or pushed.
+
+After these repairs, the main configured smoke passed **345 tests, 9 skipped**,
+with **89.96% coverage**; the targeted fake-provider/client suite passed **79
+tests**. Type, Ruff, strict MkDocs, package build and whitespace checks passed.
+No provider behavior changed in this delivery repair, so earlier live evidence
+was retained without new billable calls. Current-head hosted CI and a fresh
+independent verifier are the final merge gates.
+
 ## Remaining boundaries and risks
+
+- **Newer schemas must use matching library versions.** The version guard
+  preserves future version metadata and rejects migration, but constructor
+  `create_all` can create a missing legacy table before the guard runs. This
+  independently reviewed minor remains outside supported-version behavior;
+  do not open newer databases with this release.
 
 - **One execution owner per run.** Storage claim/cursor fixes do not add a
   distributed run lease. Two independent runners simultaneously advancing the

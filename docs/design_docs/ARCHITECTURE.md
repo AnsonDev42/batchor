@@ -499,6 +499,8 @@ That split gives `batchor`:
 - SQLite claims acquire a write transaction before selecting candidates.
   Terminal-result writers in both SQL backends lock the run before allocating
   a cursor and hold that lock through the item update.
+- Export preflight validates the run directory and both generated result and
+  manifest paths before copying artifacts or replacing an earlier export.
 - Request replay indexes cached lines directly instead of rescanning from the
   start for each row. Parquet lineage offsets are accumulated once per row
   group. Anthropic polling returns a result pointer; downloads happen at the

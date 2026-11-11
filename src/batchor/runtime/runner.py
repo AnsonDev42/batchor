@@ -399,6 +399,13 @@ class BatchRunner:
         export_root = destination_root / run_id
         if not export_root.resolve().is_relative_to(destination_root):
             raise ValueError("run export directory must not escape destination through a symlink")
+        results_path = export_root / "results.jsonl"
+        manifest_path = export_root / "manifest.json"
+        # Check both generated leaves before copying artifacts or replacing an
+        # earlier export: a safe run directory can contain an escaping symlink.
+        for generated_path in (results_path, manifest_path):
+            if not generated_path.resolve().is_relative_to(export_root.resolve()):
+                raise ValueError("generated export file must not escape export directory through a symlink")
         export_root.mkdir(parents=True, exist_ok=True)
         inventory = self.state.get_artifact_inventory(run_id=run_id)
         exported_artifact_paths: list[str] = []
@@ -407,12 +414,10 @@ class BatchRunner:
         ):
             self.artifact_store.export_to_directory(artifact_path, export_root)
             exported_artifact_paths.append(artifact_path)
-        results_path = export_root / "results.jsonl"
         write_results_export(
             results_path=results_path,
             results=self._results_for_run(run_id),
         )
-        manifest_path = export_root / "manifest.json"
         manifest_path.write_text(
             json.dumps(
                 {

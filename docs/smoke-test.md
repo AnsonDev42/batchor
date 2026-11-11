@@ -60,6 +60,12 @@ Expected:
 - current durable features remain covered, including deterministic source checkpoints, run control, incremental terminal-result APIs, and artifact-retention policy wiring
 - repeated `--input` CLI flows and `CompositeItemSource` resume semantics remain covered when those paths change
 
+Before publication, inspect the built source archive as well as the wheel.
+Private `handoff/` logs and local run databases must not be shipped; the sdist
+explicitly excludes `handoff/` because local Git exclusions alone do not govern
+Hatchling's file selection. Check that packaged source matches the release
+commit and that the version in both package metadata files matches the tag.
+
 When agent skills, plugins, or MCP helpers change, also run:
 
 ```bash
@@ -152,7 +158,8 @@ The standard smoke includes regressions for:
   local HTTP mock, Anthropic disabling create retries, and Anthropic separating
   status polling from result download
 - rejected raw prune preserving pointers/files, atomic replacement preserving
-  old data on encoding failure, and symlink/traversal rejection
+  old data on encoding failure, and symlink/traversal rejection, including
+  preflight of generated result/manifest export files before any export writes
 - irreversible cancellation, including a pause after cancel
 - concurrent SQLite claims and distinct terminal-result cursors in both SQL
   backends, plus rejection of newer schema versions

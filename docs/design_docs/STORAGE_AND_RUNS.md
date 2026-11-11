@@ -275,7 +275,9 @@ After a terminal run, the usual flow is:
 Local artifact writes use a private temporary file, flush it, and atomically
 replace the destination; encoding/write failures preserve a prior artifact.
 Created directories use `0700` and files use `0600`. Existing symlinks escaping
-the artifact/export root are rejected. This assumes the private store directory
+the artifact/export root are rejected. Generated `results.jsonl` and
+`manifest.json` paths are both checked before any export writes, preserving
+existing files and export metadata if either leaf escapes. This assumes the private store directory
 is not concurrently modified by another actor.
 
 Run IDs must be non-empty relative paths without `..` or absolute roots.

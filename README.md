@@ -104,7 +104,8 @@ remote create is still linked locally. Requests larger than
 
 Artifact writes replace complete files atomically. Run identifiers must be
 non-empty relative paths without parent traversal; artifact and export paths
-reject symlinks escaping their roots. A rejected raw-prune request leaves all
+reject symlinks escaping their roots, including generated export result and
+manifest files. A rejected raw-prune request leaves all
 artifacts and pointers intact.
 
 The [2026-11 code review](docs/design_docs/CODE_REVIEW_2026_11.md) records the
