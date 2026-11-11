@@ -41,7 +41,6 @@ class AnthropicBatchProvider(BatchProvider):
             client = anthropic.Anthropic(api_key=resolve_anthropic_api_key(config))
         self.client = client
         self._inputs: dict[str, list[JSONObject]] = {}
-        self._results: dict[str, str] = {}
 
     def build_request_line(
         self,
@@ -90,25 +89,21 @@ class AnthropicBatchProvider(BatchProvider):
             if not isinstance(custom_id, str) or not isinstance(params, dict):
                 raise ValueError("Anthropic batch rows require custom_id and body fields")
             requests.append({"custom_id": custom_id, "params": params})
-        return self._normalize(self.client.messages.batches.create(requests=requests))
+        client = self.client.with_options(max_retries=0) if hasattr(self.client, "with_options") else self.client
+        return self._normalize(client.messages.batches.create(requests=requests))
 
     def get_batch(self, batch_id: str) -> BatchRemoteRecord:
         remote = self.client.messages.batches.retrieve(batch_id)
         normalized = self._normalize(remote)
         if normalized["status"] == "completed":
-            result_id = f"{_RESULTS_PREFIX}{batch_id}"
-            results = self.client.messages.batches.results(batch_id)
-            self._results[result_id] = "".join(
-                json.dumps(self._object_to_dict(result), ensure_ascii=False) + "\n" for result in results
-            )
-            normalized["output_file_id"] = result_id
+            normalized["output_file_id"] = f"{_RESULTS_PREFIX}{batch_id}"
         return normalized
 
     def download_file_content(self, file_id: str) -> str:
-        try:
-            return self._results[file_id]
-        except KeyError as exc:
-            raise ValueError(f"unknown Anthropic results identifier: {file_id}") from exc
+        if not file_id.startswith(_RESULTS_PREFIX) or not file_id.removeprefix(_RESULTS_PREFIX):
+            raise ValueError(f"unknown Anthropic results identifier: {file_id}")
+        results = self.client.messages.batches.results(file_id.removeprefix(_RESULTS_PREFIX))
+        return "".join(json.dumps(self._object_to_dict(result), ensure_ascii=False) + "\n" for result in results)
 
     def parse_batch_output(
         self, *, output_content: str | None, error_content: str | None

@@ -19,12 +19,17 @@ Batchor rejects provider-owned fields in `message_params` so replayed requests c
 
 Anthropic accepts request objects directly rather than an uploaded JSONL file. The provider therefore stages Batchor's durable request artifact in memory only for the upload/create boundary, then calls `messages.batches.create(requests=...)`.
 
-Anthropic `in_progress` maps to Batchor's active status and `ended` maps to `completed`. Once ended, the provider streams `messages.batches.results(...)` into Batchor's raw output artifact. Result order is not assumed; correlation always uses `custom_id`.
+Anthropic `in_progress` maps to Batchor's active status and `ended` maps to `completed`. Once ended, polling returns a deterministic result identifier. The separate download call streams `messages.batches.results(...)` into Batchor's raw output artifact, so the runtime can check its deadline between status retrieval and download. Result payloads are not retained in a provider-wide cache, and a fresh provider can resolve the identifier. Result order is not assumed; correlation always uses `custom_id`.
 
 The four Anthropic result types map as follows:
 
 - `succeeded`: Batchor success
 - `errored`, `canceled`, and `expired`: Batchor item error, subject to the configured retry policy
+
+Batch creation disables automatic SDK retries through
+`with_options(max_retries=0)` when supported by the client. A failed create is
+then handled by the runtime's indeterminate-submission flow instead of another
+implicit Messages Batch POST.
 
 ## Limits and retention
 

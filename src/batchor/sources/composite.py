@@ -74,18 +74,17 @@ class CompositeItemSource(CheckpointedItemSource[PayloadT], Generic[PayloadT]):
     def __init__(self, sources: Sequence[CheckpointedItemSource[PayloadT]]) -> None:
         self.sources = tuple(sources)
         self._identities = tuple(source.source_identity() for source in self.sources)
-        identity_payload: JSONValue = [_identity_payload(identity) for identity in self._identities]
-        self._source_ref = _canonical_json(identity_payload)
-        self._source_fingerprint = hashlib.sha256(self._source_ref.encode("utf-8")).hexdigest()
         self._source_namespaces = tuple(
             _source_namespace(index, identity) for index, identity in enumerate(self._identities)
         )
 
     def source_identity(self) -> SourceIdentity:
+        identity_payload: JSONValue = [_identity_payload(source.source_identity()) for source in self.sources]
+        source_ref = _canonical_json(identity_payload)
         return SourceIdentity(
             source_kind="composite",
-            source_ref=self._source_ref,
-            source_fingerprint=self._source_fingerprint,
+            source_ref=source_ref,
+            source_fingerprint=hashlib.sha256(source_ref.encode("utf-8")).hexdigest(),
         )
 
     def initial_checkpoint(self) -> JSONValue:

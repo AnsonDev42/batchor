@@ -12,8 +12,9 @@ from batchor.core.enums import RunControlState
 from batchor.core.exceptions import RunIngestionSourceRequiredError, RunSubmissionIndeterminateError
 from batchor.core.models import BatchJob, RunSummary
 from batchor.runtime.context import RunContext, build_persisted_config
-from batchor.runtime.ingestion import IngestionDeps, resume_existing_run
+from batchor.runtime.ingestion import IngestionDeps, resume_existing_run, validate_resume
 from batchor.runtime.polling import PollingDeps, refresh_run
+from batchor.runtime.submission import PendingItemSubmitter
 from batchor.storage.state import StateStore
 
 
@@ -35,7 +36,7 @@ class RunExecutor:
         ingestion_deps: IngestionDeps,
         polling_deps: PollingDeps,
         context_for_run: Callable[[str], RunContext],
-        submit_pending_items: Callable[[str, RunContext], int],
+        submit_pending_items: PendingItemSubmitter,
     ) -> None:
         self._state = state
         self._ingestion_deps = ingestion_deps
@@ -48,6 +49,13 @@ class RunExecutor:
     def start_or_attach(self, *, run_id: str, job: BatchJob[Any, BaseModel]) -> None:
         """Attach the source-bearing job to an execution owner in this process."""
         self._jobs[run_id] = job
+
+    def release_ingested_source(self, run_id: str) -> None:
+        """Release input data once no further source materialization is needed."""
+        checkpoint = self._state.get_ingest_checkpoint(run_id=run_id)
+        if checkpoint is not None and checkpoint.ingestion_complete:
+            self._jobs.pop(run_id, None)
+            self._ingestion_deps.non_checkpointed_sessions.pop(run_id, None)
 
     def resume_attached_ingestion(self, run_id: str, *, deadline: float | None = None) -> None:
         """Continue incomplete ingestion when this process still owns its source."""
@@ -66,12 +74,15 @@ class RunExecutor:
             deadline=deadline,
         )
         self._owners.add(run_id)
+        self.release_ingested_source(run_id)
 
     def require_attached_source(self, run_id: str) -> None:
         """Fail before changing control state when incomplete ingestion lacks a source."""
         checkpoint = self._state.get_ingest_checkpoint(run_id=run_id)
         if checkpoint is not None and not checkpoint.ingestion_complete and run_id not in self._jobs:
             raise RunIngestionSourceRequiredError(run_id)
+        if job := self._jobs.get(run_id):
+            validate_resume(self._ingestion_deps, run_id=run_id, job=job, config=build_persisted_config(job))
 
     def advance(self, run_id: str, *, deadline: float | None = None) -> CycleOutcome:
         """Advance one run in recovery, poll, control, ingest, submit order."""
@@ -103,6 +114,7 @@ class RunExecutor:
             submit_pending_items=self._submit_pending_items,
             deadline=deadline,
         )
+        self.release_ingested_source(run_id)
         progressed = _summary_made_progress(before, summary)
         return CycleOutcome(summary=summary, progressed=progressed)
 

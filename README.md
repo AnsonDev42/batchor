@@ -89,6 +89,27 @@ Cancelling an incompletely ingested checkpointed source abandons its
 unmaterialized tail and finalizes the checkpoint after active batches drain, so
 the cancelled run can still reach a terminal lifecycle state.
 
+Resume validates the stored configuration and current source identity before
+replacing an attached job or contacting the provider. In-process arbitrary
+iterators retain their uncommitted slice across prompt/storage failures; a
+source iterator that itself raises stays incomplete and requires explicit
+recovery or cancellation. Fully ingested jobs release their attached input data.
+Use one execution owner per run; shared quota accounting across different runs
+does not provide distributed ownership of a single run.
+
+Request preparation/upload failures release local claims and capacity. A
+cooperative wait deadline stops further uploads/creates, while a confirmed
+remote create is still linked locally. Requests larger than
+`ChunkPolicy.max_file_bytes` fail locally without consuming an attempt.
+
+Artifact writes replace complete files atomically. Run identifiers must be
+non-empty relative paths without parent traversal; artifact and export paths
+reject symlinks escaping their roots. A rejected raw-prune request leaves all
+artifacts and pointers intact.
+
+The [2026-11 code review](docs/design_docs/CODE_REVIEW_2026_11.md) records the
+verified findings, regression evidence, and remaining operating boundaries.
+
 ## Architecture
 
 ```mermaid

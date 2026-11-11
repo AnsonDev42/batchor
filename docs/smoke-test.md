@@ -43,6 +43,8 @@ In practice, the project expects more than just pytest for a clean change:
 
 ```bash
 uv run ty check src
+uv run ruff check src tests
+uv run ruff format --check src tests
 uv run pytest -q
 uv run mkdocs build --strict
 uv build
@@ -68,7 +70,7 @@ uv run python ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py 
 
 The user-facing `batchor` plugin must remain repo-independent. The contributor-only `batchor-agent-tools` plugin may point at checkout paths and repository validation commands.
 
-GitHub pull request CI runs the main smoke across Python `3.12` and `3.13`, builds the docs site in a dedicated docs job, and runs packaging in a dedicated Python `3.13` build job so each validation path stays explicit.
+GitHub pull request CI runs the main smoke across Python `3.12`, `3.13`, and `3.14`, builds the docs site in a dedicated docs job, and runs packaging in a dedicated Python `3.13` build job so each validation path stays explicit.
 
 ## Targeted runtime smoke
 
@@ -132,6 +134,35 @@ Notes:
 - `--no-cov` is only for supplemental targeted runs after the main smoke test already passed
 - Postgres contract tests run in required GitHub Actions CI through an ephemeral PostgreSQL service
 - local Postgres contract tests still require `BATCHOR_TEST_POSTGRES_DSN` to be set
+
+## Review regression coverage
+
+The standard smoke includes regressions for:
+
+- rejected resume preserving the existing context and validating changed
+  composite sources before polling
+- prompt/storage failures preserving uncommitted arbitrary-iterator rows,
+  source exceptions staying incomplete, and releasing fully ingested jobs
+- checkpoint deadlines preserving partial slices, and submission deadlines
+  preventing another remote create while finalizing a confirmed create
+- pre-create failures releasing claims/reservations and capacity waits not
+  accumulating artifacts
+- file-size rejection before upload and provider row-error/null-error parsing
+- OpenAI creation using one HTTP attempt under the real installed SDK with a
+  local HTTP mock, Anthropic disabling create retries, and Anthropic separating
+  status polling from result download
+- rejected raw prune preserving pointers/files, atomic replacement preserving
+  old data on encoding failure, and symlink/traversal rejection
+- irreversible cancellation, including a pause after cancel
+- concurrent SQLite claims and distinct terminal-result cursors in both SQL
+  backends, plus rejection of newer schema versions
+
+Run the Postgres contract suite against an isolated test database via
+`BATCHOR_TEST_POSTGRES_DSN`; it creates and removes test-only schemas. Do not
+point the contract suite at a production database. Fake-provider tests do not
+validate live SDK/API behavior or provider billing. See the
+[review record](design_docs/CODE_REVIEW_2026_11.md) for this change's exact
+validation outcomes and remaining boundaries.
 
 ## Docs smoke
 

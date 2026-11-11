@@ -13,7 +13,7 @@ from batchor.storage.sqlite_codec import (
     _failed_status,
 )
 from batchor.storage.sqlite_protocol import SQLiteStorageProtocol
-from batchor.storage.sqlite_schema import ITEMS_TABLE, RUN_RETRY_STATE_TABLE
+from batchor.storage.sqlite_schema import ITEMS_TABLE, RUN_RETRY_STATE_TABLE, RUNS_TABLE
 from batchor.storage.state import (
     CompletedItemRecord,
     ItemFailureRecord,
@@ -413,6 +413,10 @@ class SQLiteResultsMixin(SQLiteStorageProtocol):
             return len(rows)
 
     def _next_terminal_sequence(self, conn, run_id: str) -> int:  # noqa: ANN001
+        # Serialize cursor allocation and terminal writes in one transaction.
+        # UPDATE locks the run row on Postgres and starts a write transaction
+        # on SQLite; SELECT FOR UPDATE alone would not lock on SQLite.
+        conn.execute(update(RUNS_TABLE).where(RUNS_TABLE.c.run_id == run_id).values(status=RUNS_TABLE.c.status))
         current = conn.execute(
             select(func.coalesce(func.max(ITEMS_TABLE.c.terminal_result_sequence), 0)).where(
                 ITEMS_TABLE.c.run_id == run_id

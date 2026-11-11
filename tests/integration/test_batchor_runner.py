@@ -43,6 +43,14 @@ from batchor.storage import sqlite as storage_sqlite
 from batchor.storage.state import IngestCheckpoint
 
 
+@pytest.fixture(params=["memory", "sqlite"])
+def review_storage(request, tmp_path):
+    storage = MemoryStateStore() if request.param == "memory" else SQLiteStorage(path=tmp_path / "review.db")
+    yield storage
+    if isinstance(storage, SQLiteStorage):
+        storage.close()
+
+
 class ClassificationResult(BaseModel):
     label: str
     score: float
@@ -627,7 +635,7 @@ def test_pause_blocks_polling_and_wait_raises_paused_error(tmp_path: Path) -> No
 def test_wait_deadline_reaches_resume_boundary_polling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Attached incomplete ingestion must not begin a provider poll after expiry."""
     path = tmp_path / "items.jsonl"
-    path.write_text(json.dumps({"id": "row1", "text": "one"}) + "\n", encoding="utf-8")
+    path.write_text(' {"id":"row1","text":"one"}\n{"id":"row2","text":"two"}\n', encoding="utf-8")
     source = JsonlItemSource(
         path,
         item_id_from_row=lambda row: str(row["id"]) if isinstance(row, dict) else "",
@@ -639,21 +647,25 @@ def test_wait_deadline_reaches_resume_boundary_polling(tmp_path: Path, monkeypat
         provider_factory=lambda _cfg: provider,
         temp_root=tmp_path,
     )
-    run = runner.start(
-        BatchJob(
-            items=source,
-            build_prompt=lambda item: PromptParts(prompt=item.payload["text"]),
-            provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+    runner._ingestion_deps = replace(runner._ingestion_deps, work_slice_max_items=1)
+
+    def interrupted_prompt(item):
+        if item.item_id == "row2":
+            raise RuntimeError("interrupted ingestion")
+        return PromptParts(prompt=item.payload["text"])
+
+    with pytest.raises(RuntimeError, match="interrupted ingestion"):
+        runner.start(
+            BatchJob(
+                items=source,
+                build_prompt=interrupted_prompt,
+                provider_config=OpenAIProviderConfig(api_key="k", model="gpt-4.1"),
+            ),
+            run_id="deadline_resume",
         )
-    )
+    run = runner.get_run("deadline_resume")
     checkpoint = runner.state.get_ingest_checkpoint(run_id=run.run_id)
-    assert checkpoint is not None
-    runner.state.update_ingest_checkpoint(
-        run_id=run.run_id,
-        next_item_index=checkpoint.next_item_index,
-        checkpoint_payload=checkpoint.checkpoint_payload,
-        ingestion_complete=False,
-    )
+    assert checkpoint is not None and not checkpoint.ingestion_complete
 
     calls = 0
 
@@ -2041,3 +2053,178 @@ def test_start_with_same_run_id_resumes_incomplete_composite_ingestion(
         f"{second_namespace}__row1",
         f"{second_namespace}__row2",
     ]
+
+
+def test_rejected_resume_preserves_attached_context(review_storage, tmp_path):
+    providers = []
+
+    def create_provider(config):
+        provider = _FakeBatchProvider(record_factory=lambda _: _success_record(config.model))
+        providers.append(provider)
+        return provider
+
+    runner = BatchRunner(storage=review_storage, provider_factory=create_provider, temp_root=tmp_path / "artifacts")
+    job = BatchJob(
+        items=[BatchItem(item_id="row", payload="hello")],
+        build_prompt=lambda item: item.payload,
+        provider_config=OpenAIProviderConfig(model="original"),
+    )
+    run = runner.start(job, run_id="review_resume")
+    with pytest.raises(ValueError, match="config does not match"):
+        runner.start(replace(job, provider_config=OpenAIProviderConfig(model="wrong")), run_id=run.run_id)
+    assert len(providers) == 1
+    assert run.wait().results()[0].output_text == "original"
+
+
+def test_noncheckpointed_prompt_failure_keeps_unpersisted_rows(review_storage, tmp_path):
+    failed = False
+
+    def build_prompt(item):
+        nonlocal failed
+        if item.item_id == "row1" and not failed:
+            failed = True
+            raise RuntimeError("prompt failure")
+        return item.payload
+
+    provider = _FakeBatchProvider(record_factory=lambda _: _success_record("ok"))
+    runner = BatchRunner(storage=review_storage, provider_factory=lambda _: provider, temp_root=tmp_path / "artifacts")
+    job = BatchJob(
+        items=iter([BatchItem(item_id=f"row{i}", payload="hello") for i in range(3)]),
+        build_prompt=build_prompt,
+        provider_config=OpenAIProviderConfig(model="gpt-4.1"),
+    )
+    with pytest.raises(RuntimeError, match="prompt failure"):
+        runner.start(job, run_id="review_ingestion")
+    run = runner.start(job, run_id="review_ingestion").wait()
+    assert [item.item_id for item in run.results()] == ["row0", "row1", "row2"]
+    assert [item.item_index for item in review_storage.get_item_records(run_id=run.run_id)] == [0, 1, 2]
+
+
+def test_rejected_raw_prune_leaves_all_artifacts_and_pointers(review_storage, tmp_path):
+    provider = _FakeBatchProvider(record_factory=lambda _: _success_record("ok"))
+    runner = BatchRunner(storage=review_storage, provider_factory=lambda _: provider, temp_root=tmp_path / "artifacts")
+    run = runner.run_and_wait(
+        BatchJob(
+            items=[BatchItem(item_id="row", payload="hello")],
+            build_prompt=lambda item: item.payload,
+            provider_config=OpenAIProviderConfig(model="gpt-4.1"),
+        )
+    )
+    before = review_storage.get_artifact_inventory(run_id=run.run_id)
+    with pytest.raises(ValueError, match="require export"):
+        run.prune_artifacts(include_raw_output_artifacts=True)
+    assert review_storage.get_artifact_inventory(run_id=run.run_id) == before
+    for key in before.request_artifact_paths + before.output_artifact_paths:
+        assert runner.artifact_store.read_text(key)
+
+
+@pytest.mark.parametrize("run_id", ["../escaped", "/absolute", ".", ""])
+def test_unsafe_run_id_rejected_before_creating_state(tmp_path, run_id):
+    storage = MemoryStateStore()
+    runner = BatchRunner(storage=storage, provider_factory=lambda _: object(), temp_root=tmp_path / "artifacts")
+    with pytest.raises(ValueError, match="run_id"):
+        runner.start(
+            BatchJob(items=[], build_prompt=str, provider_config=OpenAIProviderConfig(model="m")), run_id=run_id
+        )
+    assert not storage.has_run(run_id=run_id)
+
+
+def test_noncheckpointed_source_exception_cannot_become_success(review_storage, tmp_path):
+    def source():
+        yield BatchItem(item_id="row0", payload="hello")
+        raise RuntimeError("source broke")
+
+    runner = BatchRunner(storage=review_storage, provider_factory=lambda _: object(), temp_root=tmp_path / "artifacts")
+    job = BatchJob(
+        items=source(), build_prompt=lambda item: item.payload, provider_config=OpenAIProviderConfig(model="m")
+    )
+    with pytest.raises(RuntimeError, match="source broke"):
+        runner.start(job, run_id="source_failure")
+    with pytest.raises(RunIngestionSourceRequiredError):
+        runner.get_run("source_failure").refresh()
+    assert not runner.get_run("source_failure").is_finished
+
+
+def test_noncheckpointed_append_failure_retries_entire_buffer(review_storage, tmp_path, monkeypatch):
+    provider = _FakeBatchProvider(record_factory=lambda _: _success_record("ok"))
+    runner = BatchRunner(storage=review_storage, provider_factory=lambda _: provider, temp_root=tmp_path / "artifacts")
+    job = BatchJob(
+        items=iter([BatchItem(item_id=f"row{i}", payload="hello") for i in range(3)]),
+        build_prompt=lambda item: item.payload,
+        provider_config=OpenAIProviderConfig(model="m"),
+    )
+    with monkeypatch.context() as patch:
+
+        def fail(**kwargs):
+            raise RuntimeError("append failure")
+
+        patch.setattr(review_storage, "append_items_with_ingest_checkpoint", fail)
+        with pytest.raises(RuntimeError, match="append failure"):
+            runner.start(job, run_id="append_failure")
+    run = runner.get_run("append_failure").wait()
+    assert [item.item_id for item in run.results()] == ["row0", "row1", "row2"]
+
+
+def test_mismatched_source_rejected_before_poll_and_context_replacement(review_storage, tmp_path):
+    path = tmp_path / "source.jsonl"
+    path.write_text('{"id":"row0"}\n{"id":"row1"}\n', encoding="utf-8")
+    source = CompositeItemSource(
+        [JsonlItemSource(path, item_id_from_row=lambda row: row["id"], payload_from_row=lambda row: row)]
+    )
+    provider = _FakeBatchProvider(record_factory=lambda _: _success_record("ok"))
+    runner = BatchRunner(storage=review_storage, provider_factory=lambda _: provider, temp_root=tmp_path / "artifacts")
+    runner._ingestion_deps = replace(runner._ingestion_deps, work_slice_max_items=1)
+    failed = False
+
+    def prompt(item):
+        nonlocal failed
+        if item.metadata["batchor_lineage"]["source_primary_key"] == "row1" and not failed:
+            failed = True
+            raise RuntimeError("pause after first persisted row")
+        return "hello"
+
+    job = BatchJob(items=source, build_prompt=prompt, provider_config=OpenAIProviderConfig(model="m"))
+    with pytest.raises(RuntimeError):
+        runner.start(job, run_id="changed_source")
+    before = review_storage.get_run_summary(run_id="changed_source")
+    original_context = runner._contexts["changed_source"]
+    path.write_text('{"id":"row0","changed":true}\n{"id":"row1"}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="source .* mismatch"):
+        runner.start(job, run_id="changed_source")
+    assert review_storage.get_run_summary(run_id="changed_source") == before
+    assert runner._contexts["changed_source"] is original_context
+
+
+def test_fully_ingested_job_is_not_retained_by_runner(review_storage, tmp_path):
+    import weakref
+
+    provider = _FakeBatchProvider(record_factory=lambda _: _success_record("ok"))
+    runner = BatchRunner(storage=review_storage, provider_factory=lambda _: provider, temp_root=tmp_path / "artifacts")
+    job = BatchJob(
+        items=[BatchItem(item_id="row", payload="hello")],
+        build_prompt=lambda item: item.payload,
+        provider_config=OpenAIProviderConfig(model="m"),
+    )
+    reference = weakref.ref(job)
+    run = runner.start(job)
+    del job
+    assert reference() is None
+    assert run.wait().results()[0].output_text == "ok"
+
+
+def test_cancel_cannot_be_reversed_via_pause(review_storage, tmp_path):
+    provider = _FakeBatchProvider(record_factory=lambda _: _success_record("ok"))
+    runner = BatchRunner(storage=review_storage, provider_factory=lambda _: provider, temp_root=tmp_path / "artifacts")
+    run = runner.start(
+        BatchJob(
+            items=[BatchItem(item_id="row", payload="hello")],
+            build_prompt=lambda item: item.payload,
+            provider_config=OpenAIProviderConfig(model="m"),
+        )
+    )
+    run.cancel()
+    with pytest.raises(ValueError, match="cancelling"):
+        run.pause()
+    with pytest.raises(ValueError, match="cancelling"):
+        run.resume()
+    assert run.wait().control_state is RunControlState.CANCEL_REQUESTED

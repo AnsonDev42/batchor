@@ -261,6 +261,11 @@ class MemoryStateStore(StateStore):
         control_reason: str | None = None,
     ) -> None:
         run = self._get_run(run_id)
+        if (
+            run.control_state is RunControlState.CANCEL_REQUESTED
+            and control_state is not RunControlState.CANCEL_REQUESTED
+        ):
+            raise ValueError(f"run {run_id} is cancelling and cannot change control state")
         run.control_state = control_state
         run.control_reason = control_reason
         self._refresh_run_status(run)

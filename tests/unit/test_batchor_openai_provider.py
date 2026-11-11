@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -162,3 +163,31 @@ def test_resolve_openai_api_key_requires_explicit_or_environment(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(ValueError, match="OpenAI API key is required"):
         resolve_openai_api_key(OpenAIProviderConfig(model="gpt-4.1"))
+
+
+def test_output_file_top_level_error_is_not_a_text_success():
+    provider = OpenAIBatchProvider(OpenAIProviderConfig(model="gpt-4.1"), client=object())
+    row = {"custom_id": "row:a1", "response": None, "error": {"code": "batch_expired", "message": "expired"}}
+    success, errors, _ = provider.parse_batch_output(output_content=json.dumps(row), error_content=None)
+    assert success == {}
+    assert errors == {"row:a1": row}
+
+
+def test_create_disables_sdk_retries_to_preserve_submission_ambiguity():
+    import httpx
+    from openai import InternalServerError, OpenAI
+
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(503, json={"error": {"message": "unavailable"}}, headers={"retry-after-ms": "1"})
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handle)) as http_client,
+        OpenAI(api_key="test", http_client=http_client, max_retries=2) as client,
+    ):
+        provider = OpenAIBatchProvider(OpenAIProviderConfig(model="m"), client=client)
+        with pytest.raises(InternalServerError):
+            provider.create_batch(input_file_id="file_test")
+    assert len(requests) == 1

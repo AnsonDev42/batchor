@@ -577,3 +577,17 @@ def test_composite_item_source_exposes_stable_identity() -> None:
     assert left.source_fingerprint == right.source_fingerprint
     assert left.source_ref != reversed_identity.source_ref
     assert left.source_fingerprint != reversed_identity.source_fingerprint
+
+
+def test_composite_identity_rechecks_existing_child_file(tmp_path):
+    path = tmp_path / "items.jsonl"
+    path.write_text('{"id":"a"}\n', encoding="utf-8")
+    source = CompositeItemSource(
+        [JsonlItemSource(path, item_id_from_row=lambda row: row["id"], payload_from_row=lambda row: row)]
+    )
+    before = source.source_identity()
+    original_id = next(iter(source)).item_id
+    path.write_text('{"id":"a","changed":true}\n', encoding="utf-8")
+    after = source.source_identity()
+    assert before.source_fingerprint != after.source_fingerprint
+    assert next(iter(source)).item_id == original_id

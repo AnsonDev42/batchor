@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Float, Index, Integer, MetaData, String, Table, Text
+from sqlalchemy import Column, Float, Index, Integer, MetaData, String, Table, Text, select
+from sqlalchemy.engine import Connection
 
 METADATA = MetaData()
 SQLITE_SCHEMA_VERSION = 6
@@ -9,6 +10,16 @@ STORAGE_METADATA_TABLE = Table(
     Column("key", String, primary_key=True),
     Column("value", Text, nullable=False),
 )
+
+
+def require_supported_schema(conn: Connection) -> None:
+    """Refuse to overwrite metadata or migrate a schema from a newer release."""
+    version = conn.execute(
+        select(STORAGE_METADATA_TABLE.c.value).where(STORAGE_METADATA_TABLE.c.key == "schema_version")
+    ).scalar_one_or_none()
+    if version is not None and int(version) > SQLITE_SCHEMA_VERSION:
+        raise ValueError(f"storage schema {version} is newer than supported schema {SQLITE_SCHEMA_VERSION}")
+
 
 RUNS_TABLE = Table(
     "runs",

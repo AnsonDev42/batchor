@@ -22,6 +22,7 @@ from batchor.storage.sqlite_schema import (
     RUNS_TABLE,
     SQLITE_SCHEMA_VERSION,
     STORAGE_METADATA_TABLE,
+    require_supported_schema,
 )
 from batchor.storage.state import ClaimedItem, StateStore
 
@@ -76,6 +77,7 @@ class PostgresStorage(SQLiteResultsMixin, SQLiteLifecycleMixin, SQLiteQueryMixin
 
     def _ensure_schema(self) -> None:
         with self.engine.begin() as conn:
+            require_supported_schema(conn)
             run_columns = {
                 str(column["name"]) for column in inspect(conn).get_columns(RUNS_TABLE.name, schema=self.schema)
             }

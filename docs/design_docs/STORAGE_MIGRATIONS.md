@@ -81,3 +81,10 @@ batch. No data is deleted or rewritten during either migration.
 - migration tooling beyond automatic additive startup upgrades
 - explicit downgrade guidance
 - versioned migration notes per release
+
+## Newer-version protection
+
+Storage startup rejects `schema_version` values newer than this library
+supports before running migrations or overwriting version metadata. Use the
+compatible library version to open that store. The 2026-11 review adds this
+check without changing schema version 6.

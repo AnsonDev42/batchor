@@ -115,3 +115,40 @@ def test_config_validation_and_api_key_resolution(monkeypatch: pytest.MonkeyPatc
     assert resolve_anthropic_api_key(config) == "env-key"
     with pytest.raises(ValueError, match="reserved fields"):
         AnthropicProviderConfig(model="claude-sonnet-4-5", max_tokens=1, message_params={"stream": True})
+
+
+def test_poll_does_not_download_results_and_result_pointer_can_be_rehydrated(monkeypatch):
+    client = _Client()
+    config = AnthropicProviderConfig(model="claude-sonnet-4-5", max_tokens=64)
+    provider = AnthropicBatchProvider(config, client=client)
+    original = client.messages.batches.results
+    calls = []
+
+    def results(batch_id):
+        calls.append(batch_id)
+        return original(batch_id)
+
+    monkeypatch.setattr(client.messages.batches, "results", results)
+    remote = provider.get_batch("msgbatch_123")
+    assert calls == []
+    fresh_provider = AnthropicBatchProvider(config, client=client)
+    assert "done" in fresh_provider.download_file_content(remote["output_file_id"])
+    assert calls == ["msgbatch_123"]
+
+
+def test_create_disables_sdk_retries(tmp_path):
+    class RetryAwareClient(_Client):
+        def __init__(self):
+            super().__init__()
+            self.retry_options = []
+
+        def with_options(self, *, max_retries):
+            self.retry_options.append(max_retries)
+            return self
+
+    client = RetryAwareClient()
+    provider = AnthropicBatchProvider(AnthropicProviderConfig(model="claude", max_tokens=64), client=client)
+    path = tmp_path / "requests.jsonl"
+    path.write_text('{"custom_id":"row","body":{"messages":[]}}\n', encoding="utf-8")
+    provider.create_batch(input_file_id=provider.upload_input_file(path))
+    assert client.retry_options == [0]

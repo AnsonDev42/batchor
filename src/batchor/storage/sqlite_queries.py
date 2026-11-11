@@ -29,6 +29,7 @@ from batchor.storage.sqlite_schema import (
     SQLITE_SCHEMA_VERSION,
     STORAGE_METADATA_TABLE,
     SUBMISSION_INTENTS_TABLE,
+    require_supported_schema,
 )
 from batchor.storage.state import (
     IngestCheckpoint,
@@ -116,6 +117,7 @@ class SQLiteQueryMixin(SQLiteStorageProtocol):
 
     def _ensure_schema(self) -> None:
         with self.engine.begin() as conn:
+            require_supported_schema(conn)
             item_columns = {str(row[1]) for row in conn.exec_driver_sql("PRAGMA table_info(items)").fetchall()}
             if "request_artifact_path" not in item_columns:
                 conn.exec_driver_sql("ALTER TABLE items ADD COLUMN request_artifact_path TEXT")

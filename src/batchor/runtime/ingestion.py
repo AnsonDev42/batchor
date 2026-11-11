@@ -11,9 +11,10 @@ from pydantic import BaseModel
 
 from batchor.core.enums import RunControlState
 from batchor.core.exceptions import RunIngestionSourceRequiredError, RunSubmissionIndeterminateError
-from batchor.core.models import BatchJob, PromptParts
+from batchor.core.models import BatchItem, BatchJob, PromptParts
 from batchor.core.types import JSONObject, JSONValue
 from batchor.runtime.context import RunContext
+from batchor.runtime.submission import PendingItemSubmitter, submit_with_deadline
 from batchor.sources.base import CheckpointedItemSource
 from batchor.storage.state import (
     IngestCheckpoint,
@@ -63,7 +64,7 @@ class IngestionDeps:
 
     state: StateStore
     emit_event: Callable[..., None]
-    submit_pending_items: Callable[[str, RunContext], int]
+    submit_pending_items: PendingItemSubmitter
     configs_match_for_resume: Callable[[PersistedRunConfig, PersistedRunConfig], bool]
     poll_active_batches: ActiveBatchPoller = _noop_poll_active_batches
     monotonic: Callable[[], float] = time.monotonic
@@ -85,6 +86,9 @@ class NonCheckpointedIngestionSession:
     iterator: Iterator[Any]
     next_item_index: int
     seen_ids: set[str] = field(default_factory=set)
+    pending_item: BatchItem[Any] | None = None
+    pending_items: list[MaterializedItem] = field(default_factory=list)
+    source_error: Exception | None = None
 
 
 def finalize_cancelled_ingestion(state: StateStore, *, run_id: str) -> None:
@@ -98,6 +102,28 @@ def finalize_cancelled_ingestion(state: StateStore, *, run_id: str) -> None:
         checkpoint_payload=checkpoint.checkpoint_payload,
         ingestion_complete=True,
     )
+
+
+def validate_resume(
+    deps: IngestionDeps, *, run_id: str, job: BatchJob[Any, BaseModel], config: PersistedRunConfig
+) -> None:
+    """Reject incompatible attachments before polling or mutating local state."""
+    stored_config = deps.state.get_run_config(run_id=run_id)
+    if not deps.configs_match_for_resume(stored_config, config):
+        raise ValueError(f"existing run config does not match supplied job: {run_id}")
+    if deps.state.get_run_control_state(run_id=run_id) is RunControlState.CANCEL_REQUESTED:
+        return
+    checkpoint = deps.state.get_ingest_checkpoint(run_id=run_id)
+    if checkpoint is not None and not checkpoint.ingestion_complete:
+        source = checkpointed_source(job)
+        if source is not None:
+            validate_checkpoint_source(run_id=run_id, source=source, checkpoint=checkpoint)
+        elif (
+            checkpoint.source_kind != "unattached"
+            or checkpoint.next_item_index != 0
+            and run_id not in deps.non_checkpointed_sessions
+        ):
+            raise RunIngestionSourceRequiredError(run_id)
 
 
 def resume_existing_run(
@@ -122,9 +148,7 @@ def resume_existing_run(
         ValueError: If the supplied job is incompatible with the stored run
             config or checkpointed source identity.
     """
-    stored_config = deps.state.get_run_config(run_id=run_id)
-    if not deps.configs_match_for_resume(stored_config, config):
-        raise ValueError(f"existing run config does not match supplied job: {run_id}")
+    validate_resume(deps, run_id=run_id, job=job, config=config)
     if deps.state.has_indeterminate_submission_intents(run_id=run_id):
         raise RunSubmissionIndeterminateError(run_id)
     deps.state.requeue_local_items(run_id=run_id)
@@ -163,7 +187,6 @@ def resume_existing_run(
                 deadline=deadline,
             )
             return
-        validate_checkpoint_source(run_id=run_id, source=source, checkpoint=checkpoint)
         if checkpoint.checkpoint_payload is not None and source.checkpoint_is_complete(checkpoint.checkpoint_payload):
             deps.state.update_ingest_checkpoint(
                 run_id=run_id,
@@ -173,7 +196,7 @@ def resume_existing_run(
             )
             if _deadline_reached(deps, deadline):
                 return
-            deps.submit_pending_items(run_id, context)
+            submit_with_deadline(deps.submit_pending_items, run_id, context, deadline=deadline)
             return
         ingest_job_items(
             deps,
@@ -189,7 +212,7 @@ def resume_existing_run(
         return
     if _deadline_reached(deps, deadline):
         return
-    deps.submit_pending_items(run_id, context)
+    submit_with_deadline(deps.submit_pending_items, run_id, context, deadline=deadline)
 
 
 def ingest_job_items(
@@ -291,7 +314,7 @@ def _ingest_checkpointed_items(
         if not should_continue:
             complete = False
             break
-    if complete and item_chunk:
+    if item_chunk:
         should_continue, _ = _persist_and_advance_boundary(
             deps,
             run_id=run_id,
@@ -329,19 +352,28 @@ def _ingest_non_checkpointed_items(
             raise ValueError("non-resumable item sources cannot start from a checkpoint")
         session = NonCheckpointedIngestionSession(iterator=iter(job.items), next_item_index=0)
         deps.non_checkpointed_sessions[run_id] = session
-    item_chunk: list[MaterializedItem] = []
+    if session.source_error is not None:
+        raise RunIngestionSourceRequiredError(run_id) from session.source_error
+    item_chunk = session.pending_items
     last_poll_at = deps.monotonic()
     slice_started_at = _next_slice_started_at(deps) if deps.work_slice_max_seconds is not None else last_poll_at
     exhausted = False
     while True:
         if _deadline_reached(deps, deadline):
             break
-        try:
-            item = next(session.iterator)
-        except StopIteration:
-            exhausted = True
-            break
-        item_chunk.append(_materialize_item(job, item, session.next_item_index, session.seen_ids))
+        if session.pending_item is None:
+            try:
+                session.pending_item = next(session.iterator)
+            except StopIteration:
+                exhausted = True
+                break
+            except Exception as exc:
+                # A generator may close after raising; treating its next
+                # StopIteration as a successful EOF would silently drop data.
+                session.source_error = exc
+                raise
+        item_chunk.append(_materialize_item(job, session.pending_item, session.next_item_index, session.seen_ids))
+        session.pending_item = None
         session.next_item_index += 1
         if not _slice_due(
             deps, item_count=len(item_chunk), slice_started_at=slice_started_at
@@ -362,7 +394,7 @@ def _ingest_non_checkpointed_items(
             last_poll_at=last_poll_at,
             deadline=deadline,
         )
-        item_chunk = []
+        item_chunk = session.pending_items
         slice_started_at = _next_slice_started_at(deps)
         if not should_continue:
             break
@@ -395,9 +427,8 @@ def _materialize_item(
 ) -> MaterializedItem:
     if item.item_id in seen_ids:
         raise ValueError(f"duplicate item_id: {item.item_id}")
-    seen_ids.add(item.item_id)
     prompt_parts = normalize_prompt_parts(job.build_prompt(item))
-    return MaterializedItem(
+    materialized = MaterializedItem(
         item_id=item.item_id,
         item_index=item_index,
         payload=json_value(item.payload, label=f"payload for {item.item_id}"),
@@ -405,6 +436,8 @@ def _materialize_item(
         prompt=prompt_parts.prompt,
         system_prompt=prompt_parts.system_prompt,
     )
+    seen_ids.add(item.item_id)
+    return materialized
 
 
 def _slice_due(deps: IngestionDeps, *, item_count: int, slice_started_at: float) -> bool:
@@ -480,6 +513,10 @@ def _persist_and_advance_boundary(
         checkpoint_payload=checkpoint_payload,
         ingestion_complete=False,
     )
+    if not checkpointed:
+        # Drop the buffer only after the atomic append succeeds, and before
+        # polling/submission can raise. Prompt and storage failures retain it.
+        deps.non_checkpointed_sessions[run_id].pending_items = []
     deps.emit_event(
         "items_ingested",
         run_id=run_id,
@@ -517,7 +554,7 @@ def _persist_and_advance_boundary(
     if control_state is RunControlState.RUNNING:
         if _deadline_reached(deps, deadline):
             return False, last_poll_at
-        deps.submit_pending_items(run_id, context)
+        submit_with_deadline(deps.submit_pending_items, run_id, context, deadline=deadline)
     control_state = deps.state.get_run_control_state(run_id=run_id)
     if control_state is RunControlState.CANCEL_REQUESTED or _is_manual_pause(
         deps, run_id=run_id, control_state=control_state
@@ -582,20 +619,7 @@ def materialize_item_chunks(
             item_index = current_index
             item = source_item.item
             next_checkpoint = source_item.next_checkpoint
-            if item.item_id in seen_ids:
-                raise ValueError(f"duplicate item_id: {item.item_id}")
-            seen_ids.add(item.item_id)
-            prompt_parts = normalize_prompt_parts(job.build_prompt(item))
-            current_chunk.append(
-                MaterializedItem(
-                    item_id=item.item_id,
-                    item_index=item_index,
-                    payload=json_value(item.payload, label=f"payload for {item.item_id}"),
-                    metadata=json_object(item.metadata, label=f"metadata for {item.item_id}"),
-                    prompt=prompt_parts.prompt,
-                    system_prompt=prompt_parts.system_prompt,
-                )
-            )
+            current_chunk.append(_materialize_item(job, item, item_index, seen_ids))
             current_index = item_index + 1
             if len(current_chunk) >= chunk_size:
                 yield current_chunk, current_index, next_checkpoint
@@ -604,20 +628,7 @@ def materialize_item_chunks(
         if start_index != 0:
             raise ValueError("non-resumable item sources cannot start from a checkpoint")
         for item_index, item in enumerate(job.items, start=start_index):
-            if item.item_id in seen_ids:
-                raise ValueError(f"duplicate item_id: {item.item_id}")
-            seen_ids.add(item.item_id)
-            prompt_parts = normalize_prompt_parts(job.build_prompt(item))
-            current_chunk.append(
-                MaterializedItem(
-                    item_id=item.item_id,
-                    item_index=item_index,
-                    payload=json_value(item.payload, label=f"payload for {item.item_id}"),
-                    metadata=json_object(item.metadata, label=f"metadata for {item.item_id}"),
-                    prompt=prompt_parts.prompt,
-                    system_prompt=prompt_parts.system_prompt,
-                )
-            )
+            current_chunk.append(_materialize_item(job, item, item_index, seen_ids))
             current_index = item_index + 1
             if len(current_chunk) >= chunk_size:
                 yield current_chunk, current_index, next_checkpoint
