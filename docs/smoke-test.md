@@ -143,6 +143,11 @@ Notes:
 
 ## Review regression coverage
 
+Tests asserting an exact ingestion item-count boundary must use a controlled
+work-slice clock. Wall-clock slicing may correctly persist fewer rows under CI
+load; it must not make a polling-order test flaky. Time-budget slicing has its
+own controlled-clock regressions.
+
 The standard smoke includes regressions for:
 
 - rejected resume preserving the existing context and validating changed
